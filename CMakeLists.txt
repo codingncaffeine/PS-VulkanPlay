@@ -78,6 +78,10 @@ if(PSVP_BUILD_APP)
 
     add_library(psvp_render STATIC
         src/render/vk_window.cpp)
+    # The window's icon, in two sizes, inside the program: it needs no installed file to show it.
+    include(cmake/EmbedFile.cmake)
+    psvp_embed("${CMAKE_CURRENT_SOURCE_DIR}/assets/icons/window-256.bmp" "${CMAKE_CURRENT_BINARY_DIR}/generated/psvp/window_icon_256.inc")
+    psvp_embed("${CMAKE_CURRENT_SOURCE_DIR}/assets/icons/window-48.bmp" "${CMAKE_CURRENT_BINARY_DIR}/generated/psvp/window_icon_48.inc")
     target_link_libraries(psvp_render PUBLIC psvp_core PRIVATE SDL3::SDL3 Vulkan::Vulkan)
     psvp_setup_target(psvp_render)
 
@@ -88,6 +92,10 @@ if(PSVP_BUILD_APP)
 
     include(GNUInstallDirs)
     install(TARGETS ps-vulkanplay RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+    # The desktop entry is named after the application ID the window carries, which is how a
+    # desktop finds the entry, and through it the icon, for a running window.
+    install(FILES packaging/io.github.codingncaffeine.PSVulkanPlay.desktop DESTINATION "${CMAKE_INSTALL_DATADIR}/applications")
+    install(DIRECTORY packaging/icons/hicolor DESTINATION "${CMAKE_INSTALL_DATADIR}/icons")
 endif()
 
 if(PSVP_BUILD_TESTS)

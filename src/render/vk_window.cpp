@@ -545,6 +545,41 @@ void Window::destroy() {
     }
 }
 
+namespace {
+
+// The icon cut from the project's emblem, as 32-bit bitmaps with transparency.
+constexpr unsigned char kIcon256[] = {
+#include "psvp/window_icon_256.inc"
+};
+constexpr unsigned char kIcon48[] = {
+#include "psvp/window_icon_48.inc"
+};
+
+SDL_Surface* load_icon(const unsigned char* data, std::size_t size) {
+    SDL_IOStream* stream = SDL_IOFromConstMem(data, size);
+    return stream != nullptr ? SDL_LoadBMP_IO(stream, true) : nullptr;
+}
+
+// The icon a title bar, a task switcher and a taskbar show for the window. A
+// taskbar on Wayland takes its icon from the desktop entry named after the
+// application ID instead (set before SDL starts), where one is installed.
+void set_window_icon(SDL_Window* window) {
+    SDL_Surface* large = load_icon(kIcon256, sizeof(kIcon256));
+    SDL_Surface* small = load_icon(kIcon48, sizeof(kIcon48));
+    if (large == nullptr || small == nullptr) {
+        log::warn("window: the icon could not be read: {}", SDL_GetError());
+    } else {
+        // The window system picks the size that fits where the icon is shown.
+        SDL_AddSurfaceAlternateImage(large, small);
+        if (SDL_SetWindowIcon(window, large)) log::info("window: icon set ({} and {} pixels)", large->w, small->w);
+        else log::info("window: this window system takes no window icon: {}", SDL_GetError());
+    }
+    SDL_DestroySurface(small);
+    SDL_DestroySurface(large);
+}
+
+}  // namespace
+
 int Window::open(const WindowOptions& options) {
     const auto fail = [&](int code, const char* title, const std::string& text) {
         log::error("window: {}", text);
@@ -569,6 +604,8 @@ int Window::open(const WindowOptions& options) {
                     std::format("The window could not be opened. Vulkan may not be installed on this system.\n\n{}",
                                 SDL_GetError()));
     }
+
+    set_window_icon(window_);
 
     if (!create_instance()) {
         return fail(kExitNoWindowSystem, PSVP_NAME " cannot start",

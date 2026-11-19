@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=PS VulkanPlay
+GenericName=Remote Play Client
+Comment=Play your console on this computer over the network
+Exec=ps-vulkanplay
+Icon=io.github.codingncaffeine.PSVulkanPlay
+StartupWMClass=io.github.codingncaffeine.PSVulkanPlay
+Terminal=false
+Categories=Game;
+Keywords=remote;play;console;stream;

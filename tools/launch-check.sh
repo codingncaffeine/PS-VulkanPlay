@@ -57,6 +57,18 @@ if kill -0 $pid 2>/dev/null; then
     else
         fail "the window is not on the screen: $(cat "$PSVP_TEST_TMP/fb-after.out")"
     fi
+    # What a desktop identifies the window by, and the icon it shows for it.
+    if command -v xprop > /dev/null 2>&1; then
+        class="$(xprop -name "PS VulkanPlay" WM_CLASS 2>/dev/null)"
+        case "$class" in
+            *'"io.github.codingncaffeine.PSVulkanPlay"'*) ok "window class is the application ID" ;;
+            *) fail "window class: ${class:-none}" ;;
+        esac
+        icon="$(xprop -name "PS VulkanPlay" -notype 32c _NET_WM_ICON 2>/dev/null | tr -d '\n' | sed 's/.*= //' | cut -d, -f1,2 | tr -d ' ')"
+        [ "$icon" = "256,256" ] && ok "window icon: 256x256" || fail "window icon: ${icon:-none}"
+    else
+        fail "xprop is not installed: the window's class and icon were not checked"
+    fi
     # Asked to stop the way a desktop asks: it must close down cleanly.
     kill -TERM $pid 2>/dev/null
     wait $pid; rc=$?
