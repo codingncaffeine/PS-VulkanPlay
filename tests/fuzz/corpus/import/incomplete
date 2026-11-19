@@ -1,0 +1,4 @@
+[registered_hosts]
+1\target=1000
+1\server_mac=@ByteArray(abcdef)
+size=1

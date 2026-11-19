@@ -32,18 +32,39 @@ include(cmake/CompilerSetup.cmake)
 
 configure_file(src/app/version.h.in generated/psvp/version.h @ONLY)
 
+find_package(OpenSSL 3.0 REQUIRED COMPONENTS Crypto)
+
 # The protocol: no sockets, no threads, no clock of its own.
 add_library(psvp_proto STATIC
-    src/proto/base64.cpp)
+    src/proto/base64.cpp
+    src/proto/discovery.cpp
+    src/proto/hex.cpp
+    src/proto/regist.cpp
+    src/proto/rp_cipher.cpp
+    src/proto/text_message.cpp)
 target_include_directories(psvp_proto PUBLIC src)
+target_link_libraries(psvp_proto PRIVATE OpenSSL::Crypto)
 psvp_setup_target(psvp_proto)
 
-# What the application needs besides a window: options, folders, the log.
+# Sockets with deadlines.
+add_library(psvp_net STATIC
+    src/net/socket.cpp)
+target_include_directories(psvp_net PUBLIC src)
+psvp_setup_target(psvp_net)
+
+# What the application needs besides a window: options, folders, the log, the
+# list of registered consoles and the command-line commands.
 add_library(psvp_core STATIC
+    src/app/account_id.cpp
     src/app/args.cpp
+    src/app/chiaki_import.cpp
+    src/app/commands.cpp
+    src/app/console_store.cpp
+    src/app/json.cpp
     src/app/log.cpp
     src/app/paths.cpp)
 target_include_directories(psvp_core PUBLIC src "${CMAKE_CURRENT_BINARY_DIR}/generated")
+target_link_libraries(psvp_core PUBLIC psvp_proto psvp_net)
 psvp_setup_target(psvp_core)
 
 if(PSVP_BUILD_APP)

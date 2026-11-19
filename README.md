@@ -10,20 +10,24 @@ interface as goals.
 
 ## Status
 
-Early development. The repository holds the foundations (build system, tests, an application that opens its
-window); it cannot connect to a console yet. Nothing here is ready for players. Releases will appear on the
-Releases page when there is something to play.
+Early development; nothing here is ready for players yet, and there is no streaming. What exists so far:
+
+- finding consoles on the network, waking them from rest mode and registering with them, from the command
+  line (`ps-vulkanplay --help` lists the commands)
+- taking over the consoles already registered in Chiaki or chiaki-ng (`ps-vulkanplay import`)
+
+Releases will appear on the Releases page when there is something to play.
 
 ## Building from source
 
 You need a C++23 compiler (GCC 13 or Clang 17, or later), CMake 3.25 or later, Ninja, SDL 3.2 or later and the
-Vulkan headers and loader.
+Vulkan headers and loader, and OpenSSL 3 or later.
 
 | Distribution | Packages |
 |---|---|
-| Arch Linux | `base-devel cmake ninja sdl3 vulkan-headers vulkan-icd-loader` |
-| Debian 13 | `g++ cmake ninja-build libsdl3-dev libvulkan-dev` |
-| Alpine Linux | `build-base cmake samurai sdl3-dev vulkan-headers vulkan-loader-dev` |
+| Arch Linux | `base-devel cmake ninja openssl sdl3 vulkan-headers vulkan-icd-loader` |
+| Debian 13 | `g++ cmake ninja-build libssl-dev libsdl3-dev libvulkan-dev` |
+| Alpine Linux | `build-base cmake samurai openssl-dev sdl3-dev vulkan-headers vulkan-loader-dev` |
 
 ```sh
 cmake -S . -B build -G Ninja

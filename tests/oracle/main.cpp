@@ -1,17 +1,31 @@
-// psvp_oracle_tests          every comparison must agree: exit 0
-// psvp_oracle_tests --plant  one of our results is corrupted on purpose: the
-//                            comparison must notice, and the program exits 1
+// psvp_oracle_tests            every comparison must agree: exit 0
+// psvp_oracle_tests --plant    one of our results is corrupted on purpose: the
+//                              comparison must notice, and the program exits 1
+// psvp_oracle_tests --vectors  prints results computed by the reference, for the unit tests
 #include <cstdio>
 #include <string_view>
 
 #include "oracle.h"
 
 int main(int argc, char** argv) {
-    const bool plant = argc > 1 && std::string_view(argv[1]) == "--plant";
-    const psvp::oracle::Outcome base64 = psvp::oracle::diff_base64(plant);
+    const std::string_view mode = argc > 1 ? std::string_view(argv[1]) : std::string_view();
+    if (mode == "--vectors") {
+        psvp::oracle::print_regist_vectors();
+        return 0;
+    }
+    const bool plant = mode == "--plant";
 
-    const int compared = base64.compared;
-    const int mismatches = base64.mismatches;
+    int compared = 0;
+    int mismatches = 0;
+    const auto add = [&](const psvp::oracle::Outcome& outcome) {
+        compared += outcome.compared;
+        mismatches += outcome.mismatches;
+    };
+    add(psvp::oracle::diff_base64(plant));
+    if (!plant) {
+        add(psvp::oracle::diff_discovery());
+        add(psvp::oracle::diff_regist());
+    }
     std::fprintf(stderr, "oracle: %d comparisons, %d mismatches%s\n", compared, mismatches,
                  plant ? " (one planted)" : "");
     if (compared == 0) return 2;

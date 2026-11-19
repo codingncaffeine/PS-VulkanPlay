@@ -6,10 +6,14 @@
 # into a test program only. It is never copied into this repository and never
 # part of anything that ships.
 #
-#   tools/oracle/run.sh
+#   tools/oracle/run.sh             the comparisons (all must agree), then the control:
+#                                   one of our results corrupted on purpose, which the
+#                                   comparison must report
+#   tools/oracle/run.sh --vectors   prints results computed by the reference for fixed
+#                                   inputs, as the C++ that tests/unit/vectors_regist.h holds
 #
-# Runs the comparisons (all must agree), then the control: one of our results
-# corrupted on purpose, which the comparison must report.
+# The reference's library needs json-c, libevent, Opus, OpenSSL and a curl with
+# WebSocket support on this machine; it fetches miniupnpc itself.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 . tools/env.sh
@@ -26,6 +30,8 @@ if [ "$(git -C "$ref" rev-parse HEAD 2>/dev/null || true)" != "$pin" ]; then
     git -C "$ref" fetch -q --depth 1 origin "$pin"
     git -C "$ref" checkout -q FETCH_HEAD
 fi
+# The parts of the reference that its library is built from.
+git -C "$ref" submodule update -q --init --depth 1 third-party/nanopb third-party/jerasure third-party/gf-complete
 
 dir=build/oracle
 if ! configure_output="$(psvp_nice cmake -S . -B "$dir" -G Ninja -DCMAKE_BUILD_TYPE=Release -DPSVP_WERROR=ON \
@@ -33,7 +39,12 @@ if ! configure_output="$(psvp_nice cmake -S . -B "$dir" -G Ninja -DCMAKE_BUILD_T
     printf '%s\n' "$configure_output"
     exit 1
 fi
-psvp_nice cmake --build "$dir" --target psvp_oracle_tests -j "$PSVP_JOBS" | tail -1
+psvp_nice cmake --build "$dir" --target psvp_oracle_tests psvp_reference_client psvp-mock-console -j "$PSVP_JOBS" > "$dir/build.log" 2>&1 || {
+    tail -40 "$dir/build.log"; echo "ORACLE FAILED: the test program did not build"; exit 1; }
+
+if [ "${1:-}" = "--vectors" ]; then
+    exec "$dir/psvp_oracle_tests" --vectors
+fi
 
 "$dir/psvp_oracle_tests"
 set +e

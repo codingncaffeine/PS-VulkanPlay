@@ -25,3 +25,5 @@ The reference implementation is [chiaki-ng](https://github.com/chiaki-ng/chiaki-
 ## Pages
 
 - [Encodings](encodings.md): how values are written as text
+- [Discovery and wake-up](discovery.md): finding consoles, their state, waking them from rest mode
+- [Registration](registration.md): the PIN exchange that makes a console accept this client

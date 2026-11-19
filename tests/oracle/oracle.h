@@ -30,5 +30,11 @@ struct Outcome {
 
 // `plant` corrupts one of our results on purpose: the comparison must then report a mismatch.
 Outcome diff_base64(bool plant);
+Outcome diff_discovery();
+Outcome diff_regist();
+
+// With --vectors: results computed by the reference for fixed inputs, printed
+// as C++ for the unit tests, which then hold them on machines without the reference.
+void print_regist_vectors();
 
 }  // namespace psvp::oracle

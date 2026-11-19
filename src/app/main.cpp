@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "app/args.h"
+#include "app/commands.h"
 #include "app/log.h"
 #include "app/paths.h"
 #include "psvp/version.h"
@@ -51,6 +52,9 @@ int run(int argc, char** argv) {
     std::vector<std::string_view> args;
     for (int i = 1; i < argc; ++i) args.emplace_back(argv[i]);
 
+    // A command does its work in the terminal and opens neither the log nor a window.
+    if (psvp::app::is_command(args)) return psvp::app::run_command(args);
+
     const auto options = psvp::app::parse_args(args);
     if (!options) {
         std::fprintf(stderr, "%s: %s\n", PSVP_BINARY, options.error().c_str());
@@ -62,7 +66,7 @@ int run(int argc, char** argv) {
         return 0;
     }
     if (options->show_help) {
-        std::fputs(psvp::app::help_text().c_str(), stdout);
+        std::fputs((psvp::app::help_text() + "\n" + psvp::app::commands_help()).c_str(), stdout);
         return 0;
     }
 

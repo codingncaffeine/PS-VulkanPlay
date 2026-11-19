@@ -1,0 +1,7 @@
+HTTP/1.1 200 Ok
+host-id:AABBCCDDEEFF
+host-type:PS5
+host-name:Living Room
+host-request-port:997
+device-discovery-protocol-version:00030010
+system-version:08050001
