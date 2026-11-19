@@ -34,6 +34,10 @@ inline constexpr std::size_t kKeyOffsets = 32;
 [[nodiscard]] std::optional<Key16> wrap_nonce(ConsoleKind kind, const Key16& nonce, std::size_t wrap_offset);
 [[nodiscard]] std::optional<Key16> unwrap_nonce(ConsoleKind kind, const Key16& wrapped, std::size_t wrap_offset);
 
+// The cipher of a session: key and nonce both come from the nonce the console
+// hands out when the session is requested and from the secret shared at registration.
+[[nodiscard]] RpCipher make_session_cipher(ConsoleKind kind, const Key16& console_nonce, const Key16& secret);
+
 // The starting vector of message number `counter`.
 [[nodiscard]] Key16 cipher_iv(const RpCipher& cipher, std::uint64_t counter);
 

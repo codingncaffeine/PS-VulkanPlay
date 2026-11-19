@@ -90,6 +90,33 @@ std::optional<Key16> unwrap_nonce(ConsoleKind kind, const Key16& wrapped, std::s
     return nonce;
 }
 
+RpCipher make_session_cipher(ConsoleKind kind, const Key16& console_nonce, const Key16& secret) {
+    // The session tables have thirty-two rows of 112 bytes; a row's first sixteen bytes are used.
+    constexpr std::size_t kSessionRow = 0x70;
+    const bool ps5 = kind == ConsoleKind::ps5;
+    const auto& table_a = ps5 ? kAuthKeysAPs5 : kAuthKeysAPs4;
+    const auto& table_b = ps5 ? kAuthKeysBPs5 : kAuthKeysBPs4;
+    const std::size_t row_a = std::size_t{console_nonce[0]} >> 3;
+    const std::size_t row_b = std::size_t{console_nonce[7]} >> 3;
+
+    RpCipher cipher;
+    cipher.kind = kind;
+    for (std::size_t i = 0; i < 16; ++i) {
+        const std::uint8_t a = table_a[row_a * kSessionRow + i];
+        const std::uint8_t b = table_b[row_b * kSessionRow + i];
+        const std::uint8_t n = console_nonce[i];
+        const auto position = static_cast<std::uint8_t>(i);
+        if (ps5) {
+            cipher.nonce[i] = static_cast<std::uint8_t>(static_cast<std::uint8_t>(n - 0x2d - position) ^ a);
+            cipher.key[i] = static_cast<std::uint8_t>(static_cast<std::uint8_t>(secret[i] + 0x18 + position) ^ n ^ b);
+        } else {
+            cipher.nonce[i] = static_cast<std::uint8_t>(static_cast<std::uint8_t>(n + 0x36 + position) ^ a);
+            cipher.key[i] = static_cast<std::uint8_t>(static_cast<std::uint8_t>((b ^ secret[i]) + 0x21 + position) ^ n);
+        }
+    }
+    return cipher;
+}
+
 Key16 cipher_iv(const RpCipher& cipher, std::uint64_t counter) {
     // HMAC-SHA256 over the nonce and the counter (most significant byte first),
     // keyed with a constant of the console family; the first sixteen bytes are the vector.

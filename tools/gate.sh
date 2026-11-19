@@ -43,6 +43,8 @@ lane oracle            tools/oracle/run.sh
 # The commands against the mock console, with the reference's own client as the control.
 lane scenario          tools/wall.sh tests/scenario/phase1.sh build/release build/oracle
 lane scenario-asan     tools/wall.sh tests/scenario/phase1.sh build/san
+lane session           tools/wall.sh tests/scenario/phase2a.sh build/release build/oracle
+lane session-asan      tools/wall.sh tests/scenario/phase2a.sh build/san
 lane identity          tools/identity-audit.sh
 if [ "$scope" = all ]; then
     # The four CI jobs, in the same containers.

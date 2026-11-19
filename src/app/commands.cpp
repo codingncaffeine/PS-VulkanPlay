@@ -20,6 +20,7 @@
 #include "proto/discovery.h"
 #include "proto/hex.h"
 #include "proto/regist.h"
+#include "proto/session.h"
 #include "psvp/version.h"
 
 namespace psvp::app {
@@ -261,32 +262,6 @@ int command_discover(std::span<const std::string_view> args) {
     return kDone;
 }
 
-// Reads from the stream until the blank line that ends a response head. Returns
-// the head and whatever was read past it.
-std::expected<std::pair<std::string, std::vector<std::uint8_t>>, std::string> read_head(net::TcpStream& stream,
-                                                                                         Clock::time_point deadline) {
-    std::vector<std::uint8_t> buffer;
-    while (buffer.size() <= kMaxResponseHead) {
-        const std::string_view text(reinterpret_cast<const char*>(buffer.data()), buffer.size());
-        std::size_t end = text.find("\r\n\r\n");
-        std::size_t skip = 4;
-        if (end == std::string_view::npos) {
-            end = text.find("\n\n");
-            skip = 2;
-        }
-        if (end != std::string_view::npos) {
-            std::string head(text.substr(0, end + skip));
-            return std::pair(std::move(head), std::vector<std::uint8_t>(buffer.begin() + static_cast<std::ptrdiff_t>(end + skip), buffer.end()));
-        }
-        std::uint8_t chunk[512];
-        const auto got = stream.receive(chunk, deadline);
-        if (!got) return std::unexpected(got.error());
-        if (*got == 0) return std::unexpected(std::string("the console closed the connection before answering"));
-        buffer.insert(buffer.end(), chunk, chunk + *got);
-    }
-    return std::unexpected(std::string("the console's answer has no end"));
-}
-
 int command_register(std::span<const std::string_view> args) {
     const Parsed parsed = parse(args, {"--host", "--pin", "--account-id"}, {}, 0);
     if (!parsed.error.empty()) return usage("register: {}", parsed.error);
@@ -365,9 +340,9 @@ int command_register(std::span<const std::string_view> args) {
     if (const auto sent = stream->send_all(net::bytes_of(request.head), step_deadline); !sent) return fail("register: {}", sent.error());
     if (const auto sent = stream->send_all(request.payload, step_deadline); !sent) return fail("register: {}", sent.error());
 
-    auto head = read_head(*stream, Clock::now() + kRegistStepWait);
-    if (!head) return fail("register: {}", head.error());
-    const auto body_size = proto::parse_regist_response_head(head->first);
+    auto head = net::read_text_head(*stream, Clock::now() + kRegistStepWait, kMaxResponseHead);
+    if (!head) return fail("register: the console's answer: {}", head.error());
+    const auto body_size = proto::parse_regist_response_head(head->head);
     if (!body_size) {
         if (body_size.error().failure == proto::RegistFailure::refused) {
             return fail("{}: {}.\nCheck the PIN (the console shows a new one each time) and that the account ID is the one\n"
@@ -376,7 +351,7 @@ int command_register(std::span<const std::string_view> args) {
         }
         return fail("register: {}", proto::describe(body_size.error()));
     }
-    std::vector<std::uint8_t> body = std::move(head->second);
+    std::vector<std::uint8_t> body = std::move(head->rest);
     const auto body_deadline = Clock::now() + kRegistStepWait;
     while (body.size() < *body_size) {
         std::uint8_t chunk[1024];
@@ -465,6 +440,120 @@ int command_wake(std::span<const std::string_view> args) {
     return fail("{} did not come on within {} seconds. It wakes only if rest mode keeps it connected to the\n"
                 "network (on the console: the rest mode settings), and only for a client it is registered with.",
                 registration.nickname, std::chrono::duration_cast<std::chrono::seconds>(wait).count());
+}
+
+// Opens a session as far as this version goes: the request, the control channel,
+// the session ID and the heartbeats. Nothing is streamed.
+int command_session(std::span<const std::string_view> args) {
+    const Parsed parsed = parse(args, {"--host", "--seconds", "--passcode"}, {"--rest"}, 1);
+    if (!parsed.error.empty()) return usage("session: {}", parsed.error);
+    if (parsed.words.empty()) return usage("session: which console? Give its name or hardware address");
+    std::chrono::milliseconds hold = 3s;
+    if (const auto text = parsed.option("--seconds")) {
+        const auto seconds = parse_seconds(*text, 600);
+        if (!seconds) return usage("session: --seconds takes a number from 1 to 600");
+        hold = *seconds;
+    }
+    auto context = load_context();
+    if (!context) return fail("session: {}", context.error());
+    const StoredConsole* console = context->store.find(parsed.words.front());
+    if (console == nullptr) {
+        return fail("No registered console is called '{}'. '{} consoles' lists them.", parsed.words.front(), PSVP_BINARY);
+    }
+    const proto::RegisteredConsole& registration = console->registration;
+    const std::string host(parsed.option("--host").value_or(console->last_address));
+    if (host.empty()) return fail("The address of {} is not known yet: '{} discover' finds it, or give --host ADDRESS.", registration.nickname, PSVP_BINARY);
+    const auto ip = net::resolve_ipv4(host);
+    if (!ip) return fail("session: {}", ip.error());
+    const net::Address address{*ip, proto::kSessionPort};
+    const std::string address_text = net::ip_to_string(*ip);
+    constexpr auto kStepWait = 5000ms;
+
+    // The request that yields the console's nonce.
+    proto::Key16 nonce{};
+    {
+        auto stream = net::TcpStream::connect(address, Clock::now() + kStepWait);
+        if (!stream) return fail("session: {}", stream.error());
+        const std::string request = proto::build_session_request(registration.kind, address_text, registration.regist_key);
+        if (const auto sent = stream->send_all(net::bytes_of(request), Clock::now() + kStepWait); !sent) return fail("session: {}", sent.error());
+        const auto head = net::read_text_head(*stream, Clock::now() + kStepWait, kMaxResponseHead);
+        if (!head) return fail("session: {}", head.error());
+        const auto parsed_nonce = proto::parse_session_response(head->head);
+        if (!parsed_nonce) return fail("{}: {}.", registration.nickname, proto::describe(parsed_nonce.error()));
+        nonce = *parsed_nonce;
+    }
+    const proto::RpCipher cipher = proto::make_session_cipher(registration.kind, nonce, registration.key);
+
+    // The control channel. One more try if the console does not answer the first.
+    const proto::CtrlRequest request = proto::build_ctrl_request(cipher, address_text, registration.regist_key,
+                                                                 proto::make_device_id(proto::random_key()), proto::Codec::h264);
+    net::TcpStream control;
+    std::optional<net::TextHead> head;
+    std::string last_error;
+    for (int attempt = 0; attempt < 2 && !head; ++attempt) {
+        auto stream = net::TcpStream::connect(address, Clock::now() + kStepWait);
+        if (!stream) return fail("session: {}", stream.error());
+        if (const auto sent = stream->send_all(net::bytes_of(request.text), Clock::now() + kStepWait); !sent) return fail("session: {}", sent.error());
+        auto answer = net::read_text_head(*stream, Clock::now() + kStepWait, kMaxResponseHead);
+        if (answer) {
+            head = std::move(*answer);
+            control = std::move(*stream);
+        } else {
+            last_error = answer.error();
+        }
+    }
+    if (!head) return fail("session: the control channel: {}", last_error);
+    const auto accepted = proto::parse_ctrl_response(cipher, head->head);
+    if (!accepted) return fail("{}: {}.", registration.nickname, proto::describe(accepted.error()));
+    say("{} accepted the session ({}).", registration.nickname, proto::to_string(accepted->model));
+
+    proto::CtrlChannel channel(cipher, request.next_local_number, accepted->next_remote_number);
+    const auto send = [&](std::uint16_t type, std::span<const std::uint8_t> payload = {}) {
+        const auto bytes = channel.encode(type, payload);
+        return bytes && control.send_all(*bytes, Clock::now() + kStepWait).has_value();
+    };
+    if (!channel.feed(head->rest)) return fail("session: the console's messages could not be read");
+
+    bool have_session_id = false;
+    int heartbeats = 0;
+    const auto deadline = Clock::now() + hold;
+    while (Clock::now() < deadline) {
+        while (const auto message = channel.next()) {
+            using namespace proto::ctrl_type;
+            if (message->type == kSessionId) {
+                const auto id = proto::parse_session_id(message->payload);
+                have_session_id = true;
+                if (id) say("Session ID received ({} characters).", id->size());
+                else say("The console sent a session ID in a form this version does not know.");
+            } else if (message->type == kHeartbeatRequest) {
+                if (!send(kHeartbeatReply)) return fail("session: the connection to the console broke");
+                ++heartbeats;
+            } else if (message->type == kLoginPinRequest) {
+                const auto passcode = parsed.option("--passcode");
+                if (!passcode) return fail("{} asks for its login passcode: add --passcode DIGITS.", registration.nickname);
+                if (!send(kLoginPinReply, net::bytes_of(*passcode))) return fail("session: the connection to the console broke");
+            } else if (message->type == kLoginResult) {
+                if (message->payload.empty() || message->payload[0] != 0) return fail("{} did not accept the passcode.", registration.nickname);
+                say("Passcode accepted.");
+            }
+        }
+        std::uint8_t chunk[1024];
+        const auto got = control.receive(chunk, std::min(deadline, Clock::now() + 200ms));
+        if (!got) {
+            if (got.error().ends_with("timed out")) continue;
+            return fail("session: {}", got.error());
+        }
+        if (*got == 0) return fail("{} closed the control channel.", registration.nickname);
+        if (!channel.feed(std::span(chunk).first(*got))) return fail("session: the console's messages could not be read");
+    }
+    if (parsed.flag("--rest")) {
+        if (!send(proto::ctrl_type::kGoToRest)) return fail("session: the connection to the console broke");
+        say("Asked {} to go to rest mode.", registration.nickname);
+    }
+    say("Control channel held for {} seconds; heartbeats answered: {}.",
+        std::chrono::duration_cast<std::chrono::seconds>(hold).count(), heartbeats);
+    if (!have_session_id) return fail("{} never named the session.", registration.nickname);
+    return kDone;
 }
 
 int command_consoles(std::span<const std::string_view> args) {
@@ -586,6 +675,7 @@ int run_command(std::span<const std::string_view> args) {
     if (name == "discover") return command_discover(rest);
     if (name == "register") return command_register(rest);
     if (name == "wake") return command_wake(rest);
+    if (name == "session") return command_session(rest);
     if (name == "consoles") return command_consoles(rest);
     if (name == "forget") return command_forget(rest);
     if (name == "import") return command_import(rest);
@@ -602,6 +692,9 @@ std::string commands_help() {
         "      register with a console that is showing its eight-digit PIN\n"
         "  {0} wake CONSOLE [--host ADDRESS] [--wait SECONDS] [--no-wait]\n"
         "      wake a registered console from rest mode\n"
+        "  {0} session CONSOLE [--host ADDRESS] [--seconds N] [--passcode DIGITS] [--rest]\n"
+        "      open a session's control channel with a console and close it again\n"
+        "      (a connection check: nothing is streamed yet); --rest then sends it to rest mode\n"
         "  {0} consoles [--json]\n"
         "      list the registered consoles\n"
         "  {0} forget CONSOLE\n"

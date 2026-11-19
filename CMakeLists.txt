@@ -41,6 +41,7 @@ add_library(psvp_proto STATIC
     src/proto/hex.cpp
     src/proto/regist.cpp
     src/proto/rp_cipher.cpp
+    src/proto/session.cpp
     src/proto/text_message.cpp)
 target_include_directories(psvp_proto PUBLIC src)
 target_link_libraries(psvp_proto PRIVATE OpenSSL::Crypto)

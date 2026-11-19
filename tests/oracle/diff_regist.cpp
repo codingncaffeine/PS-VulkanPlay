@@ -107,7 +107,20 @@ Outcome diff_regist() {
                     "request cipher");
         }
     }
-    std::fprintf(stderr, "  regist: %d comparisons, %d mismatches\n", outcome.compared, outcome.mismatches);
+    // The cipher of a session, from the console's nonce and the shared secret.
+    int session_rounds = 0;
+    for (int round = 0; round < 20000; ++round) {
+        const ConsoleKind kind = (round & 1) != 0 ? ConsoleKind::ps5 : ConsoleKind::ps4;
+        const Key16 console_nonce = random_key(random);
+        const Key16 secret = random_key(random);
+        ChiakiRPCrypt reference{};
+        chiaki_rpcrypt_init_auth(&reference, target_of(kind), console_nonce.data(), secret.data());
+        const proto::RpCipher ours = proto::make_session_cipher(kind, console_nonce, secret);
+        compare(same(ours.key, reference.bright) && same(ours.nonce, reference.ambassador), "session cipher");
+        ++session_rounds;
+    }
+    std::fprintf(stderr, "  regist: %d comparisons, %d mismatches (%d of them session ciphers)\n", outcome.compared,
+                 outcome.mismatches, session_rounds);
     return outcome;
 }
 
@@ -141,6 +154,12 @@ void print_regist_vectors() {
         std::printf("constexpr std::string_view k_%s_sealed = \"%s\";\n", name, hex(sealed.data(), sealed.size()).c_str());
         std::printf("constexpr std::string_view k_%s_inner = \"%s\";\n", name,
                     hex(payload.data() + 0x1e0, payload.size() - 0x1e0).c_str());
+        // The session cipher for the console nonce 00 11 .. ff and the secret a0 a1 .. af.
+        const Key16 secret{0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xab, 0xac, 0xad, 0xae, 0xaf};
+        ChiakiRPCrypt session{};
+        chiaki_rpcrypt_init_auth(&session, target_of(kind), nonce.data(), secret.data());
+        std::printf("constexpr std::string_view k_%s_session_key = \"%s\";\n", name, hex(session.bright, 16).c_str());
+        std::printf("constexpr std::string_view k_%s_session_nonce = \"%s\";\n", name, hex(session.ambassador, 16).c_str());
     }
 }
 

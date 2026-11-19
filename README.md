@@ -15,6 +15,8 @@ Early development; nothing here is ready for players yet, and there is no stream
 - finding consoles on the network, waking them from rest mode and registering with them, from the command
   line (`ps-vulkanplay --help` lists the commands)
 - taking over the consoles already registered in Chiaki or chiaki-ng (`ps-vulkanplay import`)
+- starting a session with a registered console as far as its control channel (`ps-vulkanplay session`); no
+  picture or sound yet
 
 Releases will appear on the Releases page when there is something to play.
 

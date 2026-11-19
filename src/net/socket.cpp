@@ -227,6 +227,31 @@ std::expected<std::size_t, std::string> TcpStream::receive(std::span<std::uint8_
     }
 }
 
+std::expected<TextHead, std::string> read_text_head(TcpStream& stream, Clock::time_point deadline, std::size_t max_size) {
+    std::vector<std::uint8_t> buffer;
+    while (buffer.size() <= max_size) {
+        const std::string_view text(reinterpret_cast<const char*>(buffer.data()), buffer.size());
+        std::size_t end = text.find("\r\n\r\n");
+        std::size_t skip = 4;
+        if (end == std::string_view::npos) {
+            end = text.find("\n\n");
+            skip = 2;
+        }
+        if (end != std::string_view::npos) {
+            TextHead result;
+            result.head = std::string(text.substr(0, end + skip));
+            result.rest.assign(buffer.begin() + static_cast<std::ptrdiff_t>(end + skip), buffer.end());
+            return result;
+        }
+        std::uint8_t chunk[512];
+        const auto got = stream.receive(chunk, deadline);
+        if (!got) return std::unexpected(got.error());
+        if (*got == 0) return std::unexpected(std::string("the connection was closed before the answer was complete"));
+        buffer.insert(buffer.end(), chunk, chunk + *got);
+    }
+    return std::unexpected(std::string("the answer has no end"));
+}
+
 std::expected<TcpListener, std::string> TcpListener::open(std::uint32_t bind_ip, std::uint16_t port) {
     TcpListener listener;
     listener.fd_ = Fd(::socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, IPPROTO_TCP));

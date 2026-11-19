@@ -7,6 +7,9 @@
 //   psvp_reference_client discover HOST ps5|ps4
 //   psvp_reference_client register HOST ps5|ps4 ACCOUNT_BASE64 PIN
 //   psvp_reference_client wake HOST ps5|ps4 REGIST_KEY
+//   psvp_reference_client session HOST ps5|ps4 REGIST_KEY SECRET_HEX SECONDS
+//       starts a whole session and stops it after SECONDS (the mock console
+//       only goes as far as this project has implemented)
 //
 // Test tool only: built by the oracle lane, never installed.
 #include <stdbool.h>
@@ -23,6 +26,7 @@
 #include <chiaki/discovery.h>
 #include <chiaki/log.h>
 #include <chiaki/regist.h>
+#include <chiaki/session.h>
 
 static volatile int g_done = 0;
 static volatile int g_ok = 0;
@@ -58,6 +62,24 @@ static void on_regist(ChiakiRegistEvent *event, void *user) {
                event->type == CHIAKI_REGIST_EVENT_TYPE_FINISHED_CANCELED ? "canceled" : "failed");
     }
     g_done = 1;
+}
+
+static void on_session_event(ChiakiEvent *event, void *user) {
+    (void)user;
+    if (event->type == CHIAKI_EVENT_QUIT) {
+        printf("reference: session ended: %s\n", chiaki_quit_reason_string(event->quit.reason));
+        g_done = 1;
+    } else if (event->type == CHIAKI_EVENT_LOGIN_PIN_REQUEST) {
+        printf("reference: the console asks for its passcode\n");
+    } else if (event->type == CHIAKI_EVENT_CONNECTED) {
+        printf("reference: connected\n");
+    }
+}
+
+static int hex_value(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    return -1;
 }
 
 int main(int argc, char **argv) {
@@ -122,6 +144,28 @@ int main(int argc, char **argv) {
         const ChiakiErrorCode result = chiaki_discovery_wakeup(&log, NULL, host, credential, ps5);
         printf("reference: wake-up %s\n", result == CHIAKI_ERR_SUCCESS ? "sent" : "not sent");
         return result == CHIAKI_ERR_SUCCESS ? 0 : 1;
+    }
+
+    if (strcmp(command, "session") == 0 && argc == 7) {
+        ChiakiConnectInfo info;
+        memset(&info, 0, sizeof(info));
+        info.ps5 = ps5;
+        info.host = host;
+        strncpy(info.regist_key, argv[4], sizeof(info.regist_key));
+        if (strlen(argv[5]) != 32) return 2;
+        for (int i = 0; i < 16; ++i) info.morning[i] = (uint8_t)((hex_value(argv[5][2 * i]) << 4) | hex_value(argv[5][2 * i + 1]));
+        chiaki_connect_video_profile_preset(&info.video_profile, CHIAKI_VIDEO_RESOLUTION_PRESET_720p, CHIAKI_VIDEO_FPS_PRESET_60);
+        info.video_profile_auto_downgrade = true;
+        static ChiakiSession session;
+        if (chiaki_session_init(&session, &info, &log) != CHIAKI_ERR_SUCCESS) return 3;
+        chiaki_session_set_event_cb(&session, on_session_event, NULL);
+        if (chiaki_session_start(&session) != CHIAKI_ERR_SUCCESS) return 3;
+        wait_done(atoi(argv[6]) * 10);
+        chiaki_session_stop(&session);
+        chiaki_session_join(&session);
+        chiaki_session_fini(&session);
+        printf("reference: session stopped\n");
+        return 0;
     }
 
     fprintf(stderr, "unknown command or wrong number of arguments\n");

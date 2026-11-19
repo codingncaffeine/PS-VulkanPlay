@@ -88,10 +88,24 @@ public:
     [[nodiscard]] std::expected<void, std::string> send_all(std::span<const std::uint8_t> data, Clock::time_point deadline);
     // Up to buffer.size() bytes; 0 when the other side has closed.
     [[nodiscard]] std::expected<std::size_t, std::string> receive(std::span<std::uint8_t> buffer, Clock::time_point deadline);
+    [[nodiscard]] int fd() const noexcept { return fd_.get(); }
+    [[nodiscard]] bool open() const noexcept { return fd_.valid(); }
+    void close() noexcept { fd_.reset(); }
 
 private:
     Fd fd_;
 };
+
+// What was read of a text head (a request or a response up to its blank line),
+// and the bytes that had already arrived after it.
+struct TextHead {
+    std::string head;
+    std::vector<std::uint8_t> rest;
+};
+
+// Reads until the blank line that ends a head of at most `max_size` bytes.
+[[nodiscard]] std::expected<TextHead, std::string> read_text_head(TcpStream& stream, Clock::time_point deadline,
+                                                                 std::size_t max_size);
 
 struct Accepted {
     TcpStream stream;
