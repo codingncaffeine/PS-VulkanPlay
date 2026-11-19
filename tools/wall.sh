@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+# Runs a command the way every test run of the application must run: behind a
+# wall, so that it cannot reach the desktop, the sound devices or the network of
+# the machine it is started on.
+#
+#   tools/wall.sh COMMAND [ARGS...]
+#   tools/wall.sh --check     the control: proves each point below from inside
+#
+# Inside the wall (bubblewrap):
+#   - no sound is possible: /dev/snd and the folder of the PulseAudio and
+#     PipeWire sockets are empty; SDL's dummy audio driver is a second layer only
+#   - no network but loopback: nothing started here can reach a console on the
+#     home network, or anything else
+#   - no process of the desktop exists (own process numbering), and everything
+#     started here ends when the wall does
+#   - the window servers of the desktop cannot be reached; windows open on a
+#     virtual X server whose screen is kept in a file (PSVP_TEST_FB)
+#   - a private home and private XDG folders: never the real profile
+#   - a session bus of its own that can start nothing
+#   - Vulkan runs on the software driver only, without the desktop's layers
+#
+# Where bubblewrap cannot run (a container that forbids it), the command runs
+# without it only if the machine has no sound device at all.
+#
+#   PSVP_TEST_HOME=DIR      keep the private folders in DIR (default: temporary, removed)
+#   PSVP_TEST_SCREEN=WxHxD  the virtual screen (default 1280x1024x24)
+set -euo pipefail
+[ $# -ge 1 ] || { sed -n '2,7p' "$0"; exit 2; }
+HERE="$(cd "$(dirname "$0")" && pwd)"
+RT="/run/user/$(id -u)"
+
+# A mistake in sizing a test run should cost the run, never someone's desktop programs.
+echo 1000 > /proc/self/oom_score_adj 2>/dev/null || true
+
+BWRAP=(--dev-bind / / --unshare-pid --unshare-net --proc /proc --die-with-parent)
+[ -d /dev/snd ] && BWRAP+=(--tmpfs /dev/snd)
+[ -d "$RT" ] && BWRAP+=(--tmpfs "$RT")
+[ -d /tmp/.X11-unix ] && BWRAP+=(--perms 1777 --tmpfs /tmp/.X11-unix)
+WALL=1
+if ! command -v bwrap >/dev/null 2>&1 || ! bwrap "${BWRAP[@]}" true 2>/dev/null; then WALL=0; fi
+has_sound() { [ -n "$(ls -A /dev/snd 2>/dev/null)" ]; }
+
+if [ "$1" = "--check" ]; then
+    if [ "$WALL" = 0 ]; then
+        if has_sound; then echo "wall: CONTROL FAILED, bubblewrap cannot run and this machine has sound devices"; exit 1; fi
+        echo "wall: control ok (no bubblewrap here, and no sound device at all)"; exit 0
+    fi
+    inside() { bwrap "${BWRAP[@]}" -- "$@"; }
+    out="$(inside sh -c 'ls -A /dev/snd 2>/dev/null; for s in "'"$RT"'"/pulse "'"$RT"'"/pipewire-0 "'"$RT"'"/bus; do [ -e "$s" ] && echo "$s"; done; true')"
+    if [ -n "$out" ]; then echo "wall: CONTROL FAILED, reachable inside the wall:"; echo "$out"; exit 1; fi
+    if has_sound; then echo "wall: control ok (sound: $(ls -A /dev/snd | wc -l) devices outside, none inside)"
+    else echo "wall: control ok (sound: this machine has no devices at all)"; fi
+
+    # /proc/net/dev lists the links of the network a process is in (the wall has its own /proc).
+    links_of='awk "NR > 2 { sub(/:.*/, \"\"); gsub(/ /, \"\"); print }" /proc/net/dev | sort | tr "\n" " "'
+    links="$(inside sh -c "$links_of")"
+    if [ "$links" != "lo " ]; then echo "wall: CONTROL FAILED, network links inside the wall: $links"; exit 1; fi
+    echo "wall: control ok (network: only loopback inside, $(sh -c "$links_of" | wc -w) links outside)"
+
+    seen="$(inside sh -c 'ls -d /proc/[0-9]* | wc -l')"
+    if [ "$seen" -gt 8 ]; then echo "wall: CONTROL FAILED, $seen processes are visible inside the wall"; exit 1; fi
+    echo "wall: control ok (processes: $seen visible inside, $(ls -d /proc/[0-9]* | wc -l) outside)"
+
+    servers="$(inside sh -c 'ls -A /tmp/.X11-unix 2>/dev/null; true')"
+    if [ -n "$servers" ]; then echo "wall: CONTROL FAILED, window server sockets inside the wall: $servers"; exit 1; fi
+    echo "wall: control ok (window servers: none reachable inside, $(ls -A /tmp/.X11-unix 2>/dev/null | wc -l) outside)"
+    exit 0
+fi
+
+# Vulkan: the software driver, named explicitly, so a test never loads the desktop's GPU stack.
+icd="${PSVP_TEST_ICD:-}"
+if [ -z "$icd" ]; then
+    for candidate in /usr/share/vulkan/icd.d/lvp_icd*.json /etc/vulkan/icd.d/lvp_icd*.json; do
+        [ -f "$candidate" ] && { icd="$candidate"; break; }
+    done
+fi
+if [ -z "$icd" ]; then
+    echo "wall: no software Vulkan driver found (Arch: vulkan-swrast, Debian: mesa-vulkan-drivers, Alpine: mesa-vulkan-swrast)" >&2
+    exit 5
+fi
+
+if [ -n "${PSVP_TEST_HOME:-}" ]; then
+    TMP="$(realpath -m "$PSVP_TEST_HOME")"; mkdir -p "$TMP"
+else
+    TMP="$(mktemp -d "${TMPDIR:-/tmp}/psvp-wall.XXXXXX")"
+    trap 'rm -rf "$TMP"' EXIT
+fi
+mkdir -p "$TMP/home" "$TMP/config" "$TMP/data" "$TMP/state" "$TMP/cache" "$TMP/rt" "$TMP/fb"
+chmod 700 "$TMP/rt"
+unset WAYLAND_DISPLAY WAYLAND_SOCKET DISPLAY DBUS_SESSION_BUS_ADDRESS
+ENVS=(HOME="$TMP/home" XDG_CONFIG_HOME="$TMP/config" XDG_DATA_HOME="$TMP/data" XDG_STATE_HOME="$TMP/state"
+      XDG_CACHE_HOME="$TMP/cache" XDG_RUNTIME_DIR="$TMP/rt" XDG_SESSION_TYPE=x11
+      PULSE_SERVER=unix:/nonexistent/psvp-wall PIPEWIRE_REMOTE=/nonexistent/psvp-wall
+      SDL_AUDIO_DRIVER=dummy SDL_AUDIODRIVER=dummy SDL_VIDEO_DRIVER=x11 SDL_VIDEODRIVER=x11
+      GDK_BACKEND=x11 NO_AT_BRIDGE=1
+      VK_DRIVER_FILES="$icd" VK_ICD_FILENAMES="$icd" "VK_LOADER_LAYERS_DISABLE=~implicit~"
+      PSVP_TEST_TMP="$TMP" PSVP_TEST_FB="$TMP/fb/Xvfb_screen0" PSVP_TEST_WALL="$WALL"
+      PSVP_TEST_SCREEN="${PSVP_TEST_SCREEN:-1280x1024x24}" PSVP_TEST_BUS="$HERE/isolated-bus.conf")
+
+# The X server picks a free display number itself and reports it, so runs started
+# at the same moment never share one. It is ours ($!), and it is stopped by us.
+inner='
+  rm -f "$PSVP_TEST_TMP/display"
+  Xvfb -displayfd 3 -screen 0 "$PSVP_TEST_SCREEN" -nolisten tcp -fbdir "$PSVP_TEST_TMP/fb" \
+      3>"$PSVP_TEST_TMP/display" 2>/dev/null &
+  server=$!
+  for _ in $(seq 200); do [ -s "$PSVP_TEST_TMP/display" ] && break; sleep 0.05; done
+  if [ ! -s "$PSVP_TEST_TMP/display" ]; then
+    echo "wall: the virtual X server did not start" >&2; kill $server 2>/dev/null; exit 4
+  fi
+  export DISPLAY=":$(cat "$PSVP_TEST_TMP/display")"
+  if command -v dbus-run-session >/dev/null 2>&1; then
+    dbus-run-session --config-file="$PSVP_TEST_BUS" -- "$@"; rc=$?
+  else
+    DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent/psvp-wall "$@"; rc=$?
+  fi
+  kill $server 2>/dev/null; wait $server 2>/dev/null
+  exit $rc
+'
+
+if [ "$WALL" = 0 ]; then
+    if has_sound; then echo "wall: bubblewrap cannot run and this machine has sound devices; refusing to run" >&2; exit 3; fi
+    env "${ENVS[@]}" bash -c "$inner" wall "$@"
+else
+    bwrap "${BWRAP[@]}" -- env "${ENVS[@]}" bash -c "$inner" wall "$@"
+fi

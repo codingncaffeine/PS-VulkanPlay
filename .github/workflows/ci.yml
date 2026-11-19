@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# A newer push to a pull request replaces its older run; runs on main are never canceled.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  PSVP_JOBS: 4
+
+# Every job builds from source in a container of the distribution it names, with
+# that distribution's own compiler and libraries and warnings as errors, runs the
+# tests twice, and starts the application on a virtual screen
+# (tools/ci/build-and-check.sh).
+jobs:
+  linux-glibc:
+    name: Debian 13 (glibc, GCC)
+    runs-on: ubuntu-latest
+    container: debian:13
+    timeout-minutes: 10
+    steps:
+      - name: Git, for the checkout
+        run: apt-get update -qq && apt-get install -y -qq --no-install-recommends git ca-certificates > /dev/null
+      - uses: actions/checkout@v4
+      - name: Packages
+        run: tools/ci/deps.sh
+      - name: Build, test, start
+        run: tools/ci/build-and-check.sh
+
+  linux-musl:
+    name: Alpine (musl, GCC)
+    runs-on: ubuntu-latest
+    container: alpine:latest
+    timeout-minutes: 10
+    steps:
+      - name: Bash and Git, for the checkout and the scripts
+        run: apk add --no-cache -q bash git
+      - uses: actions/checkout@v4
+      - name: Packages
+        run: tools/ci/deps.sh
+      - name: Build, test, start
+        run: tools/ci/build-and-check.sh
+
+  linux-clang-libcxx:
+    name: Debian 13 (Clang, libc++)
+    runs-on: ubuntu-latest
+    container: debian:13
+    timeout-minutes: 10
+    steps:
+      - name: Git, for the checkout
+        run: apt-get update -qq && apt-get install -y -qq --no-install-recommends git ca-certificates > /dev/null
+      - uses: actions/checkout@v4
+      - name: Packages
+        run: tools/ci/deps.sh clang
+      - name: Build, test, start
+        run: tools/ci/build-and-check.sh --compiler clang-libcxx
+
+  linux-sanitizers:
+    name: Debian 13 (AddressSanitizer, UndefinedBehaviorSanitizer)
+    runs-on: ubuntu-latest
+    container: debian:13
+    timeout-minutes: 10
+    steps:
+      - name: Git, for the checkout
+        run: apt-get update -qq && apt-get install -y -qq --no-install-recommends git ca-certificates > /dev/null
+      - uses: actions/checkout@v4
+      - name: Packages
+        run: tools/ci/deps.sh
+      - name: Build, test, start
+        run: tools/ci/build-and-check.sh --sanitize address
