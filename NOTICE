@@ -1,0 +1,44 @@
+PS VulkanPlay
+Copyright (C) 2026 the PS VulkanPlay authors
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU Affero General Public License as published by the Free
+Software Foundation, version 3. It is distributed in the hope that it will be
+useful, but WITHOUT ANY WARRANTY; see the file LICENSE for the details.
+
+
+Where the knowledge comes from
+------------------------------
+
+The Remote Play protocol has no public specification. What is known about it
+was worked out by the authors of two free-software projects, and this project
+learns from their published work:
+
+  Chiaki      Florian Märkl and contributors
+              https://git.sr.ht/~thestr4ng3r/chiaki
+  chiaki-ng   (first released as chiaki4deck) Street Pea and contributors
+              https://github.com/chiaki-ng/chiaki-ng
+
+Both are licensed under the GNU Affero General Public License, version 3, with
+an exception for linking OpenSSL.
+
+How they are used here:
+
+  - The source code in this repository is written by the PS VulkanPlay authors.
+    No source file of Chiaki or chiaki-ng is included in it.
+  - Their source is read to learn how the protocol behaves. What is learned is
+    written down under docs/protocol/ and implemented from there.
+  - The differential tests (tools/oracle/) download chiaki-ng at a fixed commit
+    into a scratch folder and compile parts of it into a test program, to check
+    that our code gives the same results. That program is a test tool: it is
+    not installed, packaged or distributed.
+  - Fixed values that every client must send to be understood by a console are,
+    by necessity, the same values in every implementation.
+
+
+Trademarks
+----------
+
+PlayStation, PS5 and PS4 are trademarks of Sony Interactive Entertainment Inc.
+Vulkan is a trademark of the Khronos Group Inc. This project is not affiliated
+with, endorsed or certified by either.

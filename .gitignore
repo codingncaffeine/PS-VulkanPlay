@@ -1,0 +1,24 @@
+# Local plans, notes and references: never published
+/local-notes/
+
+# Dev build with its one launcher (bin/ps-vulkanplay), refreshed by the build
+/bin/
+
+# Build trees and scratch work
+/build*/
+/scratch/
+
+# Release artifacts and their download cache
+/packaging/out/
+/packaging/cache/
+
+# Captures and anything taken from a console or an account
+*.pcap
+*.pcapng
+/captures/
+
+# Editors
+.vscode/
+.idea/
+*.swp
+compile_commands.json
