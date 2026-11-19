@@ -1,0 +1,8 @@
+// Generated from src/app/version.h.in; the version itself is set in the top CMakeLists.txt.
+#pragma once
+
+#define PSVP_VERSION "@PROJECT_VERSION@"
+#define PSVP_NAME "PS VulkanPlay"
+#define PSVP_BINARY "ps-vulkanplay"
+#define PSVP_APP_ID "io.github.codingncaffeine.PSVulkanPlay"
+#define PSVP_BUILD_TYPE "@CMAKE_BUILD_TYPE@"

@@ -1,0 +1,68 @@
+{
+    "version": 6,
+    "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+    "configurePresets": [
+        {
+            "name": "base",
+            "hidden": true,
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/${presetName}",
+            "cacheVariables": { "PSVP_WERROR": "ON" }
+        },
+        {
+            "name": "release",
+            "displayName": "Release (the build bin/ps-vulkanplay comes from)",
+            "inherits": "base",
+            "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+        },
+        {
+            "name": "san",
+            "displayName": "AddressSanitizer + UndefinedBehaviorSanitizer",
+            "inherits": "base",
+            "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo", "PSVP_SANITIZE": "address" }
+        },
+        {
+            "name": "tsan",
+            "displayName": "ThreadSanitizer",
+            "inherits": "base",
+            "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo", "PSVP_SANITIZE": "thread" }
+        },
+        {
+            "name": "clang-libcxx",
+            "displayName": "clang with libc++ (the other compiler and the other standard library)",
+            "inherits": "base",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "CMAKE_CXX_COMPILER": "clang++",
+                "CMAKE_CXX_FLAGS": "-stdlib=libc++",
+                "CMAKE_EXE_LINKER_FLAGS": "-stdlib=libc++"
+            }
+        },
+        {
+            "name": "fuzz",
+            "displayName": "libFuzzer targets with AddressSanitizer (clang)",
+            "inherits": "base",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+                "CMAKE_CXX_COMPILER": "clang++",
+                "PSVP_SANITIZE": "address",
+                "PSVP_FUZZ": "ON",
+                "PSVP_BUILD_APP": "OFF"
+            }
+        }
+    ],
+    "buildPresets": [
+        { "name": "release", "configurePreset": "release" },
+        { "name": "san", "configurePreset": "san" },
+        { "name": "tsan", "configurePreset": "tsan" },
+        { "name": "clang-libcxx", "configurePreset": "clang-libcxx" },
+        { "name": "fuzz", "configurePreset": "fuzz" }
+    ],
+    "testPresets": [
+        { "name": "release", "configurePreset": "release", "output": { "outputOnFailure": true } },
+        { "name": "san", "configurePreset": "san", "output": { "outputOnFailure": true } },
+        { "name": "tsan", "configurePreset": "tsan", "output": { "outputOnFailure": true } },
+        { "name": "clang-libcxx", "configurePreset": "clang-libcxx", "output": { "outputOnFailure": true } },
+        { "name": "fuzz", "configurePreset": "fuzz", "output": { "outputOnFailure": true } }
+    ]
+}
