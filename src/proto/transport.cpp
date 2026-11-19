@@ -1,6 +1,7 @@
 #include "proto/transport.h"
 
 #include <algorithm>
+#include <utility>
 
 namespace psvp::proto::transport {
 namespace {
@@ -181,12 +182,84 @@ std::optional<std::vector<std::uint8_t>> ConsoleHandshake::on_datagram(std::span
     return std::nullopt;
 }
 
+// ---- Packet authentication -----------------------------------------------
+
+std::optional<MacLayout> mac_layout(std::uint8_t first_byte) noexcept {
+    switch (first_byte & 0x0f) {
+    case packet_kind::kControl: return MacLayout{5, 9, false};
+    case packet_kind::kVideo:
+    case packet_kind::kAudio: return MacLayout{10, 14, true};
+    case packet_kind::kCongestion: return MacLayout{7, 11, false};
+    case packet_kind::kInputHistory:
+    case packet_kind::kInputState: return MacLayout{8, 4, true};
+    default: return std::nullopt;
+    }
+}
+
+namespace {
+
+constexpr std::size_t kMacSize = 4;
+constexpr std::size_t kPositionSize = 4;
+
+// The layout of a datagram that is long enough to hold its two fields.
+std::optional<MacLayout> layout_of(std::span<const std::uint8_t> datagram) {
+    if (datagram.empty()) return std::nullopt;
+    const auto layout = mac_layout(datagram[0]);
+    if (!layout || datagram.size() < layout->mac_offset + kMacSize || datagram.size() < layout->position_offset + kPositionSize) {
+        return std::nullopt;
+    }
+    return layout;
+}
+
+}  // namespace
+
+std::optional<Mac4> datagram_mac(const StreamCipher& cipher, std::uint64_t key_position, std::span<const std::uint8_t> datagram) {
+    const auto layout = layout_of(datagram);
+    if (!layout) return std::nullopt;
+    // The code is computed over the datagram with the code's own bytes as zero and,
+    // for some kinds, the key position's too.
+    static constexpr std::array<std::uint8_t, 4> kZero{};
+    struct Hole {
+        std::size_t at;
+        std::size_t size;
+    };
+    Hole first{layout->mac_offset, kMacSize};
+    Hole second{layout->position_offset, layout->position_counts ? 0 : kPositionSize};
+    if (second.at < first.at) std::swap(first, second);
+    const auto zeros = [](const Hole& hole) { return std::span<const std::uint8_t>(kZero).first(hole.size); };
+    return cipher.mac(key_position, {datagram.first(first.at), zeros(first),
+                                     datagram.subspan(first.at + first.size, second.at - first.at - first.size), zeros(second),
+                                     datagram.subspan(second.at + second.size)});
+}
+
+bool seal_datagram(const StreamCipher& cipher, std::uint64_t key_position, std::span<std::uint8_t> datagram) {
+    const auto layout = layout_of(datagram);
+    if (!layout) return false;
+    put32(datagram, layout->position_offset, static_cast<std::uint32_t>(key_position));
+    const auto code = datagram_mac(cipher, key_position, datagram);
+    if (!code) return false;
+    std::copy(code->begin(), code->end(), datagram.begin() + static_cast<std::ptrdiff_t>(layout->mac_offset));
+    return true;
+}
+
+bool verify_datagram(ReceiveKeys& keys, std::span<const std::uint8_t> datagram) {
+    const auto layout = layout_of(datagram);
+    if (!layout) return false;
+    const std::uint64_t position = keys.positions.extend(get32(datagram, layout->position_offset));
+    const auto code = datagram_mac(keys.cipher, position, datagram);
+    if (!code || !std::equal(code->begin(), code->end(), datagram.begin() + static_cast<std::ptrdiff_t>(layout->mac_offset))) return false;
+    keys.positions.accept(position);
+    return true;
+}
+
 // ---- Messages that must arrive -------------------------------------------
 
 namespace {
 
-constexpr std::size_t kDataHeaderSize = 9;
+constexpr std::size_t kChunkHeaderSize = 8;  // sequence, channel, two zero bytes
+constexpr std::size_t kDataHeaderSize = 9;   // and, in a message's first chunk, the kind of data
 constexpr std::size_t kDataAckSize = 12;
+constexpr std::size_t kPacketHeaderSize = 1 + kHeaderSize;
 
 }  // namespace
 
@@ -228,29 +301,108 @@ std::optional<DataAck> parse_data_ack(std::span<const std::uint8_t> payload) {
 }
 
 Messenger::Messenger(std::uint32_t local_tag, std::uint32_t remote_tag, std::uint32_t first_local_sequence,
-                     std::uint32_t first_remote_sequence)
-    : local_tag_(local_tag), remote_tag_(remote_tag), next_local_(first_local_sequence), next_remote_(first_remote_sequence) {}
+                     std::uint32_t first_remote_sequence, Keys keys)
+    : local_tag_(local_tag), remote_tag_(remote_tag), next_local_(first_local_sequence), next_remote_(first_remote_sequence), keys_(keys) {}
+
+Messenger::Sent Messenger::send_chunk(std::uint8_t flags, std::uint16_t channel, bool first, std::span<const std::uint8_t> data,
+                                      TimePoint now) {
+    // The packet is built in a buffer of its final size.
+    const std::size_t header = first ? kDataHeaderSize : kChunkHeaderSize;
+    std::vector<std::uint8_t> datagram(kPacketHeaderSize + header + data.size());
+    const std::uint32_t sequence = next_local_++;
+    datagram[0] = packet_kind::kControl;
+    put32(datagram, 1, remote_tag_);
+    datagram[13] = chunk::kData;
+    datagram[14] = flags;
+    put16(datagram, 15, static_cast<std::uint16_t>(header + data.size() + 4));
+    put32(datagram, kPacketHeaderSize, sequence);
+    put16(datagram, kPacketHeaderSize + 4, channel);
+    // The two bytes after the channel stay zero; a first chunk's kind of data is "message", which is zero too.
+    std::copy(data.begin(), data.end(), datagram.begin() + static_cast<std::ptrdiff_t>(kPacketHeaderSize + header));
+    if (send_keys_) (void)seal_datagram(send_keys_->cipher, send_keys_->take(data.size()), datagram);
+    unacknowledged_.push_back(Pending{sequence, 0, now, datagram});
+    return Sent{sequence, std::move(datagram)};
+}
 
 std::optional<Messenger::Sent> Messenger::send(std::uint8_t flags, std::uint16_t channel, std::span<const std::uint8_t> data,
                                                TimePoint now) {
     if (unacknowledged_.size() >= kWindow) return std::nullopt;
-    ControlPacket packet;
-    packet.tag = remote_tag_;
-    packet.chunk_type = chunk::kData;
-    packet.chunk_flags = flags;
-    DataChunk chunk;
-    chunk.sequence = next_local_++;
-    chunk.channel = channel;
-    chunk.data.assign(data.begin(), data.end());
-    packet.payload = encode_data_chunk(chunk);
-    Sent sent{chunk.sequence, encode_control(packet)};
-    unacknowledged_.push_back(Pending{chunk.sequence, 0, now, sent.datagram});
+    return send_chunk(flags, channel, true, data, now);
+}
+
+std::optional<std::vector<Messenger::Sent>> Messenger::send_message(std::uint16_t channel, std::span<const std::uint8_t> data,
+                                                                    TimePoint now, std::size_t max_datagram) {
+    if (max_datagram < kSmallestDatagram) return std::nullopt;
+    const std::size_t first_room = max_datagram - kPacketHeaderSize - kDataHeaderSize;
+    const std::size_t later_room = max_datagram - kPacketHeaderSize - kChunkHeaderSize;
+    const std::size_t chunks = data.size() <= first_room ? 1 : 1 + (data.size() - first_room + later_room - 1) / later_room;
+    if (unacknowledged_.size() + chunks > kWindow) return std::nullopt;
+
+    std::vector<Sent> sent;
+    sent.reserve(chunks);
+    std::span<const std::uint8_t> rest = data;
+    for (std::size_t i = 0; i < chunks; ++i) {
+        const std::size_t room = i == 0 ? first_room : later_room;
+        const std::size_t size = std::min(room, rest.size());
+        const bool last = i + 1 == chunks;
+        sent.push_back(send_chunk(last ? chunk_flag::kLast : 0, channel, i == 0, rest.first(size), now));
+        rest = rest.subspan(size);
+    }
     return sent;
+}
+
+void Messenger::hand_over(Received& result) {
+    while (early_[0]) {
+        Held held = std::move(*early_[0]);
+        std::move(early_.begin() + 1, early_.end(), early_.begin());
+        early_.back().reset();
+        ++next_remote_;
+        delivered_any_ = true;
+        ack_due_ = true;
+
+        if (!partial_) {
+            // A message's first chunk says what kind of data it is.
+            if (held.rest.empty()) continue;
+            DataChunk message;
+            message.channel = held.channel;
+            message.data_type = held.rest.front();
+            message.data.assign(held.rest.begin() + 1, held.rest.end());
+            message.chunks = 0;
+            message.authentic = true;
+            partial_ = std::move(message);
+        } else {
+            partial_->data.insert(partial_->data.end(), held.rest.begin(), held.rest.end());
+        }
+        partial_->sequence = held.sequence;
+        partial_->flags = held.flags;
+        partial_->key_position = held.key_position;
+        partial_->mac = held.mac;
+        partial_->authentic = partial_->authentic && held.authentic;
+        ++partial_->chunks;
+        if (partial_->data.size() > kMaxMessage) {
+            partial_.reset();
+            continue;
+        }
+        if ((held.flags & chunk_flag::kLast) == 0) continue;
+        result.delivered.push_back(std::move(*partial_));
+        partial_.reset();
+        // The message just handed over may be the one that brings the keys.
+        if (keys_ == Keys::expected && !receive_keys_) break;
+    }
 }
 
 Messenger::Received Messenger::on_packet(const ControlPacket& packet) {
     Received result;
     if (packet.tag != local_tag_) return result;
+    bool authentic = false;
+    if (receive_keys_) {
+        // What was read writes back to the same bytes.
+        if (!verify_datagram(*receive_keys_, encode_control(packet))) {
+            ++rejected_;
+            return result;
+        }
+        authentic = true;
+    }
 
     if (packet.chunk_type == chunk::kDataAck) {
         const auto ack = parse_data_ack(packet.payload);
@@ -262,36 +414,63 @@ Messenger::Received Messenger::on_packet(const ControlPacket& packet) {
         });
         return result;
     }
-    if (packet.chunk_type != chunk::kData) return result;
-    auto chunk = parse_data_chunk(packet.payload);
-    if (!chunk) return result;
-    chunk->flags = packet.chunk_flags;
+    if (packet.chunk_type != chunk::kData || packet.payload.size() < kChunkHeaderSize) return result;
+    const std::span<const std::uint8_t> payload(packet.payload);
+    Held held;
+    held.sequence = get32(payload, 0);
+    held.channel = get16(payload, 4);
+    held.flags = packet.chunk_flags;
+    held.rest.assign(payload.begin() + kChunkHeaderSize, payload.end());
+    held.key_position = packet.key_position;
+    held.mac = packet.mac;
+    held.authentic = authentic;
 
-    const std::uint32_t ahead = chunk->sequence - next_remote_;
-    bool acknowledge = false;
+    const std::uint32_t ahead = held.sequence - next_remote_;
     if (ahead < kWindow) {
-        if (!early_[ahead]) early_[ahead] = std::move(*chunk);
-        // Hand over what is now in order.
-        while (early_[0]) {
-            result.delivered.push_back(std::move(*early_[0]));
-            std::move(early_.begin() + 1, early_.end(), early_.begin());
-            early_.back().reset();
-            ++next_remote_;
-            delivered_any_ = true;
-            acknowledge = true;
+        if (!early_[ahead]) {
+            if (keys_ == Keys::expected && !receive_keys_) held.unchecked = encode_control(packet);
+            early_[ahead] = std::move(held);
         }
-    } else if (sequence_before(chunk->sequence, next_remote_)) {
+        hand_over(result);
+    } else if (sequence_before(held.sequence, next_remote_)) {
         // Seen before: the acknowledgment for it was lost, so it is said again.
-        acknowledge = delivered_any_;
-    }
-    if (acknowledge) {
-        ControlPacket reply;
-        reply.tag = remote_tag_;
-        reply.chunk_type = chunk::kDataAck;
-        reply.payload = encode_data_ack(DataAck{next_remote_ - 1, kReceiveWindow, 0, 0});
-        result.reply = encode_control(reply);
+        if (delivered_any_) ack_due_ = true;
     }
     return result;
+}
+
+Messenger::Received Messenger::pump() {
+    Received result;
+    hand_over(result);
+    return result;
+}
+
+std::optional<std::vector<std::uint8_t>> Messenger::take_ack() {
+    if (!ack_due_) return std::nullopt;
+    ack_due_ = false;
+    ControlPacket reply;
+    reply.tag = remote_tag_;
+    reply.chunk_type = chunk::kDataAck;
+    reply.payload = encode_data_ack(DataAck{next_remote_ - 1, kReceiveWindow, 0, 0});
+    std::vector<std::uint8_t> datagram = encode_control(reply);
+    if (send_keys_) (void)seal_datagram(send_keys_->cipher, send_keys_->take(datagram.size()), datagram);
+    return datagram;
+}
+
+void Messenger::use_keys(std::shared_ptr<SendKeys> send, std::shared_ptr<ReceiveKeys> receive) {
+    send_keys_ = std::move(send);
+    receive_keys_ = std::move(receive);
+    if (!receive_keys_) return;
+    for (auto& slot : early_) {
+        if (!slot || slot->unchecked.empty()) continue;
+        if (verify_datagram(*receive_keys_, slot->unchecked)) {
+            slot->authentic = true;
+            slot->unchecked.clear();
+        } else {
+            ++rejected_;
+            slot.reset();
+        }
+    }
 }
 
 Messenger::Timer Messenger::on_timer(TimePoint now) {

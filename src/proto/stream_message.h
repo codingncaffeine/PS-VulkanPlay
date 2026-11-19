@@ -16,8 +16,15 @@ namespace psvp::proto {
 namespace message_type {
 inline constexpr std::uint32_t kBig = 0;
 inline constexpr std::uint32_t kBang = 1;
+inline constexpr std::uint32_t kHeartbeat = 3;
+inline constexpr std::uint32_t kCorruptFrame = 5;
 inline constexpr std::uint32_t kDisconnect = 8;
 inline constexpr std::uint32_t kProbe = 12;
+inline constexpr std::uint32_t kStreamInfo = 13;
+inline constexpr std::uint32_t kStreamInfoAck = 14;
+inline constexpr std::uint32_t kConnectionQuality = 16;
+inline constexpr std::uint32_t kControllerConnection = 21;
+inline constexpr std::uint32_t kKeyframeRequest = 25;
 inline constexpr std::uint32_t kProtocolRequest = 31;
 inline constexpr std::uint32_t kProtocolRequestAck = 32;
 }  // namespace message_type
@@ -86,9 +93,44 @@ struct ProtocolRequestAck {
     friend bool operator==(const ProtocolRequestAck&, const ProtocolRequestAck&) = default;
 };
 
+// One picture size the console can send, with the header its decoder needs first.
+struct StreamResolution {
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    std::vector<std::uint8_t> video_header;
+    friend bool operator==(const StreamResolution&, const StreamResolution&) = default;
+};
+
+// What a stream will carry. The console sends it once the keys exist; the
+// client sends one too, with only the sound format of its microphone.
+struct StreamInfo {
+    static constexpr std::size_t kMaxResolutions = 8;  // further ones are not kept
+
+    std::vector<StreamResolution> resolutions;
+    std::vector<std::uint8_t> audio_header;  // an AudioHeader in its fourteen-byte form
+    std::optional<std::uint32_t> start_timeout;
+    std::optional<std::uint32_t> afk_timeout;
+    std::optional<std::uint32_t> afk_timeout_disconnect;
+    std::optional<std::uint32_t> congestion_control_interval;
+    friend bool operator==(const StreamInfo&, const StreamInfo&) = default;
+};
+
+namespace controller_type {
+inline constexpr std::uint32_t kDualShock4 = 2;
+inline constexpr std::uint32_t kDualSense = 6;
+}  // namespace controller_type
+
+// "A controller of this type is (dis)connected."
+struct ControllerConnection {
+    std::optional<std::uint32_t> controller_id;
+    std::optional<bool> connected;
+    std::optional<std::uint32_t> type;
+    friend bool operator==(const ControllerConnection&, const ControllerConnection&) = default;
+};
+
 struct StreamMessage {
     using Body = std::variant<std::monostate, BigMessage, BangMessage, DisconnectMessage, ProbeEcho, ProbeMtu,
-                              ProbeClientMtu, ProtocolRequest, ProtocolRequestAck>;
+                              ProbeClientMtu, ProtocolRequest, ProtocolRequestAck, StreamInfo, ControllerConnection>;
     std::uint32_t type = 0;
     Body body;  // nothing for a type without a body here, or whose body was missing
 
@@ -97,11 +139,28 @@ struct StreamMessage {
 };
 
 [[nodiscard]] StreamMessage make_message(StreamMessage::Body body);
+// A message that is its type alone: a heartbeat, the answer to the stream information, a keyframe request.
+[[nodiscard]] StreamMessage make_plain_message(std::uint32_t type);
 
 [[nodiscard]] std::vector<std::uint8_t> encode_message(const StreamMessage& message);
 
 // Nothing for bytes that are not a message, or for a known type whose body is
 // present but lacks a field that the type requires.
 [[nodiscard]] std::optional<StreamMessage> parse_message(std::span<const std::uint8_t> bytes);
+
+// The format of a sound stream, as it travels in the stream information.
+struct AudioHeader {
+    static constexpr std::size_t kSize = 14;
+
+    std::uint8_t channels = 2;
+    std::uint8_t bits = 16;
+    std::uint32_t rate = 48000;
+    std::uint32_t frame_size = 480;  // samples per frame
+    std::uint32_t unknown = 1;       // always 1 in what was seen
+    friend bool operator==(const AudioHeader&, const AudioHeader&) = default;
+};
+
+[[nodiscard]] std::vector<std::uint8_t> encode_audio_header(const AudioHeader& header);
+[[nodiscard]] std::optional<AudioHeader> parse_audio_header(std::span<const std::uint8_t> bytes);
 
 }  // namespace psvp::proto

@@ -4,9 +4,13 @@
 #include <charconv>
 #include <chrono>
 #include <cstdio>
+#include <array>
+#include <expected>
 #include <format>
 #include <fstream>
+#include <functional>
 #include <iterator>
+#include <map>
 #include <optional>
 #include <thread>
 #include <vector>
@@ -17,11 +21,16 @@
 #include "app/json.h"
 #include "app/paths.h"
 #include "net/socket.h"
+#include "proto/base64.h"
 #include "proto/discovery.h"
 #include "proto/hex.h"
 #include "proto/probe.h"
 #include "proto/regist.h"
+#include "proto/key_exchange.h"
+#include "proto/rp_cipher.h"
 #include "proto/session.h"
+#include "proto/stream_message.h"
+#include "proto/stream_setup.h"
 #include "proto/transport.h"
 #include "psvp/version.h"
 
@@ -494,13 +503,30 @@ struct ProbeOutcome {
     int pongs = 0;
 };
 
-// The transport's opening handshake on the console's probe port, then the network probe.
-std::expected<ProbeOutcome, std::string> probe_network(const net::Address& console) {
+std::uint32_t random_number() {
+    const proto::Key16 bytes = proto::random_key();
+    return (std::uint32_t{bytes[0]} << 24) | (std::uint32_t{bytes[1]} << 16) | (std::uint32_t{bytes[2]} << 8) | std::uint32_t{bytes[3]};
+}
+
+// While a session's datagrams are waited for, its control channel wants its
+// heartbeats answered: no wait is longer than this before `service` runs again.
+constexpr auto kServiceEvery = 50ms;
+// Returns false once the control channel has failed; the wait in progress then ends.
+using Service = std::function<bool()>;
+
+// A connection of the stream transport that has done its opening handshake.
+struct Transport {
+    net::UdpSocket socket;
+    net::Address console;
+    std::uint32_t tag = 0;
+    proto::transport::Endpoint endpoint;
+};
+
+std::expected<Transport, std::string> open_transport(const net::Address& console, const Service& service) {
     namespace transport = proto::transport;
     auto socket = net::UdpSocket::open(net::kAnyIp, 0, 0, false);
     if (!socket) return std::unexpected(socket.error());
-    const proto::Key16 random = proto::random_key();
-    const std::uint32_t tag = (std::uint32_t{random[0]} << 24) | (std::uint32_t{random[1]} << 16) | (std::uint32_t{random[2]} << 8) | 1U;
+    const std::uint32_t tag = random_number() | 1U;
     transport::ClientHandshake handshake(tag);
     auto out = handshake.start(Clock::now());
     while (true) {
@@ -509,33 +535,41 @@ std::expected<ProbeOutcome, std::string> probe_network(const net::Address& conso
         }
         if (handshake.state() == transport::ClientHandshake::State::connected) break;
         if (handshake.state() == transport::ClientHandshake::State::failed) return std::unexpected(handshake.failure());
-        const auto datagram = socket->receive(handshake.deadline());
+        if (!service()) return std::unexpected(std::string("the control channel failed"));
+        const auto datagram = socket->receive(std::min(handshake.deadline(), Clock::now() + kServiceEvery));
         if (!datagram) return std::unexpected(datagram.error());
         if (*datagram) {
             out = (*datagram)->from == console ? handshake.on_datagram((*datagram)->data, Clock::now()) : std::nullopt;
         } else {
-            out = handshake.on_timeout(Clock::now());
+            out = Clock::now() >= handshake.deadline() ? handshake.on_timeout(Clock::now()) : std::nullopt;
         }
     }
+    return Transport{std::move(*socket), console, tag, handshake.console()};
+}
+
+// The transport's opening handshake on the console's probe port, then the network probe.
+std::expected<ProbeOutcome, std::string> probe_network(const net::Address& console, const Service& service) {
+    namespace transport = proto::transport;
+    auto link = open_transport(console, service);
+    if (!link) return std::unexpected(link.error());
 
     ProbeOutcome outcome;
-    outcome.console = handshake.console();
-    transport::ClientProbe probe(tag, handshake.console(), [] {
-        const proto::Key16 bytes = proto::random_key();
-        return (std::uint32_t{bytes[0]} << 24) | (std::uint32_t{bytes[1]} << 16) | (std::uint32_t{bytes[2]} << 8) | std::uint32_t{bytes[3]};
-    });
+    outcome.console = link->endpoint;
+    transport::ClientProbe probe(link->tag, link->endpoint, random_number);
     transport::Datagrams sending = probe.start(Clock::now());
     while (true) {
         for (const auto& datagram : sending) {
             // A size ping that the system refuses to send did not pass; the probe finds that out by its silence.
-            (void)socket->send_to(console, datagram);
+            (void)link->socket.send_to(console, datagram);
         }
+        sending.clear();
         if (probe.state() != transport::ClientProbe::State::running) break;
-        const auto datagram = socket->receive(probe.deadline());
+        if (!service()) return std::unexpected(std::string("the control channel failed"));
+        const auto datagram = link->socket.receive(std::min(probe.deadline(), Clock::now() + kServiceEvery));
         if (!datagram) return std::unexpected(datagram.error());
         if (*datagram) {
-            sending = (*datagram)->from == console ? probe.on_datagram((*datagram)->data, Clock::now()) : transport::Datagrams{};
-        } else {
+            if ((*datagram)->from == console) sending = probe.on_datagram((*datagram)->data, Clock::now());
+        } else if (Clock::now() >= probe.deadline()) {
             sending = probe.on_timeout(Clock::now());
         }
     }
@@ -545,11 +579,48 @@ std::expected<ProbeOutcome, std::string> probe_network(const net::Address& conso
     return outcome;
 }
 
-// Opens a session as far as this version goes: the request, the control channel,
-// the session ID and the heartbeats, then the transport's handshake and the network
-// probe. Nothing is streamed.
+// A session ID of the client's own making, in the form other clients fall back
+// to: the seconds of a clock, then 48 random bytes in base64.
+std::string invented_session_id() {
+    std::array<std::uint8_t, 48> random{};
+    for (std::size_t i = 0; i < random.size(); i += 16) {
+        const proto::Key16 part = proto::random_key();
+        std::copy(part.begin(), part.end(), random.begin() + static_cast<std::ptrdiff_t>(i));
+    }
+    const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(Clock::now().time_since_epoch()).count();
+    return std::format("{}{}", seconds, proto::base64_encode(random));
+}
+
+struct VideoChoice {
+    std::string_view name;
+    std::uint32_t width;
+    std::uint32_t height;
+    std::uint32_t bitrate_kbps;
+};
+constexpr VideoChoice kVideoChoices[] = {{"360", 640, 360, 2000}, {"540", 960, 540, 6000}, {"720", 1280, 720, 10000}, {"1080", 1920, 1080, 15000}};
+
+std::optional<std::uint32_t> parse_number(std::string_view text, std::uint32_t low, std::uint32_t high) {
+    std::uint32_t value = 0;
+    const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), value);
+    if (error != std::errc{} || end != text.data() + text.size() || value < low || value > high) return std::nullopt;
+    return value;
+}
+
+template <typename Key> std::string counts_text(const std::map<Key, std::uint64_t>& counts, std::string_view label) {
+    std::string text;
+    for (const auto& [key, count] : counts) text += std::format("{}{} {} x{}", text.empty() ? "" : ", ", label, +key, count);
+    return text;
+}
+
+// Opens a session and sets a stream up, as far as this version goes: the request,
+// the control channel, the session ID, the network probe, then the stream
+// connection with its keys and the stream information. The stream is held for a
+// few seconds, its packets counted and their authentication codes checked;
+// nothing is decoded or shown.
 int command_session(std::span<const std::string_view> args) {
-    const Parsed parsed = parse(args, {"--host", "--seconds", "--passcode"}, {"--rest"}, 1);
+    namespace transport = proto::transport;
+    const Parsed parsed = parse(args, {"--host", "--seconds", "--passcode", "--resolution", "--fps", "--bitrate", "--codec", "--session-id"},
+                                {"--rest"}, 1);
     if (!parsed.error.empty()) return usage("session: {}", parsed.error);
     if (parsed.words.empty()) return usage("session: which console? Give its name or hardware address");
     std::chrono::milliseconds hold = 3s;
@@ -558,6 +629,32 @@ int command_session(std::span<const std::string_view> args) {
         if (!seconds) return usage("session: --seconds takes a number from 1 to 600");
         hold = *seconds;
     }
+    transport::VideoProfile video;
+    if (const auto text = parsed.option("--resolution")) {
+        const auto choice = std::ranges::find(kVideoChoices, *text, &VideoChoice::name);
+        if (choice == std::end(kVideoChoices)) return usage("session: --resolution is 360, 540, 720 or 1080");
+        video.width = choice->width;
+        video.height = choice->height;
+        video.bitrate_kbps = choice->bitrate_kbps;
+    }
+    if (const auto text = parsed.option("--fps")) {
+        if (*text != "30" && *text != "60") return usage("session: --fps is 30 or 60");
+        video.max_fps = *text == "30" ? 30 : 60;
+    }
+    if (const auto text = parsed.option("--bitrate")) {
+        const auto kbps = parse_number(*text, 500, 100000);
+        if (!kbps) return usage("session: --bitrate is in kbit/s, from 500 to 100000");
+        video.bitrate_kbps = *kbps;
+    }
+    if (const auto text = parsed.option("--codec")) {
+        if (*text == "h264") video.codec = proto::Codec::h264;
+        else if (*text == "hevc") video.codec = proto::Codec::hevc;
+        else if (*text == "hdr") video.codec = proto::Codec::hevc_hdr;
+        else return usage("session: --codec is h264, hevc or hdr");
+    }
+    const std::string_view id_choice = parsed.option("--session-id").value_or("console");
+    if (id_choice != "console" && id_choice != "invented") return usage("session: --session-id is console or invented");
+
     auto context = load_context();
     if (!context) return fail("session: {}", context.error());
     const StoredConsole* console = context->store.find(parsed.words.front());
@@ -565,6 +662,7 @@ int command_session(std::span<const std::string_view> args) {
         return fail("No registered console is called '{}'. '{} consoles' lists them.", parsed.words.front(), PSVP_BINARY);
     }
     const proto::RegisteredConsole& registration = console->registration;
+    if (registration.kind == ConsoleKind::ps4 && video.codec != proto::Codec::h264) return usage("session: a PS4 streams H.264 only");
     const std::string host(parsed.option("--host").value_or(console->last_address));
     if (host.empty()) return fail("The address of {} is not known yet: '{} discover' finds it, or give --host ADDRESS.", registration.nickname, PSVP_BINARY);
     const auto ip = net::resolve_ipv4(host);
@@ -590,7 +688,7 @@ int command_session(std::span<const std::string_view> args) {
 
     // The control channel. One more try if the console does not answer the first.
     const proto::CtrlRequest request = proto::build_ctrl_request(cipher, address_text, registration.regist_key,
-                                                                 proto::make_device_id(proto::random_key()), proto::Codec::h264);
+                                                                 proto::make_device_id(proto::random_key()), video.codec);
     net::TcpStream control;
     std::optional<net::TextHead> head;
     std::string last_error;
@@ -610,71 +708,187 @@ int command_session(std::span<const std::string_view> args) {
     const auto accepted = proto::parse_ctrl_response(cipher, head->head);
     if (!accepted) return fail("{}: {}.", registration.nickname, proto::describe(accepted.error()));
     say("{} accepted the session ({}).", registration.nickname, proto::to_string(accepted->model));
+    const auto control_opened = Clock::now();
 
     proto::CtrlChannel channel(cipher, request.next_local_number, accepted->next_remote_number);
     const auto send = [&](std::uint16_t type, std::span<const std::uint8_t> payload = {}) {
         const auto bytes = channel.encode(type, payload);
         return bytes && control.send_all(*bytes, Clock::now() + kStepWait).has_value();
     };
-    if (!channel.feed(head->rest)) return fail("session: the console's messages could not be read");
 
+    // The control channel's own business, done whenever something waits: what the
+    // console sent is read and answered. The first failure is kept in `control_failure`.
+    std::optional<std::string> session_id;
     bool have_session_id = false;
     bool passcode_sent = false;
     int heartbeats = 0;
-    const auto deadline = Clock::now() + hold;
-    while (Clock::now() < deadline) {
+    std::string control_failure;
+    const auto broke = [&](std::string why) {
+        if (control_failure.empty()) control_failure = std::move(why);
+        return false;
+    };
+    const auto handle_messages = [&]() {
         while (const auto message = channel.next()) {
             using namespace proto::ctrl_type;
             if (message->type == kSessionId) {
-                const auto id = proto::parse_session_id(message->payload);
+                session_id = proto::parse_session_id(message->payload);
                 have_session_id = true;
-                if (id) say("Session ID received ({} characters).", id->size());
+                if (session_id) say("Session ID received ({} characters).", session_id->size());
                 else say("The console sent a session ID in a form this version does not know ({}).", describe_shape(message->payload));
             } else if (message->type == kHeartbeatRequest) {
-                if (!send(kHeartbeatReply)) return fail("session: the connection to the console broke");
+                if (!send(kHeartbeatReply)) return broke("session: the connection to the console broke");
                 ++heartbeats;
             } else if (message->type == kLoginPinRequest) {
                 const auto passcode = parsed.option("--passcode");
-                if (!passcode) return fail("{} asks for its login passcode: add --passcode DIGITS.", registration.nickname);
-                if (!send(kLoginPinReply, net::bytes_of(*passcode))) return fail("session: the connection to the console broke");
+                if (!passcode) return broke(std::format("{} asks for its login passcode: add --passcode DIGITS.", registration.nickname));
+                if (!send(kLoginPinReply, net::bytes_of(*passcode))) return broke("session: the connection to the console broke");
                 passcode_sent = true;
             } else if (message->type == kLoginResult) {
-                if (message->payload.empty() || message->payload[0] != 0) return fail("{} did not accept the passcode.", registration.nickname);
+                if (message->payload.empty() || message->payload[0] != 0) return broke(std::format("{} did not accept the passcode.", registration.nickname));
                 // A console reports the login also when it asked for no passcode.
                 say("{}", passcode_sent ? "Passcode accepted." : "Logged in.");
             }
         }
+        return true;
+    };
+    // Reads what has arrived by `until` (at once, if that is now) and handles it.
+    const auto service_until = [&](Clock::time_point until) {
+        if (!control_failure.empty()) return false;
         std::uint8_t chunk[1024];
-        const auto got = control.receive(chunk, std::min(deadline, Clock::now() + 200ms));
+        const auto got = control.receive(chunk, until);
         if (!got) {
-            if (got.error().ends_with("timed out")) continue;
-            return fail("session: {}", got.error());
+            if (got.error().ends_with("timed out")) return true;
+            return broke(std::format("session: {}", got.error()));
         }
-        if (*got == 0) return fail("{} closed the control channel.", registration.nickname);
-        if (!channel.feed(std::span(chunk).first(*got))) return fail("session: the console's messages could not be read");
+        if (*got == 0) return broke(std::format("{} closed the control channel.", registration.nickname));
+        if (!channel.feed(std::span(chunk).first(*got))) return broke("session: the console's messages could not be read");
+        return handle_messages();
+    };
+    const Service service = [&] { return service_until(Clock::now()); };
+
+    if (!channel.feed(head->rest)) return fail("session: the console's messages could not be read");
+    if (!handle_messages()) return fail("{}", control_failure);
+    // The console names the session first.
+    for (const auto give_up = Clock::now() + kStepWait; !have_session_id && Clock::now() < give_up;) {
+        if (!service_until(std::min(give_up, Clock::now() + 200ms))) return fail("{}", control_failure);
     }
     if (!have_session_id) return fail("{} never named the session.", registration.nickname);
+    // What other clients send once the session has its name: the microphone muted, twice, and no display devices.
+    {
+        constexpr std::array<std::uint8_t, 4> kMuted{0, 1, 1, 89};
+        constexpr std::array<std::uint8_t, 4> kNoDisplays{};
+        if (!send(proto::ctrl_type::kMicrophoneMute, kMuted) || !send(proto::ctrl_type::kMicrophoneMute, kMuted) ||
+            !send(proto::ctrl_type::kDisplayDevices, kNoDisplays)) {
+            return fail("session: the connection to the console broke");
+        }
+    }
 
-    // The transport the stream will use, as far as its opening handshake and the network probe.
-    const auto network = probe_network(net::Address{*ip, proto::transport::kProbePort});
+    // The network probe, on the transport's probe port.
+    const auto network = probe_network(net::Address{*ip, transport::kProbePort}, service);
+    if (!control_failure.empty()) return fail("{}", control_failure);
     if (!network) return fail("{}: the stream transport: {}.", registration.nickname, network.error());
     say("Stream transport opened (handshake done, {} streams each way).", network->console.outbound_streams);
+    transport::ProbeResult measured;
     if (network->measured) {
+        measured = *network->measured;
         say("Network measured: round trip {:.2f} ms ({} of {} pings answered), largest packet in {}, out {}.",
-            static_cast<double>(network->measured->round_trip.count()) / 1000.0, network->pongs, proto::transport::ClientProbe::kPings,
-            network->measured->mtu_in, network->measured->mtu_out);
+            static_cast<double>(measured.round_trip.count()) / 1000.0, network->pongs, transport::ClientProbe::kPings, measured.mtu_in,
+            measured.mtu_out);
     } else {
-        const proto::transport::ProbeResult fallback;
         say("The network could not be measured ({}); a stream would start with the defaults (largest packet {}).",
-            network->probe_failure, fallback.mtu_in);
+            network->probe_failure, measured.mtu_in);
     }
+
+    // The stream connection: its handshake, the opening message, the keys, the stream information.
+    const auto setup_started = Clock::now();
+    auto link = open_transport(net::Address{*ip, transport::kStreamPort}, service);
+    if (!control_failure.empty()) return fail("{}", control_failure);
+    if (!link) return fail("{}: the stream connection: {}.", registration.nickname, link.error());
+    transport::StreamRequest stream_request;
+    stream_request.kind = registration.kind;
+    const bool own_id = id_choice == "invented" || !session_id;
+    stream_request.session_id = own_id ? invented_session_id() : *session_id;
+    stream_request.session_cipher = cipher;
+    stream_request.network = measured;
+    stream_request.video = video;
+    transport::ClientStream stream(link->tag, link->endpoint, std::move(stream_request), proto::KeyExchange::generate(), proto::random_key());
+    using State = transport::ClientStream::State;
+
+    const auto send_all = [&](const transport::Datagrams& datagrams) {
+        for (const auto& datagram : datagrams) (void)link->socket.send_to(link->console, datagram);
+    };
+    // Runs the stream until `stop` says so, the stream ends, or the control channel fails.
+    const auto run_stream = [&](const std::function<bool()>& stop) -> std::expected<void, std::string> {
+        while (!stop() && stream.state() != State::failed && !(stream.state() == State::closed && !stream.goodbye_pending())) {
+            if (!service()) return {};
+            const auto datagram = link->socket.receive(std::min(stream.deadline(), Clock::now() + kServiceEvery));
+            if (!datagram) return std::unexpected(datagram.error());
+            if (*datagram) {
+                if ((*datagram)->from == link->console) send_all(stream.on_datagram((*datagram)->data, Clock::now()));
+            } else if (Clock::now() >= stream.deadline()) {
+                send_all(stream.on_timeout(Clock::now()));
+            }
+        }
+        return {};
+    };
+    send_all(stream.start(Clock::now()));
+    say("Stream connection opened; opening message sent ({} bytes in {} datagram{}), session ID: {}.", stream.opening_size(),
+        stream.opening_datagrams(), stream.opening_datagrams() == 1 ? "" : "s", own_id ? "an invented one" : "the console's own");
+    if (const auto ran = run_stream([&] { return stream.state() == State::ready; }); !ran) return fail("session: {}", ran.error());
+    if (!control_failure.empty()) return fail("{}", control_failure);
+    if (const auto& bang = stream.bang()) {
+        using Code = transport::BangFacts::Code;
+        say("The console answered: stream protocol version {}; its key signature {}; the answer {}; its session key {}.", bang->server_version,
+            bang->signature_matches ? "matches" : "DOES NOT MATCH",
+            bang->code == Code::none      ? "carried no authentication code"
+            : bang->code == Code::valid   ? "was sealed with the new keys"
+            : bang->code == Code::invalid ? "carried a code the new keys do not give"
+                                          : "came in several chunks (its code was not looked at)",
+            bang->session_key_is_ours ? "repeats the one sent" : std::format("is another one, of {} characters", bang->session_key_size));
+    }
+    if (stream.state() == State::failed) return fail("{}: the stream: {}.", registration.nickname, stream.reason());
+    if (stream.state() == State::closed) return fail("{} closed the stream: {}.", registration.nickname, stream.reason());
+    if (const auto& info = stream.info()) {
+        std::string sizes;
+        for (const auto& resolution : info->resolutions) {
+            sizes += std::format("{}{}x{} (header of {} bytes)", sizes.empty() ? "" : ", ", resolution.width, resolution.height, resolution.video_header.size());
+        }
+        const proto::AudioHeader audio = proto::parse_audio_header(info->audio_header).value_or(proto::AudioHeader{});
+        say("Stream information: picture {}; sound {} channels, {} bits, {} Hz, frames of {}.", sizes.empty() ? "none" : sizes, audio.channels,
+            audio.bits, audio.rate, audio.frame_size);
+    }
+    say("Stream set up in {} ms.", std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - setup_started).count());
+
+    // Hold it: heartbeats go out, and whatever the console sends is counted and its codes checked.
+    const auto hold_until = Clock::now() + hold;
+    if (const auto ran = run_stream([&] { return Clock::now() >= hold_until; }); !ran) return fail("session: {}", ran.error());
+    if (!control_failure.empty()) return fail("{}", control_failure);
+    const transport::StreamCounters& counters = stream.counters();
+    say("Stream held for {} seconds: {} picture and {} sound packets arrived with the right authentication code, {} with a wrong one, "
+        "{} before the keys; control packets refused: {}; heartbeats sent: {}.",
+        std::chrono::duration_cast<std::chrono::seconds>(hold).count(), counters.video_packets, counters.audio_packets, counters.media_rejected,
+        counters.media_before_keys, stream.control_rejected(), counters.heartbeats_sent);
+    if (!counters.messages.empty()) say("Messages from the console: {}.", counts_text(counters.messages, "type"));
+    if (!counters.other_data.empty()) say("Other data from the console: {}.", counts_text(counters.other_data, "kind"));
+    if (counters.split_messages != 0) say("Messages that came in more than one chunk: {}.", counters.split_messages);
+    if (counters.other_datagrams != 0) say("Datagrams of kinds this version does not read: {}.", counters.other_datagrams);
+    if (stream.state() == State::failed) return fail("{}: the stream: {}.", registration.nickname, stream.reason());
+    const bool console_closed = stream.state() == State::closed;
+    if (console_closed) say("{} closed the stream: {}.", registration.nickname, stream.reason());
 
     if (parsed.flag("--rest")) {
         if (!send(proto::ctrl_type::kGoToRest)) return fail("session: the connection to the console broke");
         say("Asked {} to go to rest mode.", registration.nickname);
     }
-    say("Control channel held for {} seconds; heartbeats answered: {}.",
-        std::chrono::duration_cast<std::chrono::seconds>(hold).count(), heartbeats);
+    if (!console_closed) {
+        // The goodbye, and a short wait for the console to take it.
+        send_all(stream.disconnect(Clock::now()));
+        const auto goodbye_until = Clock::now() + 500ms;
+        (void)run_stream([&] { return Clock::now() >= goodbye_until; });
+        say("Goodbye sent{}.", stream.goodbye_pending() ? " (not acknowledged within half a second)" : " and acknowledged");
+    }
+    say("Control channel held for {:.1f} seconds; heartbeats answered: {}.",
+        std::chrono::duration<double>(Clock::now() - control_opened).count(), heartbeats);
     return kDone;
 }
 
@@ -815,8 +1029,11 @@ std::string commands_help() {
         "  {0} wake CONSOLE [--host ADDRESS] [--wait SECONDS] [--no-wait]\n"
         "      wake a registered console from rest mode\n"
         "  {0} session CONSOLE [--host ADDRESS] [--seconds N] [--passcode DIGITS] [--rest]\n"
-        "      open a session's control channel with a console and close it again\n"
-        "      (a connection check: nothing is streamed yet); --rest then sends it to rest mode\n"
+        "          [--resolution 360|540|720|1080] [--fps 30|60] [--bitrate KBPS] [--codec h264|hevc|hdr]\n"
+        "          [--session-id console|invented]\n"
+        "      open a session with a console, set a stream up, hold it for N seconds and close it\n"
+        "      (a connection check: the stream's packets are counted and checked, nothing is shown yet);\n"
+        "      --rest then sends the console to rest mode\n"
         "  {0} consoles [--json]\n"
         "      list the registered consoles\n"
         "  {0} forget CONSOLE\n"

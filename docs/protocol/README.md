@@ -31,3 +31,5 @@ The reference implementation is [chiaki-ng](https://github.com/chiaki-ng/chiaki-
 - [The stream transport](transport.md): the UDP packets, the opening handshake and the messages that must arrive
 - [The stream's messages](messages.md): the field coding and the messages carried in the transport
 - [The network probe](probe.md): measuring the round trip and the largest packet before the stream
+- [Setting a stream up](stream-setup.md): the key exchange, the launch specification, the stream keys, packet
+  authentication and the stream information

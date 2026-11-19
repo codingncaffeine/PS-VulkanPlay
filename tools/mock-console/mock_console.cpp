@@ -1,6 +1,7 @@
-// A stand-in for a console, for tests: it answers discovery, takes a wake-up
-// and accepts a registration the way the protocol pages describe a console
-// doing it. It is not a console and cannot stream anything.
+// A stand-in for a console, for tests: it answers discovery, takes a wake-up,
+// accepts a registration and sets a stream up the way the protocol pages
+// describe a console doing it. It is not a console: the stream it sets up
+// carries no picture and no sound.
 //
 //   psvp-mock-console [options]
 //     --kind ps5|ps4          which family to stand in for (default ps5)
@@ -20,6 +21,11 @@
 //     --mtu-in N              the largest packet that reaches the client (default 1454)
 //     --mtu-out N             the largest packet that reaches the console (default 1454)
 //     --probe no              complete the probe port's handshake, then stay silent
+//     --stream no             complete the stream port's handshake, then stay silent
+//     --refuse-version yes    answer the stream's opening message with "version not accepted"
+//     --wrong-signature yes   sign its public key with a key that is not the handshake key
+//     --media-ms N            once a stream is set up, send a sealed sound packet every N ms
+//     --corrupt-media yes     change a byte of each of those after sealing it
 //
 // It listens on the consoles' real ports, so it needs a network of its own
 // (tools/wall.sh, or a container) and the right to open port 987 for a PS4.
@@ -46,9 +52,11 @@
 #include "proto/hex.h"
 #include "proto/regist.h"
 #include "proto/rp_cipher.h"
-#include "proto/session.h"
-#include "proto/text_message.h"
+#include "proto/key_exchange.h"
 #include "proto/probe.h"
+#include "proto/session.h"
+#include "proto/stream_setup.h"
+#include "proto/text_message.h"
 #include "proto/transport.h"
 
 namespace {
@@ -84,6 +92,11 @@ struct Options {
     int heartbeat_ms = 500;
     psvp::proto::transport::ConsoleProbe::Path path;
     bool probe = true;
+    bool stream = true;
+    bool refuse_version = false;
+    bool wrong_signature = false;
+    int media_ms = 0;
+    bool corrupt_media = false;
 };
 
 // The control channel of the one session the mock can hold.
@@ -336,10 +349,15 @@ void send_control(Control& control, std::uint16_t type, std::span<const std::uin
     }
 }
 
+// The session ID it hands out. A PS5 on system software 14.23 sent sixteen letters;
+// the longer form is the one other clients describe.
+std::string_view session_id(ConsoleKind kind) {
+    return kind == ConsoleKind::ps5 ? "MockSessionIdent" : "MOCKSESSION0123456789abcdefghijkl";
+}
+
 void name_session(Control& control, ConsoleKind kind) {
-    // The ID's length and the ID. A PS5 on system software 14.23 sent sixteen letters;
-    // the longer form is the one other clients describe.
-    const std::string_view id = kind == ConsoleKind::ps5 ? "\x10" "MockSessionIdent" : "\x21" "MOCKSESSION0123456789abcdefghijkl";
+    // The ID's length and the ID.
+    const std::string id = std::string(1, static_cast<char>(session_id(kind).size())) + std::string(session_id(kind));
     send_control(control, psvp::proto::ctrl_type::kSessionId, psvp::net::bytes_of(id));
     control.session_named = true;
     event("session ID sent");
@@ -413,6 +431,18 @@ int main(int argc, char** argv) {
             }
         } else if (arg == "--probe") {
             options.probe = *text != "no";
+        } else if (arg == "--stream") {
+            options.stream = *text != "no";
+        } else if (arg == "--refuse-version") {
+            options.refuse_version = *text == "yes";
+        } else if (arg == "--wrong-signature") {
+            options.wrong_signature = *text == "yes";
+        } else if (arg == "--corrupt-media") {
+            options.corrupt_media = *text == "yes";
+        } else if (arg == "--media-ms") {
+            if (std::from_chars(text->data(), text->data() + text->size(), options.media_ms).ec != std::errc{} || options.media_ms < 1) {
+                return usage("--media-ms is a number of at least 1");
+            }
         } else {
             return usage(std::format("unknown option {}", arg));
         }
@@ -445,6 +475,21 @@ int main(int argc, char** argv) {
     const auto log_probe = [&](Probe& probe) {
         for (const std::string& line : probe.probe.take_events()) event("probe {}", line);
     };
+    // The stream of each client that finished the handshake on the stream port.
+    struct Stream {
+        psvp::net::Address client;
+        psvp::proto::transport::ConsoleStream stream;
+        bool summarized = false;
+    };
+    std::map<std::uint64_t, Stream> streams;
+    const auto log_stream = [&](Stream& stream) {
+        for (const std::string& line : stream.stream.take_events()) event("stream {}", line);
+        if (stream.stream.disconnected() && !stream.summarized) {
+            stream.summarized = true;
+            event("stream summary: {}", stream.stream.summary());
+        }
+    };
+    std::optional<psvp::proto::RpCipher> session_cipher;
     const auto serve_transport = [&](psvp::net::UdpSocket& socket, std::uint16_t transport_port) {
         const auto datagram = socket.receive(Clock::now());
         if (!datagram || !*datagram) return;
@@ -466,6 +511,11 @@ int main(int argc, char** argv) {
             log_probe(probe->second);
             return;
         }
+        if (const auto stream = streams.find(key.second); transport_port == psvp::proto::transport::kStreamPort && stream != streams.end()) {
+            for (const auto& out : stream->second.stream.on_datagram((*datagram)->data, Clock::now())) (void)socket.send_to(from, out);
+            log_stream(stream->second);
+            return;
+        }
         const bool was_connected = handshake.connected();
         const bool had_init = handshake.client().has_value();
         const auto answer = handshake.on_datagram((*datagram)->data);
@@ -483,6 +533,21 @@ int main(int argc, char** argv) {
             if (transport_port == psvp::proto::transport::kProbePort && options.probe) {
                 probes.insert_or_assign(key.second, Probe{from, psvp::proto::transport::ConsoleProbe(handshake.tag(), *handshake.client(), options.path)});
             }
+            if (transport_port == psvp::proto::transport::kStreamPort && options.stream && session_cipher) {
+                psvp::proto::transport::ConsoleStream::Options stream_options;
+                stream_options.kind = options.kind;
+                stream_options.session_cipher = *session_cipher;
+                stream_options.session_id = std::string(session_id(options.kind));
+                // One picture size; its header is a placeholder, not a decoder's.
+                stream_options.resolutions.push_back(psvp::proto::StreamResolution{1280, 720, {0x00, 0x00, 0x00, 0x01, 0x4d, 0x4f, 0x43, 0x4b}});
+                stream_options.max_datagram = std::min(options.path.mtu_in, options.path.mtu_out) - psvp::proto::transport::kSplitMargin;
+                stream_options.accept_version = !options.refuse_version;
+                stream_options.wrong_signature = options.wrong_signature;
+                stream_options.media_every = std::chrono::milliseconds(options.media_ms);
+                stream_options.corrupt_media = options.corrupt_media;
+                streams.insert_or_assign(key.second, Stream{from, psvp::proto::transport::ConsoleStream(handshake.tag(), *handshake.client(), std::move(stream_options),
+                                                                                                         psvp::proto::KeyExchange::generate())});
+            }
         }
         if (!answer && was_connected) event("transport datagram on port {} after the handshake ({} bytes)", transport_port, (*datagram)->data.size());
     };
@@ -493,7 +558,6 @@ int main(int argc, char** argv) {
           psvp::proto::to_string(state), psvp::net::ip_to_string(options.bind_ip), port, psvp::proto::kSessionPort);
     if (!options.ready_file.empty()) std::ofstream(options.ready_file) << "ready\n";
 
-    std::optional<psvp::proto::RpCipher> session_cipher;
     Control control;
     const auto close_control = [&](std::string_view why) {
         event("control connection closed ({}; heartbeats answered: {})", why, control.heartbeats_answered);
@@ -505,11 +569,15 @@ int main(int argc, char** argv) {
         pollfd waits[6] = {{discovery->fd(), POLLIN, 0}, {search->fd(), POLLIN, 0}, {listener->fd(), POLLIN, 0},
                            {control.stream.open() ? control.stream.fd() : -1, POLLIN, 0},
                            {probe_port->fd(), POLLIN, 0}, {stream_port->fd(), POLLIN, 0}};
-        const int ready = ::poll(waits, 6, 50);
+        // Short waits while a stream sends on a timer of its own.
+        const int ready = ::poll(waits, 6, streams.empty() ? 50 : 10);
         if (ready > 0 && (waits[4].revents & POLLIN) != 0) serve_transport(*probe_port, psvp::proto::transport::kProbePort);
         if (ready > 0 && (waits[5].revents & POLLIN) != 0) serve_transport(*stream_port, psvp::proto::transport::kStreamPort);
         for (auto& [client, probe] : probes) {
             for (const auto& out : probe.probe.on_timer(Clock::now())) (void)probe_port->send_to(probe.client, out);
+        }
+        for (auto& [client, stream] : streams) {
+            for (const auto& out : stream.stream.on_timer(Clock::now())) (void)stream_port->send_to(stream.client, out);
         }
 
         // The control channel: a heartbeat request now and then, and whatever the client sends.
@@ -620,6 +688,10 @@ int main(int argc, char** argv) {
                 }
             }
         }
+    }
+    // What the streams that never said goodbye counted.
+    for (auto& [client, stream] : streams) {
+        if (!stream.summarized) event("stream summary: {}", stream.stream.summary());
     }
     event("stopped");
     return 0;

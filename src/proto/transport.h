@@ -6,10 +6,13 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
 #include <vector>
+
+#include "proto/stream_cipher.h"
 
 namespace psvp::proto::transport {
 
@@ -125,6 +128,50 @@ private:
     bool connected_ = false;
 };
 
+// ---- Packet authentication -----------------------------------------------
+// Once a connection has its keys, every packet carries a four-byte code and
+// the low 32 bits of its key position. docs/protocol/stream-setup.md.
+
+// The keys this end seals its packets with, and how far into the key stream it is.
+struct SendKeys {
+    explicit SendKeys(const StreamCipher& keys) : cipher(keys) {}
+
+    // The key position for a packet that counts `size` bytes; the next packet's lies behind it.
+    [[nodiscard]] std::uint64_t take(std::size_t size) noexcept {
+        const std::uint64_t position = next_position;
+        next_position += size + size % 16;
+        return position;
+    }
+
+    StreamCipher cipher;
+    std::uint64_t next_position = 0;
+};
+
+// The keys the other end seals its packets with.
+struct ReceiveKeys {
+    explicit ReceiveKeys(const StreamCipher& keys) : cipher(keys) {}
+
+    StreamCipher cipher;
+    KeyPositionTracker positions;
+};
+
+// Where a kind of packet keeps its code and its key position.
+struct MacLayout {
+    std::size_t mac_offset = 0;
+    std::size_t position_offset = 0;
+    bool position_counts = false;  // false: the code is computed with the position's bytes as zero
+};
+// Nothing for a kind of packet that carries no code. Only the low four bits of the first byte say the kind.
+[[nodiscard]] std::optional<MacLayout> mac_layout(std::uint8_t first_byte) noexcept;
+
+// The code a datagram must carry at a key position. Nothing for a kind that carries none, or a datagram too short for its fields.
+[[nodiscard]] std::optional<Mac4> datagram_mac(const StreamCipher& cipher, std::uint64_t key_position,
+                                               std::span<const std::uint8_t> datagram);
+// Writes the key position and the code into a datagram. False for a datagram that has no place for them.
+bool seal_datagram(const StreamCipher& cipher, std::uint64_t key_position, std::span<std::uint8_t> datagram);
+// True for a datagram that carries the right code; its key position is then the last accepted one.
+[[nodiscard]] bool verify_datagram(ReceiveKeys& keys, std::span<const std::uint8_t> datagram);
+
 // ---- Messages that must arrive -------------------------------------------
 
 namespace data_type {
@@ -134,13 +181,22 @@ inline constexpr std::uint8_t kPadInfo = 9;
 inline constexpr std::uint8_t kTriggerEffects = 11;
 }  // namespace data_type
 
-// The payload of a data chunk.
+namespace chunk_flag {
+inline constexpr std::uint8_t kLast = 1;  // the message ends with this chunk
+}  // namespace chunk_flag
+
+// The payload of a data chunk; as a Messenger hands it over, a whole message.
 struct DataChunk {
-    std::uint32_t sequence = 0;
+    std::uint32_t sequence = 0;  // of the chunk, or of a message's last chunk
     std::uint16_t channel = 0;
     std::uint8_t data_type = data_type::kMessage;
     std::vector<std::uint8_t> data;
-    std::uint8_t flags = 0;  // of the packet that carried it; not part of the payload
+    // The rest is not part of the payload.
+    std::uint8_t flags = 0;          // of the packet that carried it (the last one of a message)
+    std::uint16_t chunks = 1;        // how many chunks the message came in
+    bool authentic = false;          // every chunk carried the right authentication code
+    std::uint32_t key_position = 0;  // as the (last) packet carried it
+    Mac4 mac{};                      // as the (last) packet carried it
 };
 
 [[nodiscard]] std::vector<std::uint8_t> encode_data_chunk(const DataChunk& chunk);
@@ -169,25 +225,51 @@ public:
     static constexpr std::size_t kWindow = 16;
     static constexpr std::chrono::milliseconds kResendAfter{200};
     static constexpr int kResends = 25;
+    static constexpr std::size_t kMaxMessage = 65536;      // a message that grows past this is dropped
+    static constexpr std::size_t kSmallestDatagram = 64;   // no message is split into smaller datagrams
+
+    // Whether the connection will get keys (use_keys). While it waits for them
+    // it hands over one message at a time, so that the message that brings the
+    // keys can be acted on before the next one is looked at.
+    enum class Keys { none, expected };
 
     Messenger(std::uint32_t local_tag, std::uint32_t remote_tag, std::uint32_t first_local_sequence,
-              std::uint32_t first_remote_sequence);
+              std::uint32_t first_remote_sequence, Keys keys = Keys::none);
 
     struct Sent {
         std::uint32_t sequence = 0;
         std::vector<std::uint8_t> datagram;
     };
-    // Nothing while kWindow messages still wait for their acknowledgment.
+    // One chunk. Nothing while kWindow chunks still wait for their acknowledgment.
     [[nodiscard]] std::optional<Sent> send(std::uint8_t flags, std::uint16_t channel, std::span<const std::uint8_t> data,
                                            TimePoint now);
+    // A whole message, in as many chunks as it takes to keep every datagram
+    // within `max_datagram` bytes. Nothing when the window has no room for all of them.
+    [[nodiscard]] std::optional<std::vector<Sent>> send_message(std::uint16_t channel, std::span<const std::uint8_t> data,
+                                                                TimePoint now, std::size_t max_datagram);
 
     struct Received {
-        std::vector<DataChunk> delivered;         // in order
-        std::vector<std::uint32_t> acknowledged;  // our messages the other end now has
-        std::optional<std::vector<std::uint8_t>> reply;
+        std::vector<DataChunk> delivered;         // whole messages, in order
+        std::vector<std::uint32_t> acknowledged;  // our chunks the other end now has
     };
     // For a control packet that carries this end's tag; others change nothing.
+    // Once the keys are in use, neither does one without the right authentication code.
     [[nodiscard]] Received on_packet(const ControlPacket& packet);
+    // More of what is in order, where on_packet stopped after one message (see Keys).
+    [[nodiscard]] Received pump();
+    [[nodiscard]] bool ready() const noexcept { return early_[0].has_value(); }
+    // The acknowledgment that is due, if one is. Made when asked for, so that it
+    // is sealed with keys that the message it answers brought.
+    [[nodiscard]] std::optional<std::vector<std::uint8_t>> take_ack();
+
+    // From here on every packet sent is sealed and every packet received is checked.
+    // Chunks that arrived earlier and wait for their turn are checked now.
+    void use_keys(std::shared_ptr<SendKeys> send, std::shared_ptr<ReceiveKeys> receive);
+    [[nodiscard]] bool keyed() const noexcept { return receive_keys_ != nullptr; }
+    // Packets dropped for a wrong authentication code.
+    [[nodiscard]] std::uint64_t rejected() const noexcept { return rejected_; }
+    // True while the first chunks of a message have arrived and its last has not.
+    [[nodiscard]] bool mid_message() const noexcept { return partial_.has_value(); }
 
     struct Timer {
         std::vector<std::vector<std::uint8_t>> resend;
@@ -208,14 +290,34 @@ private:
         TimePoint last_sent{};
         std::vector<std::uint8_t> datagram;
     };
+    // A chunk that arrived and waits for its turn.
+    struct Held {
+        std::uint32_t sequence = 0;
+        std::uint16_t channel = 0;
+        std::uint8_t flags = 0;
+        std::vector<std::uint8_t> rest;  // the payload after its first eight bytes
+        std::uint32_t key_position = 0;
+        Mac4 mac{};
+        bool authentic = false;
+        std::vector<std::uint8_t> unchecked;  // the whole packet, kept until the keys arrive
+    };
+
+    Sent send_chunk(std::uint8_t flags, std::uint16_t channel, bool first, std::span<const std::uint8_t> data, TimePoint now);
+    void hand_over(Received& result);
 
     std::uint32_t local_tag_;
     std::uint32_t remote_tag_;
     std::uint32_t next_local_;
     std::uint32_t next_remote_;
+    Keys keys_;
     bool delivered_any_ = false;
+    bool ack_due_ = false;
+    std::uint64_t rejected_ = 0;
+    std::shared_ptr<SendKeys> send_keys_;
+    std::shared_ptr<ReceiveKeys> receive_keys_;
     std::vector<Pending> unacknowledged_;
-    std::array<std::optional<DataChunk>, kWindow> early_{};  // early_[i] has sequence next_remote_ + i
+    std::array<std::optional<Held>, kWindow> early_{};  // early_[i] has sequence next_remote_ + i
+    std::optional<DataChunk> partial_;                  // a message whose last chunk has not come
 };
 
 // ---- Picture and sound packets, as the network probe uses them ------------

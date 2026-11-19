@@ -92,6 +92,8 @@ inline constexpr std::uint16_t kLoginPinReply = 0x8004;
 inline constexpr std::uint16_t kLoginResult = 0x05;
 inline constexpr std::uint16_t kGoToRest = 0x50;
 inline constexpr std::uint16_t kSwitchToStream = 0x34;
+inline constexpr std::uint16_t kMicrophoneMute = 0x36;
+inline constexpr std::uint16_t kDisplayDevices = 0x910;
 }  // namespace ctrl_type
 
 inline constexpr std::size_t kCtrlHeaderSize = 8;

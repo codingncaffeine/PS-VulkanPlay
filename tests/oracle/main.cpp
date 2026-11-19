@@ -2,6 +2,7 @@
 // psvp_oracle_tests --plant    one of our results is corrupted on purpose: the
 //                              comparison must notice, and the program exits 1
 // psvp_oracle_tests --vectors  prints results computed by the reference, for the unit tests
+//                              (--vectors-stream: those of the stream's set-up)
 #include <cstdio>
 #include <string_view>
 
@@ -13,6 +14,10 @@ int main(int argc, char** argv) {
         psvp::oracle::print_regist_vectors();
         return 0;
     }
+    if (mode == "--vectors-stream") {
+        psvp::oracle::print_stream_vectors();
+        return 0;
+    }
     const bool plant = mode == "--plant";
 
     int compared = 0;
@@ -22,12 +27,13 @@ int main(int argc, char** argv) {
         mismatches += outcome.mismatches;
     };
     add(psvp::oracle::diff_base64(plant));
+    add(psvp::oracle::diff_stream(plant));
     if (!plant) {
         add(psvp::oracle::diff_discovery());
         add(psvp::oracle::diff_regist());
     }
     std::fprintf(stderr, "oracle: %d comparisons, %d mismatches%s\n", compared, mismatches,
-                 plant ? " (one planted)" : "");
+                 plant ? " (planted on purpose)" : "");
     if (compared == 0) return 2;
     return mismatches == 0 ? 0 : 1;
 }

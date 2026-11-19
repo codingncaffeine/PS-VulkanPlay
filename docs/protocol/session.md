@@ -117,16 +117,26 @@ accepts a message longer than 512 bytes in all.
 | `0x05` | console | login result | one byte: 0 accepted, 1 wrong passcode; sent also when no passcode was asked for |
 | `0x50` | client | go to rest mode | none |
 | `0x34` | console | switch to the stream connection | (described with the stream) |
+| `0x36` | client | microphone muted or not | `00 01 01 59` muted, `00 01 00 59` not |
+| `0x910` | client | display devices | four zero bytes |
 
-Keyboard (`0x0d`, `0x20` to `0x25`), controller features (`0x13`), home (`0x14`), display (`0x01`, `0x16`,
-`0x910`) and microphone (`0x30`, `0x36`) messages exist and are described where they are implemented.
+Keyboard (`0x0d`, `0x20` to `0x25`), controller features (`0x13`, `0x11`), home (`0x14`), display (`0x01`,
+`0x16`) and microphone connection (`0x30`) messages exist and are described where they are implemented.
+
+**[read]** Once it has the session ID a client sends "microphone muted" twice and then the display devices
+message. A client with a DualSense first sends `0x13` with `00 40 00` and a sixteen-byte `0x11`; this client
+does not send those two yet (they belong to the controller's features).
+
+*Chosen difference.* This client's control connection sends each message at once (`TCP_NODELAY`). Left to the
+system, a small message waits until the one before it has been acknowledged, which can hold a control message
+back by tens of milliseconds.
 
 **[seen]** A PS5 on system software 14.23 with no login passcode sent, unasked, a login result of 0, then a
 session ID of sixteen letters behind a length byte of `0x10`, and a heartbeat request no more often than
 every few seconds (2026-11-19). The reference takes the first byte for the letter `J` (which is the length
 74) and refuses an ID shorter than 24 characters, so with this console it makes up an ID of its own: seconds
-since its start, then 48 random bytes in base64. Which of the two IDs the stream set-up must carry is decided
-there, against the console.
+since its start, then 48 random bytes in base64. [stream-setup.md](stream-setup.md) says which of the two this
+client sends.
 
 The session ID names the session in the stream set-up that follows. A client answers every heartbeat request;
 a console that stops getting answers ends the session.

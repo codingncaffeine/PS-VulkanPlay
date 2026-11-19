@@ -13,6 +13,7 @@ add_executable(psvp_tests
     unit/test_session.cpp
     unit/test_store.cpp
     unit/test_stream_message.cpp
+    unit/test_stream_setup.cpp
     unit/test_text_message.cpp
     unit/test_transport.cpp)
 target_include_directories(psvp_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -43,6 +44,7 @@ psvp_add_fuzz_target(json)
 psvp_add_fuzz_target(message)
 psvp_add_fuzz_target(regist)
 psvp_add_fuzz_target(session)
+psvp_add_fuzz_target(stream)
 psvp_add_fuzz_target(text)
 psvp_add_fuzz_target(transport)
 
@@ -80,8 +82,14 @@ if(PSVP_ORACLE_DIR)
         oracle/main.cpp
         oracle/diff_base64.cpp
         oracle/diff_discovery.cpp
-        oracle/diff_regist.cpp)
+        oracle/diff_regist.cpp
+        oracle/diff_stream.cpp
+        oracle/reference_messages.c)
     target_link_libraries(psvp_oracle_tests PRIVATE psvp_proto chiaki-lib)
+    # The reference's generated message coder and the helpers its own sources use with it.
+    set_source_files_properties(oracle/reference_messages.c PROPERTIES
+        INCLUDE_DIRECTORIES "${CMAKE_BINARY_DIR}/reference/lib/protobuf;${PSVP_ORACLE_DIR}/lib/src"
+        COMPILE_OPTIONS "-w")
     psvp_setup_target(psvp_oracle_tests)
     add_test(NAME oracle COMMAND psvp_oracle_tests)
 

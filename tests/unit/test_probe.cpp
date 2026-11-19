@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -125,9 +126,13 @@ PSVP_TEST(data_chunk_and_acknowledgment_bytes_are_exact) {
                                  "0001" "0000" "00"   // channel 1, two zero bytes, a message
                                  "081ffa01020809");
     const auto received = messenger.on_packet(data_packet(kClientTag, kConsoleTag, 0x55));
-    CHECK(received.reply.has_value());
-    if (received.reply) {
-        CHECK(hex(*received.reply) == "00" "50607080" "00000000" "00000000"
+    CHECK(received.delivered.size() == 1);
+    const auto reply = messenger.take_ack();
+    CHECK(reply.has_value());
+    // One acknowledgment per thing to acknowledge.
+    CHECK(!messenger.take_ack());
+    if (reply) {
+        CHECK(hex(*reply) == "00" "50607080" "00000000" "00000000"
                                       "03" "00" "0010"  // data acknowledged, twelve bytes of payload plus four
                                       "50607080"        // everything up to this sequence number has arrived
                                       "00019000"        // receive window
@@ -138,25 +143,30 @@ PSVP_TEST(data_chunk_and_acknowledgment_bytes_are_exact) {
 PSVP_TEST(messenger_hands_messages_over_in_order_once) {
     Messenger messenger(kClientTag, kConsoleTag, 1000, 0xfffffffe);
     // The third arrives first, across the wrap of the sequence numbers.
+    const auto acknowledged = [&]() -> std::optional<std::uint32_t> {
+        const auto ack = messenger.take_ack();
+        if (!ack) return std::nullopt;
+        return parse_data_ack(packet_of(*ack).payload)->cumulative;
+    };
     auto r = messenger.on_packet(data_packet(kClientTag, 0, 3));
     CHECK(r.delivered.empty());
-    CHECK(!r.reply);
+    CHECK(!acknowledged());
     r = messenger.on_packet(data_packet(kClientTag, 0xfffffffe, 1));
     CHECK(r.delivered.size() == 1);
-    CHECK(r.reply && parse_data_ack(packet_of(*r.reply).payload)->cumulative == 0xfffffffe);
+    CHECK(acknowledged() == 0xfffffffe);
     r = messenger.on_packet(data_packet(kClientTag, 0xffffffff, 2));
     CHECK(r.delivered.size() == 2);
     if (r.delivered.size() == 2) CHECK(r.delivered[0].data[0] == 2 && r.delivered[1].data[0] == 3 && r.delivered[1].flags == 1);
-    CHECK(r.reply && parse_data_ack(packet_of(*r.reply).payload)->cumulative == 0);
+    CHECK(acknowledged() == 0U);
     // A copy of one already handed over is not handed over again, and is acknowledged again.
     r = messenger.on_packet(data_packet(kClientTag, 0xffffffff, 2));
     CHECK(r.delivered.empty());
-    CHECK(r.reply && parse_data_ack(packet_of(*r.reply).payload)->cumulative == 0);
+    CHECK(acknowledged() == 0U);
     // Too far ahead, or for another connection: nothing.
     r = messenger.on_packet(data_packet(kClientTag, 1 + Messenger::kWindow, 9));
-    CHECK(r.delivered.empty() && !r.reply);
+    CHECK(r.delivered.empty() && !acknowledged());
     r = messenger.on_packet(data_packet(kClientTag + 1, 1, 9));
-    CHECK(r.delivered.empty() && !r.reply);
+    CHECK(r.delivered.empty() && !acknowledged());
 }
 
 PSVP_TEST(messenger_sends_again_until_acknowledged) {

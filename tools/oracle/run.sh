@@ -11,6 +11,7 @@
 #                                   comparison must report
 #   tools/oracle/run.sh --vectors   prints results computed by the reference for fixed
 #                                   inputs, as the C++ that tests/unit/vectors_regist.h holds
+#   tools/oracle/run.sh --vectors-stream   the same for tests/unit/vectors_stream.h
 #
 # The reference's library needs json-c, libevent, Opus, OpenSSL and a curl with
 # WebSocket support on this machine; it fetches miniupnpc itself.
@@ -42,8 +43,8 @@ fi
 psvp_nice cmake --build "$dir" --target psvp_oracle_tests psvp_reference_client psvp-mock-console -j "$PSVP_JOBS" > "$dir/build.log" 2>&1 || {
     tail -40 "$dir/build.log"; echo "ORACLE FAILED: the test program did not build"; exit 1; }
 
-if [ "${1:-}" = "--vectors" ]; then
-    exec "$dir/psvp_oracle_tests" --vectors
+if [ "${1:-}" = "--vectors" ] || [ "${1:-}" = "--vectors-stream" ]; then
+    exec "$dir/psvp_oracle_tests" "$1"
 fi
 
 "$dir/psvp_oracle_tests"
@@ -51,10 +52,17 @@ set +e
 "$dir/psvp_oracle_tests" --plant > "$dir/plant.log" 2>&1
 rc=$?
 set -e
-if [ $rc -eq 1 ] && grep -q 'MISMATCH base64 encode' "$dir/plant.log"; then
-    echo "control ok: the planted difference was reported ($(grep -c MISMATCH "$dir/plant.log") line)"
+# Each planted difference must be reported by name, and nothing else may be.
+planted=("base64 encode" "stream shared secret" "stream key stream" "stream authentication code" "stream packet code"
+         "stream launch specification" "stream sealed launch specification" "stream opening message")
+missing=""
+for what in "${planted[@]}"; do
+    grep -q "MISMATCH $what" "$dir/plant.log" || missing="$missing [$what]"
+done
+if [ $rc -eq 1 ] && [ -z "$missing" ] && [ "$(grep -c MISMATCH "$dir/plant.log")" = "${#planted[@]}" ]; then
+    echo "control ok: the ${#planted[@]} planted differences were reported, each by name, and nothing else"
 else
     cat "$dir/plant.log"
-    echo "ORACLE FAILED: the planted difference was not reported (exit $rc)"; exit 1
+    echo "ORACLE FAILED: planted differences not reported as planted (exit $rc; missing:$missing)"; exit 1
 fi
 echo "ORACLE PASSED (reference at ${pin:0:7})"

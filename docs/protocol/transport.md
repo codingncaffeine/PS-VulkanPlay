@@ -80,12 +80,19 @@ A data chunk's payload:
 | 8 | 1 | kind of content: 0 a message ([messages.md](messages.md)), 7 rumble, 9 controller information, 11 trigger effects |
 | 9 | | the content |
 
-The chunk flags are 1. **[read]** The channel is 1 for a connection's opening messages and its goodbye, 8 for
-the network probe's commands.
+The chunk flags are 1 for a message that fits one chunk; a larger message travels in several
+([stream-setup.md](stream-setup.md#messages-too-large-for-one-packet)). **[read]** The channel is 1 for a
+connection's opening messages, its heartbeats and its goodbye, 8 for the network probe's commands, 9 for the
+answer to the stream information.
 
 The receiver answers with a *data acknowledged* chunk (flags 0), whose payload is twelve bytes: the sequence
 number up to which everything has arrived, its receive window (`0x19000`), the number of gap blocks and the
-number of duplicates, both zero.
+number of duplicates, both zero. **[read]** It sends the acknowledgment after it has acted on what arrived,
+one for everything that came into order together.
+
+On the stream connection every packet carries an authentication code once the keys exist
+([stream-setup.md](stream-setup.md#the-stream-keys)); a packet with a wrong code changes nothing and is not
+acknowledged.
 
 - A receiver hands chunks on in the order of their numbers. One that arrives early is kept (up to sixteen
   ahead) until the ones before it are there.

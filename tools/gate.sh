@@ -47,6 +47,8 @@ lane session           tools/wall.sh tests/scenario/phase2a.sh build/release bui
 lane session-asan      tools/wall.sh tests/scenario/phase2a.sh build/san
 lane probe             tools/wall.sh tests/scenario/phase2b.sh build/release build/oracle
 lane probe-asan        tools/wall.sh tests/scenario/phase2b.sh build/san
+lane stream            tools/wall.sh tests/scenario/phase2c.sh build/release build/oracle
+lane stream-asan       tools/wall.sh tests/scenario/phase2c.sh build/san
 lane identity          tools/identity-audit.sh
 if [ "$scope" = all ]; then
     # The four CI jobs, in the same containers.

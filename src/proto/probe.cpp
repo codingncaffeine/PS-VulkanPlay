@@ -229,7 +229,7 @@ Datagrams ClientProbe::on_datagram(std::span<const std::uint8_t> datagram, TimeP
     if (state_ != State::running) return out;
     if (const auto packet = parse_control(datagram)) {
         Messenger::Received received = messenger_.on_packet(*packet);
-        if (received.reply) out.push_back(std::move(*received.reply));
+        if (auto ack = messenger_.take_ack()) out.push_back(std::move(*ack));
         for (const std::uint32_t sequence : received.acknowledged) {
             if (state_ == State::running && awaited_ack_ == sequence) on_acknowledged(out, now);
         }
@@ -344,7 +344,7 @@ Datagrams ConsoleProbe::on_datagram(std::span<const std::uint8_t> datagram, Time
     if (datagram.size() + kIpUdpOverhead > path_.mtu_out) return out;
     if (const auto packet = parse_control(datagram)) {
         Messenger::Received received = messenger_.on_packet(*packet);
-        if (received.reply) out.push_back(std::move(*received.reply));
+        if (auto ack = messenger_.take_ack()) out.push_back(std::move(*ack));
         for (const DataChunk& chunk : received.delivered) on_message(out, chunk, chunk.flags, now);
     } else if (const auto media = parse_media(datagram)) {
         events_.push_back(std::format("ping {} bytes frame {} unit {} units {} codec {:#04x}", datagram.size(), media->header.frame_index,

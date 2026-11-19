@@ -19,6 +19,8 @@ constexpr std::uint32_t kFieldBig = 2;
 constexpr std::uint32_t kFieldBang = 3;
 constexpr std::uint32_t kFieldDisconnect = 10;
 constexpr std::uint32_t kFieldProbe = 14;
+constexpr std::uint32_t kFieldStreamInfo = 15;
+constexpr std::uint32_t kFieldControllerConnection = 22;
 constexpr std::uint32_t kFieldProtocolRequest = 31;
 constexpr std::uint32_t kFieldProtocolRequestAck = 32;
 
@@ -219,6 +221,59 @@ bool parse_protocol_request(std::span<const std::uint8_t> bytes, ProtocolRequest
     });
 }
 
+std::optional<StreamResolution> parse_resolution(std::span<const std::uint8_t> bytes) {
+    StreamResolution m;
+    const bool ok = read_fields(bytes, bits({1, 2, 3}), [&](const Field& f) {
+        switch (f.number) {
+        case 1: return number(f, m.width);
+        case 2: return number(f, m.height);
+        case 3: if (f.kind != Kind::bytes) return false; m.video_header = copy_of(f.bytes); return true;
+        default: return true;
+        }
+    });
+    return ok ? std::optional(std::move(m)) : std::nullopt;
+}
+
+std::optional<StreamInfo> parse_stream_info(std::span<const std::uint8_t> bytes) {
+    StreamInfo m;
+    const bool ok = read_fields(bytes, bits({2}), [&](const Field& f) {
+        switch (f.number) {
+        case 1: {
+            if (f.kind != Kind::bytes) return false;
+            auto resolution = parse_resolution(f.bytes);
+            if (!resolution) return false;
+            if (m.resolutions.size() < StreamInfo::kMaxResolutions) m.resolutions.push_back(std::move(*resolution));
+            return true;
+        }
+        case 2: if (f.kind != Kind::bytes) return false; m.audio_header = copy_of(f.bytes); return true;
+        case 3: return number(f, m.start_timeout);
+        case 4: return number(f, m.afk_timeout);
+        case 5: return number(f, m.afk_timeout_disconnect);
+        case 6: return number(f, m.congestion_control_interval);
+        default: return true;
+        }
+    });
+    return ok ? std::optional(std::move(m)) : std::nullopt;
+}
+
+std::optional<ControllerConnection> parse_controller_connection(std::span<const std::uint8_t> bytes) {
+    ControllerConnection m;
+    const bool ok = read_fields(bytes, 0, [&](const Field& f) {
+        switch (f.number) {
+        case 1: return number(f, m.controller_id);
+        case 2: {
+            bool connected = false;
+            if (!flag(f, connected)) return false;
+            m.connected = connected;
+            return true;
+        }
+        case 3: return number(f, m.type);
+        default: return true;
+        }
+    });
+    return ok ? std::optional(m) : std::nullopt;
+}
+
 void put_optional(Writer& w, std::uint32_t field, const std::optional<std::uint32_t>& value) {
     if (value) w.varint(field, *value);
 }
@@ -291,6 +346,30 @@ struct BodyWriter {
         out.message(kFieldProtocolRequestAck, w);
     }
 
+    void operator()(const StreamInfo& m) const {
+        Writer w;
+        for (const StreamResolution& resolution : m.resolutions) {
+            Writer inner;
+            inner.varint(1, resolution.width);
+            inner.varint(2, resolution.height);
+            inner.bytes(3, resolution.video_header);
+            w.message(1, inner);
+        }
+        w.bytes(2, m.audio_header);
+        put_optional(w, 3, m.start_timeout);
+        put_optional(w, 4, m.afk_timeout);
+        put_optional(w, 5, m.afk_timeout_disconnect);
+        put_optional(w, 6, m.congestion_control_interval);
+        out.message(kFieldStreamInfo, w);
+    }
+    void operator()(const ControllerConnection& m) const {
+        Writer w;
+        put_optional(w, 1, m.controller_id);
+        if (m.connected) w.boolean(2, *m.connected);
+        put_optional(w, 3, m.type);
+        out.message(kFieldControllerConnection, w);
+    }
+
     void probe(std::uint32_t command, std::uint32_t field, const Writer& inner) const {
         Writer w;
         w.varint(1, command);
@@ -310,6 +389,8 @@ struct TypeOf {
     std::uint32_t operator()(const ProbeClientMtu&) const { return message_type::kProbe; }
     std::uint32_t operator()(const ProtocolRequest&) const { return message_type::kProtocolRequest; }
     std::uint32_t operator()(const ProtocolRequestAck&) const { return message_type::kProtocolRequestAck; }
+    std::uint32_t operator()(const StreamInfo&) const { return message_type::kStreamInfo; }
+    std::uint32_t operator()(const ControllerConnection&) const { return message_type::kControllerConnection; }
 };
 
 }  // namespace
@@ -318,6 +399,12 @@ StreamMessage make_message(StreamMessage::Body body) {
     StreamMessage message;
     message.type = std::visit(TypeOf{0}, body);
     message.body = std::move(body);
+    return message;
+}
+
+StreamMessage make_plain_message(std::uint32_t type) {
+    StreamMessage message;
+    message.type = type;
     return message;
 }
 
@@ -362,6 +449,8 @@ std::optional<StreamMessage> parse_message(std::span<const std::uint8_t> bytes) 
     case message_type::kProbe:
         if (present[kFieldProbe]) ok = parse_probe(bodies[kFieldProbe], message.body);
         break;
+    case message_type::kStreamInfo: ok = take(kFieldStreamInfo, parse_stream_info); break;
+    case message_type::kControllerConnection: ok = take(kFieldControllerConnection, parse_controller_connection); break;
     case message_type::kProtocolRequest:
         if (present[kFieldProtocolRequest]) {
             ProtocolRequest request;
@@ -379,6 +468,31 @@ std::optional<StreamMessage> parse_message(std::span<const std::uint8_t> bytes) 
     default: break;
     }
     return ok ? std::optional(std::move(message)) : std::nullopt;
+}
+
+std::vector<std::uint8_t> encode_audio_header(const AudioHeader& header) {
+    std::vector<std::uint8_t> out(AudioHeader::kSize);
+    out[0] = header.channels;
+    out[1] = header.bits;
+    const auto put32 = [&](std::size_t at, std::uint32_t value) {
+        out[at] = static_cast<std::uint8_t>(value >> 24);
+        out[at + 1] = static_cast<std::uint8_t>(value >> 16);
+        out[at + 2] = static_cast<std::uint8_t>(value >> 8);
+        out[at + 3] = static_cast<std::uint8_t>(value);
+    };
+    put32(2, header.rate);
+    put32(6, header.frame_size);
+    put32(10, header.unknown);
+    return out;
+}
+
+std::optional<AudioHeader> parse_audio_header(std::span<const std::uint8_t> bytes) {
+    if (bytes.size() != AudioHeader::kSize) return std::nullopt;
+    const auto get32 = [&](std::size_t at) {
+        return (std::uint32_t{bytes[at]} << 24) | (std::uint32_t{bytes[at + 1]} << 16) | (std::uint32_t{bytes[at + 2]} << 8) |
+               std::uint32_t{bytes[at + 3]};
+    };
+    return AudioHeader{bytes[0], bytes[1], get32(2), get32(6), get32(10)};
 }
 
 }  // namespace psvp::proto

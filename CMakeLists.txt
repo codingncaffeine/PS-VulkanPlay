@@ -39,11 +39,15 @@ add_library(psvp_proto STATIC
     src/proto/base64.cpp
     src/proto/discovery.cpp
     src/proto/hex.cpp
+    src/proto/key_exchange.cpp
+    src/proto/launch_spec.cpp
     src/proto/probe.cpp
     src/proto/regist.cpp
     src/proto/rp_cipher.cpp
     src/proto/session.cpp
+    src/proto/stream_cipher.cpp
     src/proto/stream_message.cpp
+    src/proto/stream_setup.cpp
     src/proto/text_message.cpp
     src/proto/transport.cpp
     src/proto/wire.cpp)

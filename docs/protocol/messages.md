@@ -35,13 +35,18 @@ the reference **[checked]** (its probe against the mock console: every message e
 |---|---|---|
 | 0 | opening message ("big") | 2 |
 | 1 | its answer ("bang") | 3 |
+| 3 | heartbeat | none |
 | 8 | goodbye | 10 |
 | 12 | network probe | 14 |
+| 13 | stream information | 15 |
+| 14 | stream information received | none |
+| 21 | controller connection | 22 |
+| 25 | keyframe request | none |
 | 31 | protocol version request | 31 |
 | 32 | its answer | 32 |
 
-Thirty-three types exist (heartbeat, stream information, loss and corruption reports, controller and
-microphone connection and more); each is described where it is implemented. A message of a type without a
+Thirty-three types exist (loss and corruption reports, connection quality, microphone connection and more);
+each is described where it is implemented. A message of a type without a
 body here is read as its type alone.
 
 ## Bodies
@@ -54,6 +59,14 @@ key-exchange signature (bytes).
 key (all required), 8 key-exchange public key, 9 key-exchange signature.
 
 **Goodbye**: 1 reason (text, required). A client sends `Client Disconnecting`.
+
+**Stream information**: 1 a picture size, once per size: a message of 1 width, 2 height, 3 the decoder's
+header (bytes; all three required); 2 the sound format (bytes, required); 3 start timeout, 4 idle timeout, 5
+idle timeout before disconnecting, 6 congestion control interval (numbers). A further field 7 (sound channels)
+is not read.
+
+**Controller connection**: 1 controller number, 2 connected or not, 3 controller type (1 DualShock 3, 2
+DualShock 4, 3 Vita, 4 XInput, 5 mobile, 6 DualSense, 7 VR2 Sense).
 
 **Protocol version request** (client): 1 a supported version, once per version. **Its answer**: 1 the
 version chosen.
@@ -70,5 +83,7 @@ version chosen.
 
 **[seen]** A PS5 on system software 14.23 answered the version request, the opening message, the echo
 command, the size requests and the client size test built as above, with messages this client read
-(2026-11-19). The fields of the opening message and its answer that carry keys are **[read]** until the
-stream set-up uses them.
+(2026-11-19). **[checked]** The opening message with its key fields, the three messages a client sends after
+the stream information, the heartbeat, the keyframe request and the goodbye are byte for byte what the
+reference's coder writes; the answer and the stream information as this project writes them are read by the
+reference's coder to the same values.
