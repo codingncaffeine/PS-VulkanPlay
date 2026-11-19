@@ -36,6 +36,18 @@ inline constexpr std::uint32_t kBroadcastIp = 0xffffffff;
 // The directed broadcast address of every network interface that is up and has one.
 [[nodiscard]] std::vector<std::uint32_t> interface_broadcasts();
 
+// An IPv4 network this machine has an address in.
+struct LocalNetwork {
+    std::uint32_t address = 0;  // this machine's own address in it
+    std::uint32_t netmask = 0;
+    [[nodiscard]] std::uint32_t first_host() const noexcept { return (address & netmask) + 1; }
+    [[nodiscard]] std::uint32_t last_host() const noexcept { return (address | ~netmask) - 1; }
+    [[nodiscard]] std::uint32_t host_count() const noexcept { return netmask == 0xffffffff ? 0 : ~netmask - 1; }
+};
+
+// The networks of the interfaces that are up, without the loopback network 127.0.0.0/8.
+[[nodiscard]] std::vector<LocalNetwork> local_networks();
+
 // Owns a file descriptor.
 class Fd {
 public:

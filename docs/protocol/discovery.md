@@ -53,8 +53,10 @@ running-app-name:<...>
 - `system-version` tells whether a PS4 can be talked to at all: this client implements the protocol of system
   software 8.00 and later (`08000000` and up) and says so for anything older.
 - The two `running-app` lines are present only while something runs.
-- **[seen: not yet]** No answer from a real console has been recorded by this project yet; the list of fields
-  is the reference's.
+- **[seen]** A PS5 on system software 14.23, switched on with nothing running, answered a search sent to its
+  address with `HTTP/1.1 200 Ok` and exactly these fields: `host-id`, `host-type`, `host-name`,
+  `host-request-port`, `device-discovery-protocol-version`, `system-version` (2026-11-19). The standby answer
+  and the `running-app` fields have not been seen yet.
 
 ### How the text is read
 
@@ -76,6 +78,16 @@ Where we differ from the reference, on purpose:
 | `host-request-port` that is not a number from 0 to 65535 | keeps the low sixteen bits of whatever number it starts with | no port |
 
 A console that sent an empty value would be invisible to the reference; nothing is gained by refusing it.
+
+## When a broadcast gets no answer
+
+**[seen]** A console's answer to a broadcast comes from the console's own address, which the client never
+sent anything to. A stateful firewall on the client's machine (firewalld in its default zone, for one) drops
+such an answer, and the console looks absent although it is there: the same search sent to the console's
+address is answered at once.
+
+So when a broadcast finds nothing, this client asks every address of the small networks it is in (up to 1,022
+hosts each), one datagram per address and console family. An answer to a direct question passes the firewall.
 
 ## Waking a console
 

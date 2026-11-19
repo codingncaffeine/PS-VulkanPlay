@@ -192,6 +192,22 @@ std::vector<std::uint32_t> broadcast_targets() {
     return targets;
 }
 
+// Every other address of the small networks this machine is in. A firewall on
+// this machine drops a console's answer to a broadcast, because it comes from an
+// address nothing was sent to; an answer to a direct question gets through.
+constexpr std::uint32_t kLargestNetworkToAsk = 1022;  // a /22
+
+std::vector<std::uint32_t> neighbor_addresses() {
+    std::vector<std::uint32_t> targets;
+    for (const net::LocalNetwork& network : net::local_networks()) {
+        if (network.host_count() == 0 || network.host_count() > kLargestNetworkToAsk) continue;
+        for (std::uint32_t host = network.first_host(); host <= network.last_host(); ++host) {
+            if (host != network.address) targets.push_back(host);
+        }
+    }
+    return targets;
+}
+
 std::optional<std::chrono::milliseconds> parse_seconds(std::string_view text, int max_seconds) {
     int seconds = 0;
     const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), seconds);
@@ -217,8 +233,15 @@ int command_discover(std::span<const std::string_view> args) {
     auto context = load_context();
     if (!context) return fail("discover: {}", context.error());
 
-    const auto found = search(targets, wait, false);
+    auto found = search(targets, wait, false);
     if (!found) return fail("discover: {}", found.error());
+    if (found->empty() && !parsed.option("--host")) {
+        // Nobody answered the broadcast: ask the neighbors one by one.
+        if (const auto neighbors = neighbor_addresses(); !neighbors.empty()) {
+            found = search(neighbors, wait, false);
+            if (!found) return fail("discover: {}", found.error());
+        }
+    }
 
     bool store_changed = false;
     Json::Array list;

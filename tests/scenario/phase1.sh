@@ -69,6 +69,21 @@ if [ $rc -eq 0 ] && has "$work/broadcast.out" "Broadcast Room"; then ok "discove
 else fail "broadcast discovery: exit $rc: $(head -3 "$work/broadcast.out")"; fi
 stop_mock
 
+echo "PS5: discovery when broadcasts get no answer"
+# A firewall on the client drops a console's answer to a broadcast. Here the
+# console is simply deaf to broadcasts: it listens on one address of a small test
+# network, and only a direct question reaches it.
+if [ "$PSVP_TEST_ISOLATED_NET" = 1 ] && command -v ip > /dev/null 2>&1 && ip addr add 10.99.0.1/24 dev lo 2>/dev/null && ip addr add 10.99.0.7/24 dev lo 2>/dev/null; then
+    start_mock ps5-quiet --kind ps5 --name "Quiet Room" --bind 10.99.0.7
+    "$app" discover --wait 1 > "$work/quiet.out" 2>&1; rc=$?
+    if [ $rc -eq 0 ] && has "$work/quiet.out" "Quiet Room  PS5  ready  10.99.0.7"; then ok "discover asks the neighbors one by one and finds it"
+    else fail "discovery without broadcast: exit $rc: $(head -3 "$work/quiet.out")"; fi
+    stop_mock
+    ip addr del 10.99.0.7/24 dev lo 2>/dev/null; ip addr del 10.99.0.1/24 dev lo 2>/dev/null
+else
+    echo "  (not run here: this network cannot be given a test address)"
+fi
+
 echo "PS5: registration"
 fresh_profile
 start_mock ps5-c --kind ps5 --name "Living Room" --pin 12345678 --account-id "$account" --dump "$work"

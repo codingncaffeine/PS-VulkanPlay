@@ -158,3 +158,17 @@ PSVP_TEST(addresses_are_read_and_written) {
         CHECK(!parse_ipv4(text).has_value());
     }
 }
+
+PSVP_TEST(local_networks_know_their_hosts) {
+    const psvp::net::LocalNetwork home{0xc0a83269U, 0xffffff00U};  // 192.168.50.105/24
+    CHECK(psvp::net::ip_to_string(home.first_host()) == "192.168.50.1");
+    CHECK(psvp::net::ip_to_string(home.last_host()) == "192.168.50.254");
+    CHECK(home.host_count() == 254);
+    const psvp::net::LocalNetwork wide{0x0a000005U, 0xfffffc00U};  // 10.0.0.5/22
+    CHECK(wide.host_count() == 1022);
+    CHECK(psvp::net::ip_to_string(wide.last_host()) == "10.0.3.254");
+    const psvp::net::LocalNetwork single{0x0a000005U, 0xffffffffU};
+    CHECK(single.host_count() == 0);
+    // The loopback network is never among the networks to ask.
+    for (const auto& network : psvp::net::local_networks()) CHECK((network.address >> 24) != 127);
+}

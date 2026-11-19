@@ -106,6 +106,28 @@ std::vector<std::uint32_t> interface_broadcasts() {
     return out;
 }
 
+std::vector<LocalNetwork> local_networks() {
+    std::vector<LocalNetwork> out;
+    ifaddrs* list = nullptr;
+    if (::getifaddrs(&list) != 0) return out;
+    for (const ifaddrs* entry = list; entry != nullptr; entry = entry->ifa_next) {
+        if (entry->ifa_addr == nullptr || entry->ifa_netmask == nullptr || entry->ifa_addr->sa_family != AF_INET) continue;
+        if ((entry->ifa_flags & IFF_UP) == 0) continue;
+        sockaddr_in address{};
+        sockaddr_in netmask{};
+        std::memcpy(&address, entry->ifa_addr, sizeof(address));
+        std::memcpy(&netmask, entry->ifa_netmask, sizeof(netmask));
+        const LocalNetwork network{ntohl(address.sin_addr.s_addr), ntohl(netmask.sin_addr.s_addr)};
+        if ((network.address >> 24) == 127) continue;
+        const bool known = std::ranges::any_of(out, [&](const LocalNetwork& other) {
+            return other.netmask == network.netmask && (other.address & other.netmask) == (network.address & network.netmask);
+        });
+        if (!known) out.push_back(network);
+    }
+    ::freeifaddrs(list);
+    return out;
+}
+
 Fd& Fd::operator=(Fd&& other) noexcept {
     if (this != &other) {
         reset();
