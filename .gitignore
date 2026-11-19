@@ -1,5 +1,6 @@
 # Local plans, notes and references: never published
 /local-notes/
+/gitignore/
 
 # Dev build with its one launcher (bin/ps-vulkanplay), refreshed by the build
 /bin/
