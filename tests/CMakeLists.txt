@@ -11,7 +11,8 @@ add_executable(psvp_tests
     unit/test_rp_cipher.cpp
     unit/test_session.cpp
     unit/test_store.cpp
-    unit/test_text_message.cpp)
+    unit/test_text_message.cpp
+    unit/test_transport.cpp)
 target_include_directories(psvp_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(psvp_tests PRIVATE "PSVP_TEST_FIXTURES=\"${CMAKE_CURRENT_SOURCE_DIR}/scenario/fixtures\"")
 target_link_libraries(psvp_tests PRIVATE psvp_proto psvp_core)
@@ -40,6 +41,7 @@ psvp_add_fuzz_target(json)
 psvp_add_fuzz_target(regist)
 psvp_add_fuzz_target(session)
 psvp_add_fuzz_target(text)
+psvp_add_fuzz_target(transport)
 
 # Reads the screen of the virtual X server a window check runs on (tools/launch-check.sh).
 add_executable(psvp_fbcheck ../tools/fbcheck/fbcheck.cpp)

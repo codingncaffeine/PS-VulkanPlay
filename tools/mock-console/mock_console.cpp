@@ -29,6 +29,7 @@
 #include <cstdlib>
 #include <format>
 #include <fstream>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -44,6 +45,7 @@
 #include "proto/rp_cipher.h"
 #include "proto/session.h"
 #include "proto/text_message.h"
+#include "proto/transport.h"
 
 namespace {
 
@@ -396,6 +398,44 @@ int main(int argc, char** argv) {
     if (!discovery) return usage(std::format("discovery port {}: {}", port, discovery.error()));
     if (!search) return usage(std::format("session port: {}", search.error()));
     if (!listener) return usage(std::format("session port: {}", listener.error()));
+    // The stream transport's two ports: the network probe and the stream.
+    auto probe_port = psvp::net::UdpSocket::open(options.bind_ip, psvp::proto::transport::kProbePort, psvp::proto::transport::kProbePort, false);
+    auto stream_port = psvp::net::UdpSocket::open(options.bind_ip, psvp::proto::transport::kStreamPort, psvp::proto::transport::kStreamPort, false);
+    if (!probe_port) return usage(std::format("probe port: {}", probe_port.error()));
+    if (!stream_port) return usage(std::format("stream port: {}", stream_port.error()));
+    // One handshake per port and client address.
+    std::map<std::pair<std::uint16_t, std::uint64_t>, psvp::proto::transport::ConsoleHandshake> transports;
+    const auto serve_transport = [&](psvp::net::UdpSocket& socket, std::uint16_t transport_port) {
+        const auto datagram = socket.receive(Clock::now());
+        if (!datagram || !*datagram) return;
+        const psvp::net::Address from = (*datagram)->from;
+        const auto key = std::pair(transport_port, (std::uint64_t{from.ip} << 16) | from.port);
+        auto found = transports.find(key);
+        if (found == transports.end()) {
+            std::array<std::uint8_t, psvp::proto::transport::kCookieSize> cookie{};
+            const psvp::proto::Key16 half_a = psvp::proto::random_key();
+            const psvp::proto::Key16 half_b = psvp::proto::random_key();
+            std::copy(half_a.begin(), half_a.end(), cookie.begin());
+            std::copy(half_b.begin(), half_b.end(), cookie.begin() + 16);
+            const std::uint32_t tag = 0x50000000U | (std::uint32_t{half_a[0]} << 8) | half_b[0];
+            found = transports.emplace(key, psvp::proto::transport::ConsoleHandshake(tag, cookie)).first;
+        }
+        psvp::proto::transport::ConsoleHandshake& handshake = found->second;
+        const bool was_connected = handshake.connected();
+        const bool had_init = handshake.client().has_value();
+        const auto answer = handshake.on_datagram((*datagram)->data);
+        if (answer) (void)socket.send_to(from, *answer);
+        if (!had_init && handshake.client()) {
+            const auto& client = *handshake.client();
+            const auto& header = *handshake.init_header();
+            event("transport init on port {}: header-tag {} mac {} key-position {} flags {} window {:#x} streams {}/{} sequence-is-tag {}",
+                  transport_port, header.tag, psvp::proto::hex_encode(header.mac), header.key_position, header.chunk_flags,
+                  client.receive_window, client.outbound_streams, client.inbound_streams,
+                  client.first_sequence == client.tag ? "yes" : "no");
+        }
+        if (!was_connected && handshake.connected()) event("transport connected on port {}", transport_port);
+        if (!answer && was_connected) event("transport datagram on port {} after the handshake ({} bytes)", transport_port, (*datagram)->data.size());
+    };
 
     ConsoleState state = options.state;
     int registrations = 0;
@@ -412,9 +452,12 @@ int main(int argc, char** argv) {
     };
 
     while (g_stop == 0) {
-        pollfd waits[4] = {{discovery->fd(), POLLIN, 0}, {search->fd(), POLLIN, 0}, {listener->fd(), POLLIN, 0},
-                           {control.stream.open() ? control.stream.fd() : -1, POLLIN, 0}};
-        const int ready = ::poll(waits, 4, 50);
+        pollfd waits[6] = {{discovery->fd(), POLLIN, 0}, {search->fd(), POLLIN, 0}, {listener->fd(), POLLIN, 0},
+                           {control.stream.open() ? control.stream.fd() : -1, POLLIN, 0},
+                           {probe_port->fd(), POLLIN, 0}, {stream_port->fd(), POLLIN, 0}};
+        const int ready = ::poll(waits, 6, 50);
+        if (ready > 0 && (waits[4].revents & POLLIN) != 0) serve_transport(*probe_port, psvp::proto::transport::kProbePort);
+        if (ready > 0 && (waits[5].revents & POLLIN) != 0) serve_transport(*stream_port, psvp::proto::transport::kStreamPort);
 
         // The control channel: a heartbeat request now and then, and whatever the client sends.
         if (control.stream.open() && control.channel && Clock::now() >= control.next_heartbeat) {

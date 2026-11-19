@@ -21,6 +21,7 @@
 #include "proto/hex.h"
 #include "proto/regist.h"
 #include "proto/session.h"
+#include "proto/transport.h"
 #include "psvp/version.h"
 
 namespace psvp::app {
@@ -442,8 +443,32 @@ int command_wake(std::span<const std::string_view> args) {
                 registration.nickname, std::chrono::duration_cast<std::chrono::seconds>(wait).count());
 }
 
+// The transport's opening handshake with one of the console's two transport ports.
+std::expected<proto::transport::Endpoint, std::string> transport_handshake(const net::Address& console) {
+    auto socket = net::UdpSocket::open(net::kAnyIp, 0, 0, false);
+    if (!socket) return std::unexpected(socket.error());
+    const proto::Key16 random = proto::random_key();
+    const std::uint32_t tag = (std::uint32_t{random[0]} << 24) | (std::uint32_t{random[1]} << 16) | (std::uint32_t{random[2]} << 8) | 1U;
+    proto::transport::ClientHandshake handshake(tag);
+    auto out = handshake.start(Clock::now());
+    while (true) {
+        if (out) {
+            if (const auto sent = socket->send_to(console, *out); !sent) return std::unexpected(sent.error());
+        }
+        if (handshake.state() == proto::transport::ClientHandshake::State::connected) return handshake.console();
+        if (handshake.state() == proto::transport::ClientHandshake::State::failed) return std::unexpected(handshake.failure());
+        const auto datagram = socket->receive(handshake.deadline());
+        if (!datagram) return std::unexpected(datagram.error());
+        if (*datagram) {
+            out = (*datagram)->from == console ? handshake.on_datagram((*datagram)->data, Clock::now()) : std::nullopt;
+        } else {
+            out = handshake.on_timeout(Clock::now());
+        }
+    }
+}
+
 // Opens a session as far as this version goes: the request, the control channel,
-// the session ID and the heartbeats. Nothing is streamed.
+// the session ID and the heartbeats, then the transport's handshake. Nothing is streamed.
 int command_session(std::span<const std::string_view> args) {
     const Parsed parsed = parse(args, {"--host", "--seconds", "--passcode"}, {"--rest"}, 1);
     if (!parsed.error.empty()) return usage("session: {}", parsed.error);
@@ -546,13 +571,19 @@ int command_session(std::span<const std::string_view> args) {
         if (*got == 0) return fail("{} closed the control channel.", registration.nickname);
         if (!channel.feed(std::span(chunk).first(*got))) return fail("session: the console's messages could not be read");
     }
+    if (!have_session_id) return fail("{} never named the session.", registration.nickname);
+
+    // The transport the stream will use, as far as its opening handshake.
+    const auto transport = transport_handshake(net::Address{*ip, proto::transport::kProbePort});
+    if (!transport) return fail("{}: the stream transport: {}.", registration.nickname, transport.error());
+    say("Stream transport opened (handshake done, {} streams each way).", transport->outbound_streams);
+
     if (parsed.flag("--rest")) {
         if (!send(proto::ctrl_type::kGoToRest)) return fail("session: the connection to the console broke");
         say("Asked {} to go to rest mode.", registration.nickname);
     }
     say("Control channel held for {} seconds; heartbeats answered: {}.",
         std::chrono::duration_cast<std::chrono::seconds>(hold).count(), heartbeats);
-    if (!have_session_id) return fail("{} never named the session.", registration.nickname);
     return kDone;
 }
 

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Starting a session, end to end: the session request, the control channel, the
-# session ID, heartbeats, the login passcode and "go to rest mode", with the real
-# program on real sockets against the mock console.
+# session ID, heartbeats, the login passcode, "go to rest mode" and the stream
+# transport's opening handshake, with the real program on real sockets against
+# the mock console.
 #
 #   tools/wall.sh tests/scenario/phase2a.sh BUILD_DIR [REFERENCE_BUILD_DIR]
 #
@@ -55,6 +56,8 @@ for kind in ps5 ps4; do
     sleep 0.3
     check "the mock opened the registration key with the session cipher" has "$work/$kind-a.log" "control request accepted: auth ok device-id ok os-type 57696e31302e302e3000 bitrate 00000000"
     check "the mock counted the same heartbeats" has "$work/$kind-a.log" "heartbeats answered: $answered"
+    check "the stream transport's handshake completed" has "$work/$kind-session.out" "Stream transport opened (handshake done, 100 streams each way)."
+    check "the mock saw the handshake through" has "$work/$kind-a.log" "transport connected on port 9297"
     "$app" session "Living Room" --seconds 1 --rest > "$work/$kind-rest.out" 2>&1; rc=$?
     sleep 0.3
     [ $rc -eq 0 ] && has "$work/$kind-a.log" "rest mode requested" && ok "--rest sends the console to rest mode" || fail "--rest: exit $rc"
@@ -102,11 +105,13 @@ if [ -n "$reference" ]; then
         stop_mock
         check "it is accepted and goes on to the stream transport" has "$work/$kind-reference.out" "Takion sent init"
         check "the mock named the session for it" has "$work/$kind-reference.log" "session ID sent"
-        for request in "session request accepted" "control request accepted"; do
+        check "its transport completes the handshake with the mock" has "$work/$kind-reference.out" "Takion connected"
+        for request in "session request accepted" "control request accepted" "transport init on port 9297"; do
             ours="$(line_of "$work/$kind-ours.log" "$request")"
             theirs="$(line_of "$work/$kind-reference.log" "$request")"
-            if [ -n "$ours" ] && [ "$ours" = "$theirs" ]; then ok "its ${request% accepted} reads exactly like ours (${#ours} characters)"
-            else fail "the ${request% accepted}s differ:"; printf '           ours:   %s\n           theirs: %s\n' "$ours" "$theirs" | cut -c1-400; fi
+            what="${request% accepted}"; what="${what% on port 9297}"
+            if [ -n "$ours" ] && [ "$ours" = "$theirs" ]; then ok "its $what reads exactly like ours (${#ours} characters)"
+            else fail "the ${what}s differ:"; printf '           ours:   %s\n           theirs: %s\n' "$ours" "$theirs" | cut -c1-400; fi
         done
     done
 else
