@@ -245,4 +245,9 @@ PSVP_TEST(session_id_is_read_strictly) {
     CHECK(!parse_session_id(bytes_of("K" + std::string(24, 'a'))).has_value());
     CHECK(!parse_session_id(bytes_of("J" + std::string(23, 'a') + "-")).has_value());
     CHECK(!parse_session_id({}).has_value());
+    // As a PS5 on system software 14.23 sends it: the length, then sixteen letters.
+    CHECK(parse_session_id(bytes_of("\x10" "abcdefghABCDEFGH")) == "abcdefghABCDEFGH");
+    CHECK(!parse_session_id(bytes_of("\x11" "abcdefghABCDEFGH")).has_value());
+    CHECK(!parse_session_id(bytes_of("\x10" "abcdefghABCDEFG-")).has_value());
+    CHECK(!parse_session_id(bytes_of("\x01")).has_value());
 }

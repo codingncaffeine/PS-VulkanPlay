@@ -222,9 +222,13 @@ std::optional<CtrlMessage> CtrlChannel::next() {
 }
 
 std::optional<std::string> parse_session_id(std::span<const std::uint8_t> payload) {
-    if (payload.size() < 2 || payload[0] != 'J') return std::nullopt;
+    // The first byte is the length of the ID that follows. Older descriptions took it
+    // for the letter J, which it is for an ID of 74 characters; that reading is kept
+    // for an ID of at least 24 characters whose length the byte does not give.
+    if (payload.size() < 2) return std::nullopt;
     const auto id = payload.subspan(1);
-    if (id.size() < 24 || id.size() > 78) return std::nullopt;
+    if (id.size() > 78) return std::nullopt;
+    if (payload[0] != id.size() && (payload[0] != 'J' || id.size() < 24)) return std::nullopt;
     const bool alphanumeric = std::ranges::all_of(id, [](std::uint8_t c) {
         return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9');
     });

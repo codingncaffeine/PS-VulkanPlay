@@ -129,7 +129,7 @@ private:
 };
 
 // The session ID carried by a kSessionId message, or nothing when it is not one
-// a console sends ('J', then 24 to 78 letters and digits).
+// a console sends (one byte with the ID's length, then up to 78 letters and digits).
 [[nodiscard]] std::optional<std::string> parse_session_id(std::span<const std::uint8_t> payload);
 
 }  // namespace psvp::proto

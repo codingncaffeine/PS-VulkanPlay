@@ -7,10 +7,12 @@ add_executable(psvp_tests
     unit/test_import.cpp
     unit/test_json.cpp
     unit/test_paths.cpp
+    unit/test_probe.cpp
     unit/test_regist.cpp
     unit/test_rp_cipher.cpp
     unit/test_session.cpp
     unit/test_store.cpp
+    unit/test_stream_message.cpp
     unit/test_text_message.cpp
     unit/test_transport.cpp)
 target_include_directories(psvp_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -38,6 +40,7 @@ endfunction()
 psvp_add_fuzz_target(base64)
 psvp_add_fuzz_target(import)
 psvp_add_fuzz_target(json)
+psvp_add_fuzz_target(message)
 psvp_add_fuzz_target(regist)
 psvp_add_fuzz_target(session)
 psvp_add_fuzz_target(text)

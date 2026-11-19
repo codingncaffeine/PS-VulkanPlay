@@ -1,0 +1,74 @@
+# The stream's messages
+
+The content of a data chunk of kind 0 ([transport.md](transport.md)) is one message in the field coding that
+is widely known as the "protocol buffers" wire format. This page describes the coding as far as the protocol
+uses it, and the messages this client implements so far.
+
+## The field coding
+
+A message is a sequence of fields. Each field starts with a *key*: the field's number shifted left by three
+bits, plus the kind of value that follows.
+
+| Kind | Value |
+|---|---|
+| 0 | a number in 7-bit groups, least significant group first, the top bit set on every byte but the last (at most ten bytes) |
+| 1 | eight bytes, least significant first |
+| 2 | a length (coded as kind 0), then that many bytes: text, raw bytes or a message inside the message |
+| 5 | four bytes, least significant first |
+
+The key itself is coded as a number of kind 0. A true or false value is the number 1 or 0. A reader skips
+fields whose number it does not know. Kinds 3 and 4 are not used; this client refuses a message that has
+them, that is cut short, or whose lengths point past its end.
+
+A writer emits fields in the order of their numbers; a field that a message requires is written even when it
+is zero or empty, an optional one only when it is set. Messages written this way are byte for byte those of
+the reference **[checked]** (its probe against the mock console: every message equal to ours).
+
+## The outer message
+
+| Field | Kind | Content |
+|---|---|---|
+| 1 | number | the type (required) |
+| 2 to 32 | message | the body that belongs to the type |
+
+| Type | Name | Body field |
+|---|---|---|
+| 0 | opening message ("big") | 2 |
+| 1 | its answer ("bang") | 3 |
+| 8 | goodbye | 10 |
+| 12 | network probe | 14 |
+| 31 | protocol version request | 31 |
+| 32 | its answer | 32 |
+
+Thirty-three types exist (heartbeat, stream information, loss and corruption reports, controller and
+microphone connection and more); each is described where it is implemented. A message of a type without a
+body here is read as its type alone.
+
+## Bodies
+
+**Opening message** (client): 1 client version (number, required), 2 session key (text, required), 3 launch
+specification (text, required), 4 encrypted key (bytes, required), 5 key-exchange public key (bytes), 6
+key-exchange signature (bytes).
+
+**Its answer** (console): 1 server version, 2 token, 3 encrypted key accepted, 4 version accepted, 5 session
+key (all required), 8 key-exchange public key, 9 key-exchange signature.
+
+**Goodbye**: 1 reason (text, required). A client sends `Client Disconnecting`.
+
+**Protocol version request** (client): 1 a supported version, once per version. **Its answer**: 1 the
+version chosen.
+
+**Network probe**: 1 command (number, required) and the body of that command:
+
+| Command | Body field | Body |
+|---|---|---|
+| 0 echo | 2 | 1 on or off (required) |
+| 1 size request | 3 | 1 id, 2 size asked for (both required), 3 size sent, 4 count, 5 send delay, 6 delta |
+| 4 client size test | 5 | 1 id, 2 size, 3 on or off (all required), 4 inbound size |
+
+## What has been confirmed
+
+**[seen]** A PS5 on system software 14.23 answered the version request, the opening message, the echo
+command, the size requests and the client size test built as above, with messages this client read
+(2026-11-19). The fields of the opening message and its answer that carry keys are **[read]** until the
+stream set-up uses them.

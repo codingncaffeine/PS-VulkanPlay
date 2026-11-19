@@ -49,5 +49,6 @@ if [ $launch = 1 ]; then
     # The commands against the mock console, on real sockets and the consoles' real ports.
     tools/wall.sh tests/scenario/phase1.sh "$dir"
     tools/wall.sh tests/scenario/phase2a.sh "$dir"
+    tools/wall.sh tests/scenario/phase2b.sh "$dir"
 fi
 echo "BUILD AND CHECK PASSED"

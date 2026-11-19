@@ -17,6 +17,9 @@
 //     --passcode DIGITS       ask for this login passcode before it names the session
 //     --in-use yes            refuse a session because Remote Play is already in use
 //     --heartbeat-ms N        how often it asks the client for a heartbeat (default 500)
+//     --mtu-in N              the largest packet that reaches the client (default 1454)
+//     --mtu-out N             the largest packet that reaches the console (default 1454)
+//     --probe no              complete the probe port's handshake, then stay silent
 //
 // It listens on the consoles' real ports, so it needs a network of its own
 // (tools/wall.sh, or a container) and the right to open port 987 for a PS4.
@@ -45,6 +48,7 @@
 #include "proto/rp_cipher.h"
 #include "proto/session.h"
 #include "proto/text_message.h"
+#include "proto/probe.h"
 #include "proto/transport.h"
 
 namespace {
@@ -78,6 +82,8 @@ struct Options {
     std::string passcode;
     bool in_use = false;
     int heartbeat_ms = 500;
+    psvp::proto::transport::ConsoleProbe::Path path;
+    bool probe = true;
 };
 
 // The control channel of the one session the mock can hold.
@@ -178,20 +184,36 @@ std::string serve_registration(const Options& options, psvp::net::TcpStream& str
     }
 
     const std::string family(psvp::proto::to_string(options.kind));
-    const std::string body = std::format("AP-Ssid: {0}-MOCK\r\n"
-                                         "AP-Bssid: {1}\r\n"
-                                         "AP-Key: mockapkey\r\n"
-                                         "AP-Name: {0}\r\n"
-                                         "{0}-Mac: {1}\r\n"
-                                         "{0}-RegistKey: {2}\r\n"
-                                         "{0}-Nickname: {3}\r\n"
-                                         "RP-KeyType: 2\r\n"
-                                         "RP-Key: {4}\r\n",
-                                         family, psvp::proto::hex_encode(kMac),
-                                         psvp::proto::hex_encode(psvp::net::bytes_of(options.regist_key)), options.name,
-                                         psvp::proto::hex_encode(kSecret));
+    const std::string mac = psvp::proto::hex_encode(kMac);
+    const std::string regist_key = psvp::proto::hex_encode(psvp::net::bytes_of(options.regist_key));
+    const std::string secret = psvp::proto::hex_encode(kSecret);
+    // The PS5 lines are the ones a PS5 on system software 14.23 sent, in its order.
+    // The PS4 lines have only been read in other clients.
+    const std::string body =
+        options.kind == psvp::proto::ConsoleKind::ps5
+            ? std::format("AP-Bssid: 0000000000\r\n"
+                          "AP-Name: PS5\r\n"
+                          "PS5-Mac: {}\r\n"
+                          "PS5-RegistKey: {}\r\n"
+                          "PS5-Nickname: {}\r\n"
+                          "RP-KeyType: 2\r\n"
+                          "RP-Key: {}\r\n"
+                          "RP-SupportCmd: 142300\r\n",
+                          mac, regist_key, options.name, secret)
+            : std::format("AP-Ssid: {0}-MOCK\r\n"
+                          "AP-Bssid: {1}\r\n"
+                          "AP-Key: mockapkey\r\n"
+                          "AP-Name: {0}\r\n"
+                          "{0}-Mac: {1}\r\n"
+                          "{0}-RegistKey: {2}\r\n"
+                          "{0}-Nickname: {3}\r\n"
+                          "RP-KeyType: 2\r\n"
+                          "RP-Key: {4}\r\n",
+                          family, mac, regist_key, options.name, secret);
     const std::vector<std::uint8_t> sealed = psvp::proto::encrypt(*cipher, 0, psvp::net::bytes_of(body));
-    std::string response = std::format("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", sealed.size());
+    // A console pads the length with spaces to eleven characters.
+    std::string response =
+        std::format("HTTP/1.1 200 OK\r\nConnection: close\r\nRP-Feature: 3\r\nContent-Length: {:>10}\r\n\r\n", sealed.size());
     response.append(reinterpret_cast<const char*>(sealed.data()), sealed.size());
     answer(response);
     return std::format("registration accepted: account {} key-offset {} wrap-offset {}", *account, key_offset, wrap_offset);
@@ -314,9 +336,10 @@ void send_control(Control& control, std::uint16_t type, std::span<const std::uin
     }
 }
 
-void name_session(Control& control) {
-    // 'J' and an ID of letters and digits, as a console sends it.
-    const std::string_view id = "JMOCKSESSION0123456789abcdefghijkl";
+void name_session(Control& control, ConsoleKind kind) {
+    // The ID's length and the ID. A PS5 on system software 14.23 sent sixteen letters;
+    // the longer form is the one other clients describe.
+    const std::string_view id = kind == ConsoleKind::ps5 ? "\x10" "MockSessionIdent" : "\x21" "MOCKSESSION0123456789abcdefghijkl";
     send_control(control, psvp::proto::ctrl_type::kSessionId, psvp::net::bytes_of(id));
     control.session_named = true;
     event("session ID sent");
@@ -382,6 +405,14 @@ int main(int argc, char** argv) {
             if (std::from_chars(text->data(), text->data() + text->size(), options.heartbeat_ms).ec != std::errc{} || options.heartbeat_ms < 10) {
                 return usage("--heartbeat-ms is a number of at least 10");
             }
+        } else if (arg == "--mtu-in" || arg == "--mtu-out") {
+            std::uint32_t& size = arg == "--mtu-in" ? options.path.mtu_in : options.path.mtu_out;
+            if (std::from_chars(text->data(), text->data() + text->size(), size).ec != std::errc{} ||
+                size < psvp::proto::transport::kMtuFloor) {
+                return usage(std::format("{} is a packet size of at least {}", arg, psvp::proto::transport::kMtuFloor));
+            }
+        } else if (arg == "--probe") {
+            options.probe = *text != "no";
         } else {
             return usage(std::format("unknown option {}", arg));
         }
@@ -405,6 +436,15 @@ int main(int argc, char** argv) {
     if (!stream_port) return usage(std::format("stream port: {}", stream_port.error()));
     // One handshake per port and client address.
     std::map<std::pair<std::uint16_t, std::uint64_t>, psvp::proto::transport::ConsoleHandshake> transports;
+    // The network probe of each client that finished the handshake on the probe port.
+    struct Probe {
+        psvp::net::Address client;
+        psvp::proto::transport::ConsoleProbe probe;
+    };
+    std::map<std::uint64_t, Probe> probes;
+    const auto log_probe = [&](Probe& probe) {
+        for (const std::string& line : probe.probe.take_events()) event("probe {}", line);
+    };
     const auto serve_transport = [&](psvp::net::UdpSocket& socket, std::uint16_t transport_port) {
         const auto datagram = socket.receive(Clock::now());
         if (!datagram || !*datagram) return;
@@ -421,6 +461,11 @@ int main(int argc, char** argv) {
             found = transports.emplace(key, psvp::proto::transport::ConsoleHandshake(tag, cookie)).first;
         }
         psvp::proto::transport::ConsoleHandshake& handshake = found->second;
+        if (const auto probe = probes.find(key.second); transport_port == psvp::proto::transport::kProbePort && probe != probes.end()) {
+            for (const auto& out : probe->second.probe.on_datagram((*datagram)->data, Clock::now())) (void)socket.send_to(from, out);
+            log_probe(probe->second);
+            return;
+        }
         const bool was_connected = handshake.connected();
         const bool had_init = handshake.client().has_value();
         const auto answer = handshake.on_datagram((*datagram)->data);
@@ -433,7 +478,12 @@ int main(int argc, char** argv) {
                   client.receive_window, client.outbound_streams, client.inbound_streams,
                   client.first_sequence == client.tag ? "yes" : "no");
         }
-        if (!was_connected && handshake.connected()) event("transport connected on port {}", transport_port);
+        if (!was_connected && handshake.connected()) {
+            event("transport connected on port {}", transport_port);
+            if (transport_port == psvp::proto::transport::kProbePort && options.probe) {
+                probes.insert_or_assign(key.second, Probe{from, psvp::proto::transport::ConsoleProbe(handshake.tag(), *handshake.client(), options.path)});
+            }
+        }
         if (!answer && was_connected) event("transport datagram on port {} after the handshake ({} bytes)", transport_port, (*datagram)->data.size());
     };
 
@@ -458,6 +508,9 @@ int main(int argc, char** argv) {
         const int ready = ::poll(waits, 6, 50);
         if (ready > 0 && (waits[4].revents & POLLIN) != 0) serve_transport(*probe_port, psvp::proto::transport::kProbePort);
         if (ready > 0 && (waits[5].revents & POLLIN) != 0) serve_transport(*stream_port, psvp::proto::transport::kStreamPort);
+        for (auto& [client, probe] : probes) {
+            for (const auto& out : probe.probe.on_timer(Clock::now())) (void)probe_port->send_to(probe.client, out);
+        }
 
         // The control channel: a heartbeat request now and then, and whatever the client sends.
         if (control.stream.open() && control.channel && Clock::now() >= control.next_heartbeat) {
@@ -482,7 +535,7 @@ int main(int argc, char** argv) {
                         const std::uint8_t result = right ? 0 : 1;
                         send_control(control, kLoginResult, std::span(&result, 1));
                         event("passcode {}", right ? "accepted" : "refused");
-                        if (right && !control.session_named) name_session(control);
+                        if (right && !control.session_named) name_session(control, options.kind);
                     } else if (message->type == kGoToRest) {
                         event("rest mode requested");
                         state = ConsoleState::standby;
@@ -554,7 +607,12 @@ int main(int argc, char** argv) {
                     event("{}", line);
                     if (control.channel) {
                         control.stream = std::move(stream);
-                        if (options.passcode.empty()) name_session(control);
+                        if (options.passcode.empty()) {
+                            // A console reports the login also when it asks for no passcode.
+                            const std::uint8_t logged_in = 0;
+                            send_control(control, psvp::proto::ctrl_type::kLoginResult, std::span(&logged_in, 1));
+                            name_session(control, options.kind);
+                        }
                         else send_control(control, psvp::proto::ctrl_type::kLoginPinRequest);
                     }
                 } else {

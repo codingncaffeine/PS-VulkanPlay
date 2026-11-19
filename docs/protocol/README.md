@@ -28,4 +28,6 @@ The reference implementation is [chiaki-ng](https://github.com/chiaki-ng/chiaki-
 - [Discovery and wake-up](discovery.md): finding consoles, their state, waking them from rest mode
 - [Registration](registration.md): the PIN exchange that makes a console accept this client
 - [Starting a session](session.md): the session request, the session cipher and the control channel
-- [The stream transport](transport.md): the UDP packets and the opening handshake
+- [The stream transport](transport.md): the UDP packets, the opening handshake and the messages that must arrive
+- [The stream's messages](messages.md): the field coding and the messages carried in the transport
+- [The network probe](probe.md): measuring the round trip and the largest packet before the stream

@@ -181,4 +181,187 @@ std::optional<std::vector<std::uint8_t>> ConsoleHandshake::on_datagram(std::span
     return std::nullopt;
 }
 
+// ---- Messages that must arrive -------------------------------------------
+
+namespace {
+
+constexpr std::size_t kDataHeaderSize = 9;
+constexpr std::size_t kDataAckSize = 12;
+
+}  // namespace
+
+std::vector<std::uint8_t> encode_data_chunk(const DataChunk& chunk) {
+    std::vector<std::uint8_t> out(kDataHeaderSize + chunk.data.size());
+    put32(out, 0, chunk.sequence);
+    put16(out, 4, chunk.channel);
+    // Bytes 6 and 7 stay zero.
+    out[8] = chunk.data_type;
+    std::copy(chunk.data.begin(), chunk.data.end(), out.begin() + kDataHeaderSize);
+    return out;
+}
+
+std::optional<DataChunk> parse_data_chunk(std::span<const std::uint8_t> payload) {
+    if (payload.size() < kDataHeaderSize) return std::nullopt;
+    DataChunk chunk;
+    chunk.sequence = get32(payload, 0);
+    chunk.channel = get16(payload, 4);
+    chunk.data_type = payload[8];
+    chunk.data.assign(payload.begin() + kDataHeaderSize, payload.end());
+    return chunk;
+}
+
+std::vector<std::uint8_t> encode_data_ack(const DataAck& ack) {
+    std::vector<std::uint8_t> out(kDataAckSize);
+    put32(out, 0, ack.cumulative);
+    put32(out, 4, ack.receive_window);
+    put16(out, 8, ack.gap_blocks);
+    put16(out, 10, ack.duplicates);
+    return out;
+}
+
+std::optional<DataAck> parse_data_ack(std::span<const std::uint8_t> payload) {
+    // Gap blocks would follow the fixed part; no side sends any.
+    if (payload.size() != kDataAckSize) return std::nullopt;
+    DataAck ack{get32(payload, 0), get32(payload, 4), get16(payload, 8), get16(payload, 10)};
+    if (ack.gap_blocks != 0) return std::nullopt;
+    return ack;
+}
+
+Messenger::Messenger(std::uint32_t local_tag, std::uint32_t remote_tag, std::uint32_t first_local_sequence,
+                     std::uint32_t first_remote_sequence)
+    : local_tag_(local_tag), remote_tag_(remote_tag), next_local_(first_local_sequence), next_remote_(first_remote_sequence) {}
+
+std::optional<Messenger::Sent> Messenger::send(std::uint8_t flags, std::uint16_t channel, std::span<const std::uint8_t> data,
+                                               TimePoint now) {
+    if (unacknowledged_.size() >= kWindow) return std::nullopt;
+    ControlPacket packet;
+    packet.tag = remote_tag_;
+    packet.chunk_type = chunk::kData;
+    packet.chunk_flags = flags;
+    DataChunk chunk;
+    chunk.sequence = next_local_++;
+    chunk.channel = channel;
+    chunk.data.assign(data.begin(), data.end());
+    packet.payload = encode_data_chunk(chunk);
+    Sent sent{chunk.sequence, encode_control(packet)};
+    unacknowledged_.push_back(Pending{chunk.sequence, 0, now, sent.datagram});
+    return sent;
+}
+
+Messenger::Received Messenger::on_packet(const ControlPacket& packet) {
+    Received result;
+    if (packet.tag != local_tag_) return result;
+
+    if (packet.chunk_type == chunk::kDataAck) {
+        const auto ack = parse_data_ack(packet.payload);
+        if (!ack) return result;
+        std::erase_if(unacknowledged_, [&](const Pending& pending) {
+            const bool covered = pending.sequence == ack->cumulative || sequence_before(pending.sequence, ack->cumulative);
+            if (covered) result.acknowledged.push_back(pending.sequence);
+            return covered;
+        });
+        return result;
+    }
+    if (packet.chunk_type != chunk::kData) return result;
+    auto chunk = parse_data_chunk(packet.payload);
+    if (!chunk) return result;
+    chunk->flags = packet.chunk_flags;
+
+    const std::uint32_t ahead = chunk->sequence - next_remote_;
+    bool acknowledge = false;
+    if (ahead < kWindow) {
+        if (!early_[ahead]) early_[ahead] = std::move(*chunk);
+        // Hand over what is now in order.
+        while (early_[0]) {
+            result.delivered.push_back(std::move(*early_[0]));
+            std::move(early_.begin() + 1, early_.end(), early_.begin());
+            early_.back().reset();
+            ++next_remote_;
+            delivered_any_ = true;
+            acknowledge = true;
+        }
+    } else if (sequence_before(chunk->sequence, next_remote_)) {
+        // Seen before: the acknowledgment for it was lost, so it is said again.
+        acknowledge = delivered_any_;
+    }
+    if (acknowledge) {
+        ControlPacket reply;
+        reply.tag = remote_tag_;
+        reply.chunk_type = chunk::kDataAck;
+        reply.payload = encode_data_ack(DataAck{next_remote_ - 1, kReceiveWindow, 0, 0});
+        result.reply = encode_control(reply);
+    }
+    return result;
+}
+
+Messenger::Timer Messenger::on_timer(TimePoint now) {
+    Timer timer;
+    std::erase_if(unacknowledged_, [&](Pending& pending) {
+        if (now < pending.last_sent + kResendAfter) return false;
+        if (pending.resends >= kResends) {
+            timer.abandoned.push_back(pending.sequence);
+            return true;
+        }
+        ++pending.resends;
+        pending.last_sent = now;
+        timer.resend.push_back(pending.datagram);
+        return false;
+    });
+    return timer;
+}
+
+std::optional<TimePoint> Messenger::deadline() const {
+    std::optional<TimePoint> earliest;
+    for (const Pending& pending : unacknowledged_) {
+        const TimePoint due = pending.last_sent + kResendAfter;
+        if (!earliest || due < *earliest) earliest = due;
+    }
+    return earliest;
+}
+
+// ---- Picture and sound packets, as the network probe uses them ------------
+
+std::vector<std::uint8_t> encode_media(const MediaHeader& header, std::size_t datagram_size) {
+    std::vector<std::uint8_t> out(std::max(datagram_size, header.size()));
+    out[0] = static_cast<std::uint8_t>((header.video ? packet_kind::kVideo : packet_kind::kAudio) | (header.unit_info ? 0x10 : 0));
+    put16(out, 1, header.packet_index);
+    put16(out, 3, header.frame_index);
+    put32(out, 5,
+          (std::uint32_t{header.units_repair} & 0x3ffU) | (((std::uint32_t{header.units_total} - 1U) & 0x7ffU) << 10) |
+              ((std::uint32_t{header.unit_index} & 0x7ffU) << 21));
+    out[9] = header.codec;
+    // Bytes 10 to 13 stay zero.
+    put32(out, 14, header.key_position);
+    if (header.video) {
+        put16(out, 18, header.video_word);
+        out[20] = static_cast<std::uint8_t>(header.adaptive_stream << 5);
+    }
+    return out;
+}
+
+std::optional<MediaPacket> parse_media(std::span<const std::uint8_t> datagram) {
+    if (datagram.empty()) return std::nullopt;
+    const std::uint8_t kind = datagram[0] & 0x0f;
+    if (kind != packet_kind::kVideo && kind != packet_kind::kAudio) return std::nullopt;
+    MediaPacket packet;
+    MediaHeader& header = packet.header;
+    header.video = kind == packet_kind::kVideo;
+    header.unit_info = (datagram[0] & 0x10) != 0;
+    if (datagram.size() < header.size()) return std::nullopt;
+    header.packet_index = get16(datagram, 1);
+    header.frame_index = get16(datagram, 3);
+    const std::uint32_t units = get32(datagram, 5);
+    header.unit_index = static_cast<std::uint16_t>((units >> 21) & 0x7ffU);
+    header.units_total = static_cast<std::uint16_t>(((units >> 10) & 0x7ffU) + 1U);
+    header.units_repair = static_cast<std::uint16_t>(units & 0x3ffU);
+    header.codec = datagram[9];
+    header.key_position = get32(datagram, 14);
+    if (header.video) {
+        header.video_word = get16(datagram, 18);
+        header.adaptive_stream = static_cast<std::uint8_t>(datagram[20] >> 5);
+    }
+    packet.data = datagram.subspan(header.size());
+    return packet;
+}
+
 }  // namespace psvp::proto::transport

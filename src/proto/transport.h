@@ -115,6 +115,7 @@ public:
     [[nodiscard]] const std::optional<Endpoint>& client() const noexcept { return client_; }
     // The header of the client's init, for the mock's record: its tag, authentication code and key position.
     [[nodiscard]] const std::optional<ControlPacket>& init_header() const noexcept { return init_; }
+    [[nodiscard]] std::uint32_t tag() const noexcept { return tag_; }
 
 private:
     std::uint32_t tag_;
@@ -123,5 +124,127 @@ private:
     std::optional<ControlPacket> init_;
     bool connected_ = false;
 };
+
+// ---- Messages that must arrive -------------------------------------------
+
+namespace data_type {
+inline constexpr std::uint8_t kMessage = 0;  // a message in the field coding (proto/stream_message.h)
+inline constexpr std::uint8_t kRumble = 7;
+inline constexpr std::uint8_t kPadInfo = 9;
+inline constexpr std::uint8_t kTriggerEffects = 11;
+}  // namespace data_type
+
+// The payload of a data chunk.
+struct DataChunk {
+    std::uint32_t sequence = 0;
+    std::uint16_t channel = 0;
+    std::uint8_t data_type = data_type::kMessage;
+    std::vector<std::uint8_t> data;
+    std::uint8_t flags = 0;  // of the packet that carried it; not part of the payload
+};
+
+[[nodiscard]] std::vector<std::uint8_t> encode_data_chunk(const DataChunk& chunk);
+[[nodiscard]] std::optional<DataChunk> parse_data_chunk(std::span<const std::uint8_t> payload);
+
+// The payload of a data acknowledgment: everything up to `cumulative` has arrived.
+struct DataAck {
+    std::uint32_t cumulative = 0;
+    std::uint32_t receive_window = kReceiveWindow;
+    std::uint16_t gap_blocks = 0;
+    std::uint16_t duplicates = 0;
+};
+
+[[nodiscard]] std::vector<std::uint8_t> encode_data_ack(const DataAck& ack);
+[[nodiscard]] std::optional<DataAck> parse_data_ack(std::span<const std::uint8_t> payload);
+
+// Sequence numbers wrap around: `a` comes before `b` when it is less than half the number space behind it.
+[[nodiscard]] constexpr bool sequence_before(std::uint32_t a, std::uint32_t b) noexcept {
+    return a != b && b - a < 0x80000000U;
+}
+
+// One end's numbered messages: sends them again until they are acknowledged,
+// and hands the other end's messages over in order, each exactly once.
+class Messenger {
+public:
+    static constexpr std::size_t kWindow = 16;
+    static constexpr std::chrono::milliseconds kResendAfter{200};
+    static constexpr int kResends = 25;
+
+    Messenger(std::uint32_t local_tag, std::uint32_t remote_tag, std::uint32_t first_local_sequence,
+              std::uint32_t first_remote_sequence);
+
+    struct Sent {
+        std::uint32_t sequence = 0;
+        std::vector<std::uint8_t> datagram;
+    };
+    // Nothing while kWindow messages still wait for their acknowledgment.
+    [[nodiscard]] std::optional<Sent> send(std::uint8_t flags, std::uint16_t channel, std::span<const std::uint8_t> data,
+                                           TimePoint now);
+
+    struct Received {
+        std::vector<DataChunk> delivered;         // in order
+        std::vector<std::uint32_t> acknowledged;  // our messages the other end now has
+        std::optional<std::vector<std::uint8_t>> reply;
+    };
+    // For a control packet that carries this end's tag; others change nothing.
+    [[nodiscard]] Received on_packet(const ControlPacket& packet);
+
+    struct Timer {
+        std::vector<std::vector<std::uint8_t>> resend;
+        std::vector<std::uint32_t> abandoned;  // given up on after kResends
+    };
+    [[nodiscard]] Timer on_timer(TimePoint now);
+    // When on_timer has work to do; nothing while no message waits.
+    [[nodiscard]] std::optional<TimePoint> deadline() const;
+
+    [[nodiscard]] std::size_t waiting() const noexcept { return unacknowledged_.size(); }
+    [[nodiscard]] std::uint32_t local_tag() const noexcept { return local_tag_; }
+    [[nodiscard]] std::uint32_t remote_tag() const noexcept { return remote_tag_; }
+
+private:
+    struct Pending {
+        std::uint32_t sequence = 0;
+        int resends = 0;
+        TimePoint last_sent{};
+        std::vector<std::uint8_t> datagram;
+    };
+
+    std::uint32_t local_tag_;
+    std::uint32_t remote_tag_;
+    std::uint32_t next_local_;
+    std::uint32_t next_remote_;
+    bool delivered_any_ = false;
+    std::vector<Pending> unacknowledged_;
+    std::array<std::optional<DataChunk>, kWindow> early_{};  // early_[i] has sequence next_remote_ + i
+};
+
+// ---- Picture and sound packets, as the network probe uses them ------------
+
+// The header of a picture or sound packet in the layout of the probe
+// connection (the stream's own layouts differ and come with the receivers).
+struct MediaHeader {
+    bool video = false;
+    bool unit_info = false;        // three more header bytes follow
+    std::uint16_t packet_index = 0;
+    std::uint16_t frame_index = 0;
+    std::uint16_t unit_index = 0;   // eleven bits
+    std::uint16_t units_total = 1;  // 1 to 2048
+    std::uint16_t units_repair = 0; // ten bits
+    std::uint8_t codec = 0;
+    std::uint32_t key_position = 0;
+    std::uint16_t video_word = 0;      // video only
+    std::uint8_t adaptive_stream = 0;  // video only, three bits
+
+    [[nodiscard]] std::size_t size() const noexcept { return 18 + (video ? 3U : 0U) + (unit_info ? 3U : 0U); }
+};
+
+// A datagram of `datagram_size` bytes (at least the header's) that starts with the header; the rest is zero.
+[[nodiscard]] std::vector<std::uint8_t> encode_media(const MediaHeader& header, std::size_t datagram_size);
+
+struct MediaPacket {
+    MediaHeader header;
+    std::span<const std::uint8_t> data;  // a view into the datagram
+};
+[[nodiscard]] std::optional<MediaPacket> parse_media(std::span<const std::uint8_t> datagram);
 
 }  // namespace psvp::proto::transport

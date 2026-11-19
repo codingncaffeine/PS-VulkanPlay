@@ -19,6 +19,7 @@
 #include "net/socket.h"
 #include "proto/discovery.h"
 #include "proto/hex.h"
+#include "proto/probe.h"
 #include "proto/regist.h"
 #include "proto/session.h"
 #include "proto/transport.h"
@@ -466,20 +467,48 @@ int command_wake(std::span<const std::string_view> args) {
                 registration.nickname, std::chrono::duration_cast<std::chrono::seconds>(wait).count());
 }
 
-// The transport's opening handshake with one of the console's two transport ports.
-std::expected<proto::transport::Endpoint, std::string> transport_handshake(const net::Address& console) {
+// The form of a payload without its content: its length, its first byte and
+// which kinds of characters the rest holds. For a report, when the content is not to be shown.
+std::string describe_shape(std::span<const std::uint8_t> payload) {
+    if (payload.empty()) return "empty";
+    int letters = 0;
+    int digits = 0;
+    int zeros = 0;
+    std::string others;
+    for (const std::uint8_t byte : payload.subspan(1)) {
+        if ((byte >= 'a' && byte <= 'z') || (byte >= 'A' && byte <= 'Z')) ++letters;
+        else if (byte >= '0' && byte <= '9') ++digits;
+        else if (byte == 0) ++zeros;
+        else if (const std::string text = std::format("{:02x}", byte); others.find(text) == std::string::npos && others.size() < 60) others += text + " ";
+    }
+    if (!others.empty()) others.pop_back();
+    return std::format("{} bytes, first {:#04x}, then {} letters, {} digits, {} zero bytes, other byte values: {}", payload.size(),
+                       payload[0], letters, digits, zeros, others.empty() ? "none" : others);
+}
+
+// What the network probe found, or why it could not be run.
+struct ProbeOutcome {
+    proto::transport::Endpoint console;
+    std::optional<proto::transport::ProbeResult> measured;
+    std::string probe_failure;
+    int pongs = 0;
+};
+
+// The transport's opening handshake on the console's probe port, then the network probe.
+std::expected<ProbeOutcome, std::string> probe_network(const net::Address& console) {
+    namespace transport = proto::transport;
     auto socket = net::UdpSocket::open(net::kAnyIp, 0, 0, false);
     if (!socket) return std::unexpected(socket.error());
     const proto::Key16 random = proto::random_key();
     const std::uint32_t tag = (std::uint32_t{random[0]} << 24) | (std::uint32_t{random[1]} << 16) | (std::uint32_t{random[2]} << 8) | 1U;
-    proto::transport::ClientHandshake handshake(tag);
+    transport::ClientHandshake handshake(tag);
     auto out = handshake.start(Clock::now());
     while (true) {
         if (out) {
             if (const auto sent = socket->send_to(console, *out); !sent) return std::unexpected(sent.error());
         }
-        if (handshake.state() == proto::transport::ClientHandshake::State::connected) return handshake.console();
-        if (handshake.state() == proto::transport::ClientHandshake::State::failed) return std::unexpected(handshake.failure());
+        if (handshake.state() == transport::ClientHandshake::State::connected) break;
+        if (handshake.state() == transport::ClientHandshake::State::failed) return std::unexpected(handshake.failure());
         const auto datagram = socket->receive(handshake.deadline());
         if (!datagram) return std::unexpected(datagram.error());
         if (*datagram) {
@@ -488,10 +517,37 @@ std::expected<proto::transport::Endpoint, std::string> transport_handshake(const
             out = handshake.on_timeout(Clock::now());
         }
     }
+
+    ProbeOutcome outcome;
+    outcome.console = handshake.console();
+    transport::ClientProbe probe(tag, handshake.console(), [] {
+        const proto::Key16 bytes = proto::random_key();
+        return (std::uint32_t{bytes[0]} << 24) | (std::uint32_t{bytes[1]} << 16) | (std::uint32_t{bytes[2]} << 8) | std::uint32_t{bytes[3]};
+    });
+    transport::Datagrams sending = probe.start(Clock::now());
+    while (true) {
+        for (const auto& datagram : sending) {
+            // A size ping that the system refuses to send did not pass; the probe finds that out by its silence.
+            (void)socket->send_to(console, datagram);
+        }
+        if (probe.state() != transport::ClientProbe::State::running) break;
+        const auto datagram = socket->receive(probe.deadline());
+        if (!datagram) return std::unexpected(datagram.error());
+        if (*datagram) {
+            sending = (*datagram)->from == console ? probe.on_datagram((*datagram)->data, Clock::now()) : transport::Datagrams{};
+        } else {
+            sending = probe.on_timeout(Clock::now());
+        }
+    }
+    outcome.pongs = probe.pongs();
+    if (probe.state() == transport::ClientProbe::State::done) outcome.measured = probe.result();
+    else outcome.probe_failure = probe.failure();
+    return outcome;
 }
 
 // Opens a session as far as this version goes: the request, the control channel,
-// the session ID and the heartbeats, then the transport's handshake. Nothing is streamed.
+// the session ID and the heartbeats, then the transport's handshake and the network
+// probe. Nothing is streamed.
 int command_session(std::span<const std::string_view> args) {
     const Parsed parsed = parse(args, {"--host", "--seconds", "--passcode"}, {"--rest"}, 1);
     if (!parsed.error.empty()) return usage("session: {}", parsed.error);
@@ -563,6 +619,7 @@ int command_session(std::span<const std::string_view> args) {
     if (!channel.feed(head->rest)) return fail("session: the console's messages could not be read");
 
     bool have_session_id = false;
+    bool passcode_sent = false;
     int heartbeats = 0;
     const auto deadline = Clock::now() + hold;
     while (Clock::now() < deadline) {
@@ -572,7 +629,7 @@ int command_session(std::span<const std::string_view> args) {
                 const auto id = proto::parse_session_id(message->payload);
                 have_session_id = true;
                 if (id) say("Session ID received ({} characters).", id->size());
-                else say("The console sent a session ID in a form this version does not know.");
+                else say("The console sent a session ID in a form this version does not know ({}).", describe_shape(message->payload));
             } else if (message->type == kHeartbeatRequest) {
                 if (!send(kHeartbeatReply)) return fail("session: the connection to the console broke");
                 ++heartbeats;
@@ -580,9 +637,11 @@ int command_session(std::span<const std::string_view> args) {
                 const auto passcode = parsed.option("--passcode");
                 if (!passcode) return fail("{} asks for its login passcode: add --passcode DIGITS.", registration.nickname);
                 if (!send(kLoginPinReply, net::bytes_of(*passcode))) return fail("session: the connection to the console broke");
+                passcode_sent = true;
             } else if (message->type == kLoginResult) {
                 if (message->payload.empty() || message->payload[0] != 0) return fail("{} did not accept the passcode.", registration.nickname);
-                say("Passcode accepted.");
+                // A console reports the login also when it asked for no passcode.
+                say("{}", passcode_sent ? "Passcode accepted." : "Logged in.");
             }
         }
         std::uint8_t chunk[1024];
@@ -596,10 +655,19 @@ int command_session(std::span<const std::string_view> args) {
     }
     if (!have_session_id) return fail("{} never named the session.", registration.nickname);
 
-    // The transport the stream will use, as far as its opening handshake.
-    const auto transport = transport_handshake(net::Address{*ip, proto::transport::kProbePort});
-    if (!transport) return fail("{}: the stream transport: {}.", registration.nickname, transport.error());
-    say("Stream transport opened (handshake done, {} streams each way).", transport->outbound_streams);
+    // The transport the stream will use, as far as its opening handshake and the network probe.
+    const auto network = probe_network(net::Address{*ip, proto::transport::kProbePort});
+    if (!network) return fail("{}: the stream transport: {}.", registration.nickname, network.error());
+    say("Stream transport opened (handshake done, {} streams each way).", network->console.outbound_streams);
+    if (network->measured) {
+        say("Network measured: round trip {:.2f} ms ({} of {} pings answered), largest packet in {}, out {}.",
+            static_cast<double>(network->measured->round_trip.count()) / 1000.0, network->pongs, proto::transport::ClientProbe::kPings,
+            network->measured->mtu_in, network->measured->mtu_out);
+    } else {
+        const proto::transport::ProbeResult fallback;
+        say("The network could not be measured ({}); a stream would start with the defaults (largest packet {}).",
+            network->probe_failure, fallback.mtu_in);
+    }
 
     if (parsed.flag("--rest")) {
         if (!send(proto::ctrl_type::kGoToRest)) return fail("session: the connection to the console broke");

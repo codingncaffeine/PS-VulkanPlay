@@ -49,7 +49,8 @@ for kind in ps5 ps4; do
     "$app" session "Living Room" --seconds 2 > "$work/$kind-session.out" 2>&1; rc=$?
     [ $rc -eq 0 ] && ok "session: exit 0" || fail "session: exit $rc: $(head -3 "$work/$kind-session.out")"
     check "the console accepted it and named its model" has "$work/$kind-session.out" "Living Room accepted the session ($family)."
-    check "the session ID arrived" has "$work/$kind-session.out" "Session ID received (33 characters)."
+    [ "$kind" = ps5 ] && id_length=16 || id_length=33
+    check "the session ID arrived" has "$work/$kind-session.out" "Session ID received ($id_length characters)."
     answered=$(grep -o 'heartbeats answered: [0-9]*' "$work/$kind-session.out" | grep -o '[0-9]*$')
     # Two seconds at one request every 200 ms: about ten, never fewer than six.
     [ "${answered:-0}" -ge 6 ] && [ "${answered:-0}" -le 12 ] && ok "heartbeats were answered ($answered in 2 s)" || fail "heartbeats answered: ${answered:-none}"

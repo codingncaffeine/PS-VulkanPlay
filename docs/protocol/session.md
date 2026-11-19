@@ -109,17 +109,24 @@ accepts a message longer than 512 bytes in all.
 
 | Type | Direction | Meaning | Plain payload |
 |---|---|---|---|
-| `0x33` | console | the session ID | `J`, then 24 to 78 letters and digits |
+| `0x33` | console | the session ID | one byte with the ID's length, then the ID: letters and digits |
 | `0xfe` | console | heartbeat request | none |
 | `0x1fe` | client | heartbeat reply | none |
 | `0x04` | console | the console wants its login passcode | none |
 | `0x8004` | client | the passcode | its digits as characters |
-| `0x05` | console | login result | one byte: 0 accepted, 1 wrong passcode |
+| `0x05` | console | login result | one byte: 0 accepted, 1 wrong passcode; sent also when no passcode was asked for |
 | `0x50` | client | go to rest mode | none |
 | `0x34` | console | switch to the stream connection | (described with the stream) |
 
 Keyboard (`0x0d`, `0x20` to `0x25`), controller features (`0x13`), home (`0x14`), display (`0x01`, `0x16`,
 `0x910`) and microphone (`0x30`, `0x36`) messages exist and are described where they are implemented.
+
+**[seen]** A PS5 on system software 14.23 with no login passcode sent, unasked, a login result of 0, then a
+session ID of sixteen letters behind a length byte of `0x10`, and a heartbeat request no more often than
+every few seconds (2026-11-19). The reference takes the first byte for the letter `J` (which is the length
+74) and refuses an ID shorter than 24 characters, so with this console it makes up an ID of its own: seconds
+since its start, then 48 random bytes in base64. Which of the two IDs the stream set-up must carry is decided
+there, against the console.
 
 The session ID names the session in the stream set-up that follows. A client answers every heartbeat request;
 a console that stops getting answers ends the session.
