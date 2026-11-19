@@ -10,7 +10,8 @@
 #   - no sound is possible: /dev/snd and the folder of the PulseAudio and
 #     PipeWire sockets are empty; SDL's dummy audio driver is a second layer only
 #   - no network but loopback: nothing started here can reach a console on the
-#     home network, or anything else
+#     home network, or anything else. The network inside is the wall's own, so a
+#     test may open the consoles' real ports and add a test interface to it
 #   - no process of the desktop exists (own process numbering), and everything
 #     started here ends when the wall does
 #   - the window servers of the desktop cannot be reached; windows open on a
@@ -20,7 +21,9 @@
 #   - Vulkan runs on the software driver only, without the desktop's layers
 #
 # Where bubblewrap cannot run (a container that forbids it), the command runs
-# without it only if the machine has no sound device at all.
+# without it only if the machine has no sound device at all. Tests that use the
+# network then need PSVP_TEST_ISOLATED_NET set by whoever started the container,
+# as a statement that its network is not anyone's home network.
 #
 #   PSVP_TEST_HOME=DIR      keep the private folders in DIR (default: temporary, removed)
 #   PSVP_TEST_SCREEN=WxHxD  the virtual screen (default 1280x1024x24)
@@ -32,7 +35,8 @@ RT="/run/user/$(id -u)"
 # A mistake in sizing a test run should cost the run, never someone's desktop programs.
 echo 1000 > /proc/self/oom_score_adj 2>/dev/null || true
 
-BWRAP=(--dev-bind / / --unshare-pid --unshare-net --proc /proc --die-with-parent)
+BWRAP=(--dev-bind / / --unshare-user --unshare-pid --unshare-net --proc /proc --die-with-parent
+       --cap-add CAP_NET_BIND_SERVICE --cap-add CAP_NET_ADMIN)
 [ -d /dev/snd ] && BWRAP+=(--tmpfs /dev/snd)
 [ -d "$RT" ] && BWRAP+=(--tmpfs "$RT")
 [ -d /tmp/.X11-unix ] && BWRAP+=(--perms 1777 --tmpfs /tmp/.X11-unix)
@@ -95,6 +99,7 @@ ENVS=(HOME="$TMP/home" XDG_CONFIG_HOME="$TMP/config" XDG_DATA_HOME="$TMP/data" X
       GDK_BACKEND=x11 NO_AT_BRIDGE=1
       VK_DRIVER_FILES="$icd" VK_ICD_FILENAMES="$icd" "VK_LOADER_LAYERS_DISABLE=~implicit~"
       PSVP_TEST_TMP="$TMP" PSVP_TEST_FB="$TMP/fb/Xvfb_screen0" PSVP_TEST_WALL="$WALL"
+      PSVP_TEST_ISOLATED_NET="$([ "$WALL" = 1 ] && echo 1 || echo "${PSVP_TEST_ISOLATED_NET:-}")"
       PSVP_TEST_SCREEN="${PSVP_TEST_SCREEN:-1280x1024x24}" PSVP_TEST_BUS="$HERE/isolated-bus.conf")
 
 # The X server picks a free display number itself and reports it, so runs started

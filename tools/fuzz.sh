@@ -3,14 +3,21 @@
 # New inputs it finds stay in scratch/fuzz/; the saved inputs under
 # tests/fuzz/corpus/ are the starting set and are not changed.
 #
-#   tools/fuzz.sh [SECONDS, default 30] [TARGET, default base64]
+#   tools/fuzz.sh [SECONDS, default 30] [TARGET, default: every target, SECONDS each]
 set -euo pipefail
 cd "$(dirname "$0")/.."
 . tools/env.sh
 seconds="${1:-30}"
-target="${2:-base64}"
 
 tools/build.sh fuzz > /dev/null
+if [ $# -lt 2 ]; then
+    for file in tests/fuzz/fuzz_*.cpp; do
+        name="${file##*/fuzz_}"
+        "$0" "$seconds" "${name%.cpp}"
+    done
+    exit 0
+fi
+target="$2"
 work="scratch/fuzz/$target"
 mkdir -p "$work/found" "$work/crashes"
 psvp_nice "build/fuzz/psvp_fuzz_$target" -max_total_time="$seconds" -print_final_stats=1 \

@@ -46,5 +46,7 @@ if [ $launch = 1 ]; then
     # system's libraries keep allocations until the process ends, which reads as leaks.
     [ "$sanitize" = address ] && export ASAN_OPTIONS="${ASAN_OPTIONS:+$ASAN_OPTIONS:}detect_leaks=0"
     tools/wall.sh tools/launch-check.sh "$dir/ps-vulkanplay"
+    # The commands against the mock console, on real sockets and the consoles' real ports.
+    tools/wall.sh tests/scenario/phase1.sh "$dir"
 fi
 echo "BUILD AND CHECK PASSED"

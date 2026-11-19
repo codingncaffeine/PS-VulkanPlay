@@ -15,6 +15,9 @@ concurrency:
 
 env:
   PSVP_JOBS: 4
+  # The scenario tests open the consoles' ports and send broadcasts; a CI container's
+  # network is nobody's home network, and this says so to them.
+  PSVP_TEST_ISOLATED_NET: ci
 
 # Every job builds from source in a container of the distribution it names, with
 # that distribution's own compiler and libraries and warnings as errors, runs the

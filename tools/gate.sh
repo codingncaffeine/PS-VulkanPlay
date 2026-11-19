@@ -38,8 +38,11 @@ lane launch-asan       env ASAN_OPTIONS=detect_leaks=0 tools/wall.sh tools/launc
 lane thread-sanitizer  preset tsan
 lane clang-libcxx      preset clang-libcxx
 lane launch-libcxx     launch clang-libcxx
-lane fuzz              tools/fuzz.sh 20
+lane fuzz              tools/fuzz.sh 8
 lane oracle            tools/oracle/run.sh
+# The commands against the mock console, with the reference's own client as the control.
+lane scenario          tools/wall.sh tests/scenario/phase1.sh build/release build/oracle
+lane scenario-asan     tools/wall.sh tests/scenario/phase1.sh build/san
 lane identity          tools/identity-audit.sh
 if [ "$scope" = all ]; then
     # The four CI jobs, in the same containers.
