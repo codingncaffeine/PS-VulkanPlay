@@ -10,6 +10,7 @@
 #include <net/if.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -220,6 +221,10 @@ std::expected<TcpStream, std::string> TcpStream::connect(const Address& to, Cloc
             return std::unexpected(std::format("connect to {}: {}", to_string(to), std::strerror(failure != 0 ? failure : errno)));
         }
     }
+    // Small messages go out at once: the system would otherwise hold each one back
+    // until the one before it has been acknowledged.
+    const int on = 1;
+    (void)::setsockopt(fd.get(), IPPROTO_TCP, TCP_NODELAY, &on, sizeof(on));
     return TcpStream(std::move(fd));
 }
 
@@ -293,7 +298,11 @@ std::expected<std::optional<Accepted>, std::string> TcpListener::accept(Clock::t
         sockaddr_in from{};
         socklen_t from_size = sizeof(from);
         const int fd = ::accept4(fd_.get(), reinterpret_cast<sockaddr*>(&from), &from_size, SOCK_NONBLOCK | SOCK_CLOEXEC);
-        if (fd >= 0) return std::optional<Accepted>(Accepted{TcpStream(Fd(fd)), from_sockaddr(from)});
+        if (fd >= 0) {
+            const int on = 1;
+            (void)::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &on, sizeof(on));
+            return std::optional<Accepted>(Accepted{TcpStream(Fd(fd)), from_sockaddr(from)});
+        }
         if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR && errno != ECONNABORTED) {
             return std::unexpected(error_text("accept"));
         }
