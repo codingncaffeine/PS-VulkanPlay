@@ -102,7 +102,9 @@ std::expected<std::size_t, RegistError> parse_regist_response_head(std::string_v
         return std::unexpected(error);
     }
     std::size_t length = 0;
-    const auto announced = message->find("Content-Length");
+    auto announced = message->find("Content-Length");
+    // A console pads the number with spaces on its left.
+    while (announced && announced->starts_with(' ')) announced->remove_prefix(1);
     if (!announced || !parse_number(*announced, length, 10) || length == 0 || length > kMaxRegistBody) {
         return std::unexpected(RegistError{RegistFailure::malformed, 200, 0});
     }

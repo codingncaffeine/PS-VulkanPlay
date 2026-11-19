@@ -100,6 +100,8 @@ PSVP_TEST(regist_request_matches_the_reference) {
 PSVP_TEST(regist_response_head_gives_the_body_length) {
     CHECK(psvp::proto::parse_regist_response_head("HTTP/1.1 200 OK\r\nContent-Length: 208\r\n\r\n") == 208U);
     CHECK(psvp::proto::parse_regist_response_head("HTTP/1.1 200 OK\nContent-Length:1\n\n") == 1U);
+    // As a real PS5 writes it: the number padded with spaces.
+    CHECK(psvp::proto::parse_regist_response_head("HTTP/1.1 200 OK\r\nConnection: close\r\nRP-Feature: 3\r\nContent-Length:        195\r\n\r\n") == 195U);
 }
 
 PSVP_TEST(regist_response_head_reports_a_refusal) {

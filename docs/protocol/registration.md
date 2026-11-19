@@ -108,6 +108,22 @@ body encrypted like the request text (message number 0). Decrypted, it is a bloc
 | `PS5-Nickname` / `PS4-Nickname` | the console's name |
 | `AP-Ssid`, `AP-Bssid`, `AP-Key`, `AP-Name` | the console's own access point, for a direct connection |
 
+**[seen]** A PS5 on system software 14.23 accepted a registration built exactly as above (2026-11-19). Its
+answer's head was
+
+```
+HTTP/1.1 200 OK
+Connection: close
+RP-Feature: 3
+Content-Length:        195
+```
+
+with the length padded by spaces to eleven characters after the colon, so a reader must skip the spaces
+before that number. The decrypted body held, in this order, `AP-Bssid`, `AP-Name` (`PS5`), `PS5-Mac`,
+`PS5-RegistKey` (eight characters), `PS5-Nickname`, `RP-KeyType` (`2`), `RP-Key` and `RP-SupportCmd` (six
+digits that match the system software version); no `AP-Ssid` and no `AP-Key`. The PS4 answer is still
+**[read]**.
+
 The registration key, the secret and the hardware address must all be present; without any of them the answer
 is not a registration. Text fields longer than the console's own limits are ignored.
 
