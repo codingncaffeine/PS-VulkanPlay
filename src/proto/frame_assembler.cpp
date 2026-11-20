@@ -67,6 +67,7 @@ void FrameAssembler::put(Slot& slot, std::uint16_t index, const StreamMediaPacke
     const bool enough = slot.source_received == slot.source || (slot.received >= slot.source && slot.total <= kMaxRepairable);
     if (!enough) return;
     slot.done = finish(slot, index);
+    slot.whole_at = now;
     // Enough units and still no frame: what was restored does not make sense.
     if (!slot.done) slot.unusable = true;
 }
@@ -156,17 +157,18 @@ void FrameAssembler::drain(FrameOutput& out) {
 
 std::optional<TimePoint> FrameAssembler::deadline() const {
     if (slots_.empty()) return std::nullopt;
-    std::optional<TimePoint> since;
+    std::optional<TimePoint> until;
     const auto earlier = [&](TimePoint when) {
-        if (!since || when < *since) since = when;
+        if (!until || when < *until) until = when;
     };
-    // The oldest frame is waited for from the moment a later frame shows up, or its own last unit has come.
-    if (slots_.front().last_unit_seen) earlier(*slots_.front().last_unit_seen);
+    // The oldest frame is waited for from the moment a later frame shows up, or its own last unit
+    // has come; and only a moment longer once a later frame is whole.
+    if (slots_.front().last_unit_seen) earlier(*slots_.front().last_unit_seen + kWait);
     for (std::size_t i = 1; i < slots_.size(); ++i) {
-        if (slots_[i].begun) earlier(slots_[i].first_seen);
+        if (slots_[i].begun) earlier(slots_[i].first_seen + kWait);
+        if (slots_[i].done) earlier(slots_[i].whole_at + kWaitBehindWhole);
     }
-    if (!since) return std::nullopt;
-    return *since + kWait;
+    return until;
 }
 
 void FrameAssembler::on_timeout(TimePoint now, FrameOutput& out) {

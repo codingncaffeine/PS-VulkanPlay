@@ -63,6 +63,9 @@ public:
     static constexpr std::size_t kMaxUnitSize = 1500;   // no unit is larger than a datagram
     static constexpr std::uint16_t kWindow = 4;         // frames that may be under way at once
     static constexpr std::chrono::milliseconds kWait{16};
+    // How long a frame is still waited for once a later frame is whole: what is missing of
+    // it then was lost, unless it was overtaken on the way by a moment.
+    static constexpr std::chrono::milliseconds kWaitBehindWhole{2};
 
     // `payload` is the packet's payload, decrypted.
     void on_packet(const StreamMediaPacket& packet, std::span<const std::uint8_t> payload, TimePoint now, FrameOutput& out);
@@ -82,6 +85,7 @@ private:
         std::optional<AssembledFrame> done;
         TimePoint first_seen{};
         std::optional<TimePoint> last_unit_seen;  // when the unit with the highest index arrived
+        TimePoint whole_at{};                     // when it became whole, for a frame that is
         std::uint8_t adaptive_stream = 0;
         unsigned total = 0;
         unsigned source = 0;

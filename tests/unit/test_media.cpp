@@ -280,12 +280,16 @@ PSVP_TEST(frames_given_up_after_the_wait) {
     feed(assembler, b, {0, 3}, kT0 + 16ms, out);
     // Its last unit has come, so its wait has begun: sixteen milliseconds from then.
     CHECK(assembler.deadline() == kT0 + 32ms);
-    feed(assembler, c, {0, 1, 2}, kT0 + 20ms, out);
-    // Frame 3 is whole, and is held back behind frame 2.
+    feed(assembler, c, {0, 1}, kT0 + 20ms, out);
+    // Frame 3 has begun: that changes nothing for frame 2.
     CHECK(out.frames.size() == 1 && out.lost.empty() && assembler.deadline() == kT0 + 32ms);
-    assembler.on_timeout(kT0 + 31ms, out);
+    feed(assembler, c, {2}, kT0 + 21ms, out);
+    // Frame 3 is whole, and is held back behind frame 2 for two milliseconds more: what is
+    // missing of frame 2 would have come before frame 3's units.
+    CHECK(out.frames.size() == 1 && out.lost.empty() && assembler.deadline() == kT0 + 23ms);
+    assembler.on_timeout(kT0 + 22ms, out);
     CHECK(out.frames.size() == 1 && out.lost.empty());
-    assembler.on_timeout(kT0 + 32ms, out);
+    assembler.on_timeout(kT0 + 23ms, out);
     CHECK((out.lost == std::vector<FrameRange>{FrameRange{2, 2}}));
     CHECK(out.frames.size() == 2 && out.frames[1].index == 3 && out.frames[1].data == f3 && out.frames[1].lost_before == 1);
     CHECK(assembler.counters().frames_lost == 1 && !assembler.deadline());
@@ -306,12 +310,43 @@ PSVP_TEST(frames_wait_for_a_packet_that_was_overtaken) {
     const Units b = cut(2, f2, 100, 0);
     feed(assembler, a, {0, 1}, kT0, out);
     // Frame 2 begins before frame 1's last unit is there; frame 1 gets sixteen milliseconds from now.
-    feed(assembler, b, {0, 1, 2}, kT0 + 5ms, out);
+    feed(assembler, b, {0, 1}, kT0 + 5ms, out);
     CHECK(out.frames.empty() && assembler.deadline() == kT0 + 21ms);
     feed(assembler, a, {2}, kT0 + 9ms, out);
-    // Both leave, in order, and nothing is lost.
-    CHECK(out.frames.size() == 2 && out.frames[0].data == f1 && out.frames[1].data == f2 && out.lost.empty());
-    CHECK(out.frames[1].lost_before == 0 && !assembler.deadline());
+    // Frame 1 leaves, and nothing is lost.
+    CHECK(out.frames.size() == 1 && out.frames[0].data == f1 && out.lost.empty());
+    feed(assembler, b, {2}, kT0 + 10ms, out);
+    CHECK(out.frames.size() == 2 && out.frames[1].data == f2 && out.frames[1].lost_before == 0 && !assembler.deadline());
+}
+
+PSVP_TEST(frames_wait_a_moment_behind_a_whole_one) {
+    const auto f1 = bytes_of(300, 1);
+    const auto f2 = bytes_of(300, 2);
+    const Units a = cut(1, f1, 100, 0);
+    const Units b = cut(2, f2, 100, 0);
+    {
+        // Frame 2 is whole before frame 1's last unit: overtaken by a millisecond, it still counts.
+        FrameAssembler assembler;
+        FrameOutput out;
+        feed(assembler, a, {0, 1}, kT0, out);
+        feed(assembler, b, {0, 1, 2}, kT0 + 5ms, out);
+        CHECK(out.frames.empty() && assembler.deadline() == kT0 + 7ms);
+        feed(assembler, a, {2}, kT0 + 6ms, out);
+        CHECK(out.frames.size() == 2 && out.frames[0].data == f1 && out.frames[1].data == f2 && out.lost.empty());
+        CHECK(out.frames[1].lost_before == 0 && !assembler.deadline());
+    }
+    {
+        // It does not come: frame 2 is handed on two milliseconds after it was whole, not sixteen.
+        FrameAssembler assembler;
+        FrameOutput out;
+        feed(assembler, a, {0, 1}, kT0, out);
+        feed(assembler, b, {0, 1, 2}, kT0 + 5ms, out);
+        assembler.on_timeout(kT0 + 7ms, out);
+        CHECK((out.lost == std::vector<FrameRange>{FrameRange{1, 1}}));
+        CHECK(out.frames.size() == 1 && out.frames[0].data == f2 && out.frames[0].lost_before == 1 && !assembler.deadline());
+        feed(assembler, a, {2}, kT0 + 9ms, out);
+        CHECK(assembler.counters().packets_late == 1);
+    }
 }
 
 PSVP_TEST(frames_far_ahead_are_not_waited_behind) {
@@ -331,9 +366,9 @@ PSVP_TEST(frames_far_ahead_are_not_waited_behind) {
     CHECK(out.frames.size() == 1 && out.frames[0].index == 2 && out.frames[0].lost_before == 1);
     CHECK((out.lost == std::vector<FrameRange>{FrameRange{1, 1}, FrameRange{3, 5}}));
     CHECK(assembler.counters().frames_lost == 4);
-    // 6, 7 and 8 get their wait, then 9 leaves.
-    CHECK(assembler.deadline() == kT0 + 17ms);
-    assembler.on_timeout(kT0 + 17ms, out);
+    // 6, 7 and 8 get the moment a whole frame waits behind missing ones, then 9 leaves.
+    CHECK(assembler.deadline() == kT0 + 3ms);
+    assembler.on_timeout(kT0 + 3ms, out);
     CHECK(out.frames.size() == 2 && out.frames[1].index == 9 && out.frames[1].lost_before == 6);
     CHECK((out.lost == std::vector<FrameRange>{FrameRange{1, 1}, FrameRange{3, 8}}));
     // A jump of thousands of frames costs no more than that.
@@ -348,9 +383,11 @@ PSVP_TEST(frames_before_the_first_one_seen_are_missing) {
     FrameOutput out;
     const auto f3 = bytes_of(100, 3);
     feed(assembler, cut(3, f3, 100, 0), {0}, kT0, out);
-    // A stream's frames count from 1: frames 1 and 2 are waited for, then reported.
-    CHECK(out.frames.empty() && assembler.deadline() == kT0 + 16ms);
-    assembler.on_timeout(kT0 + 16ms, out);
+    // A stream's frames count from 1: frames 1 and 2 are waited for a moment, then reported.
+    CHECK(out.frames.empty() && assembler.deadline() == kT0 + 2ms);
+    assembler.on_timeout(kT0 + 1ms, out);
+    CHECK(out.frames.empty());
+    assembler.on_timeout(kT0 + 2ms, out);
     CHECK(out.frames.size() == 1 && out.frames[0].index == 3 && out.frames[0].lost_before == 2);
     CHECK((out.lost == std::vector<FrameRange>{FrameRange{1, 2}}));
     // A first frame from the other half of the number space is taken as the start.
@@ -367,8 +404,8 @@ PSVP_TEST(frames_count_across_the_wrap) {
     feed(assembler, cut(65534, data, 100, 0), {0}, kT0, out);
     feed(assembler, cut(65535, data, 100, 0), {0}, kT0, out);
     feed(assembler, cut(1, data, 100, 0), {0}, kT0, out);  // frame 0 is missing
-    CHECK(out.frames.size() == 2 && assembler.deadline() == kT0 + 16ms);
-    assembler.on_timeout(kT0 + 16ms, out);
+    CHECK(out.frames.size() == 2 && assembler.deadline() == kT0 + 2ms);
+    assembler.on_timeout(kT0 + 2ms, out);
     CHECK(out.frames.size() == 3 && out.frames[2].index == 1 && (out.lost == std::vector<FrameRange>{FrameRange{0, 0}}));
     // An old frame's packet from before the wrap is late, not far ahead.
     feed(assembler, cut(65530, data, 100, 0), {0}, kT0 + 17ms, out);

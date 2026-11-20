@@ -121,12 +121,17 @@ is a keyframe.
 - A packet goes to its frame at once, whatever order the packets come in.
 - Frames are handed on in order. A whole frame waits behind an earlier one that is not whole yet.
 - The oldest frame under way is given up 16 ms after the first packet of any later frame arrived, or 16 ms
-  after its own last unit arrived, whichever is first, if it is still not whole then.
+  after its own last unit arrived, or 2 ms after a later frame became whole, whichever is first, if it is
+  still not whole then.
 - A packet of a frame four or more ahead of the oldest one gives the oldest ones up at once.
 - A packet of a frame that was handed on or given up is counted and dropped.
 
-So a packet that was overtaken costs nothing as long as it arrives within 16 ms, and loss that cannot be
-repaired holds the picture up by 16 ms at most.
+So a packet that was overtaken costs nothing as long as it arrives within 16 ms and before the next frame
+is whole (or within 2 ms of that). Loss that cannot be repaired holds the picture up by 2 ms once the next
+frame is there, and by 16 ms at most. **[seen]** In 25 minutes of three PS5 sessions 426 frames were given up
+and not one packet of a given-up frame arrived afterwards: on a home network the packets of a frame that
+do not come before the next frame's were lost. Waiting the full 16 ms held the frame after each lost one
+back by a frame's time, and the report to the console with it.
 
 ### Telling the console
 
