@@ -57,6 +57,8 @@ lane stream            scenario phase2c build/release build/oracle &
 lane stream-asan       scenario phase2c build/san &
 lane receive           scenario phase2d build/release build/oracle &
 lane receive-asan      scenario phase2d build/san &
+lane input             scenario phase2e build/release build/oracle &
+lane input-asan        scenario phase2e build/san &
 wait
 
 if [ "$scope" = all ]; then

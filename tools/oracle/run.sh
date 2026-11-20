@@ -56,7 +56,8 @@ set -e
 planted=("base64 encode" "stream shared secret" "stream key stream" "stream authentication code" "stream packet code"
          "stream launch specification" "stream sealed launch specification" "stream opening message"
          "erasure repair units" "erasure repaired units" "media packet header fields" "media frame put together"
-         "media congestion report" "media frames-not-arrived message" "media input state")
+         "media congestion report" "media frames-not-arrived message" "media input state"
+         "media connection quality message" "media input history after a change")
 missing=""
 for what in "${planted[@]}"; do
     grep -q "MISMATCH $what" "$dir/plant.log" || missing="$missing [$what]"

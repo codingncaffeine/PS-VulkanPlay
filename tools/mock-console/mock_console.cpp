@@ -675,6 +675,9 @@ int main(int argc, char** argv) {
             if (transport_port == psvp::proto::transport::kStreamPort && options.stream && session_cipher) {
                 psvp::proto::transport::ConsoleStream::Options stream_options = options.media;
                 stream_options.frame_every = std::chrono::milliseconds(options.frame_ms);
+                // As a PS5 was seen to: heartbeats of its own, and its view of the connection.
+                stream_options.heartbeat_every = 330ms;
+                stream_options.quality_every = 1200ms;
                 stream_options.kind = options.kind;
                 stream_options.session_cipher = *session_cipher;
                 stream_options.session_id = std::string(session_id(options.kind));

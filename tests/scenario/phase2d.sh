@@ -94,8 +94,13 @@ for kind in ps4 ps5; do
         || fail "input states: $(grep -a 'stream summary' "$log")"
     check "one line per packet was kept" [ "$(grep -c picture "$work/$kind-whole/packets.tsv")" -ge 400 ]
     check "the list of the console's other messages is there, with its heading" [ "$(head -1 "$work/$kind-whole/data.tsv")" = "$(printf 'ms\twhat\tchannel\tbytes\thex')" ]
-    check "with the two things the mock sends as a PS5 was seen to: 'stream information received' and controller information" \
-        [ "$(cut -f2-5 "$work/$kind-whole/data.tsv" | tail -n +2 | tr '\t\n' ' ;')" = "message type 14 1 2 080e;data kind 9 1 25 $(printf '00%.0s' $(seq 25));" ]
+    check "with what the mock sends first, as a PS5 was seen to: controller information and 'stream information received'" \
+        [ "$(cut -f2-5 "$work/$kind-whole/data.tsv" | sed -n 2,3p | tr '\t\n' ' ;')" = "data kind 9 0 17 0000000001000001000000010101000000;message type 14 0 2 080e;" ]
+    quality=$(grep -c "message type 16" "$work/$kind-whole/data.tsv")
+    between "$quality" 1 2 && ok "and its view of the connection every 1.2 s: $quality in two seconds" || fail "connection quality messages kept: $quality"
+    check "which is reported" has "$out" "The console's latest view of the connection: target bitrate 9708 kbit/s, round-trip value 200.0, loss 0."
+    beats=$(number "$out" 'Messages from the console: type 3 x([0-9]+)')
+    between "$beats" 5 7 && ok "the mock's own heartbeats, three a second, were counted: $beats" || fail "console heartbeats: $(grep -a 'Messages from' "$out")"
 
     echo "$family: lost packets that the repair packets cover"
     # Every third frame loses its first two packets, as many as it has repair packets;

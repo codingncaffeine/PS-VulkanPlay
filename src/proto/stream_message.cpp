@@ -1,5 +1,6 @@
 #include "proto/stream_message.h"
 
+#include <bit>
 #include <initializer_list>
 #include <utility>
 
@@ -21,6 +22,7 @@ constexpr std::uint32_t kFieldCorruptFrames = 6;
 constexpr std::uint32_t kFieldDisconnect = 10;
 constexpr std::uint32_t kFieldProbe = 14;
 constexpr std::uint32_t kFieldStreamInfo = 15;
+constexpr std::uint32_t kFieldConnectionQuality = 17;
 constexpr std::uint32_t kFieldControllerConnection = 22;
 constexpr std::uint32_t kFieldProtocolRequest = 31;
 constexpr std::uint32_t kFieldProtocolRequestAck = 32;
@@ -269,6 +271,36 @@ std::optional<CorruptFrames> parse_corrupt_frames(std::span<const std::uint8_t> 
     return ok ? std::optional(m) : std::nullopt;
 }
 
+std::optional<ConnectionQuality> parse_connection_quality(std::span<const std::uint8_t> bytes) {
+    ConnectionQuality m;
+    const bool ok = read_fields(bytes, 0, [&](const Field& f) {
+        switch (f.number) {
+        case 1: return number(f, m.target_bitrate);
+        case 2: return number(f, m.upstream_bitrate);
+        case 3:
+            if (f.kind != Kind::fixed32) return false;
+            m.upstream_loss = std::bit_cast<float>(static_cast<std::uint32_t>(f.value));
+            return true;
+        case 4: {
+            bool disabled = false;
+            if (!flag(f, disabled)) return false;
+            m.disable_upstream_audio = disabled;
+            return true;
+        }
+        case 5:
+            if (f.kind != Kind::fixed64) return false;
+            m.rtt = std::bit_cast<double>(f.value);
+            return true;
+        case 6:
+            if (f.kind != Kind::varint) return false;
+            m.loss = f.value;
+            return true;
+        default: return true;
+        }
+    });
+    return ok ? std::optional(m) : std::nullopt;
+}
+
 std::optional<ControllerConnection> parse_controller_connection(std::span<const std::uint8_t> bytes) {
     ControllerConnection m;
     const bool ok = read_fields(bytes, 0, [&](const Field& f) {
@@ -375,6 +407,16 @@ struct BodyWriter {
         put_optional(w, 6, m.congestion_control_interval);
         out.message(kFieldStreamInfo, w);
     }
+    void operator()(const ConnectionQuality& m) const {
+        Writer w;
+        put_optional(w, 1, m.target_bitrate);
+        put_optional(w, 2, m.upstream_bitrate);
+        if (m.upstream_loss) w.fixed32(3, std::bit_cast<std::uint32_t>(*m.upstream_loss));
+        if (m.disable_upstream_audio) w.boolean(4, *m.disable_upstream_audio);
+        if (m.rtt) w.fixed64(5, std::bit_cast<std::uint64_t>(*m.rtt));
+        if (m.loss) w.varint(6, *m.loss);
+        out.message(kFieldConnectionQuality, w);
+    }
     void operator()(const CorruptFrames& m) const {
         Writer w;
         w.varint(1, m.start);
@@ -411,6 +453,7 @@ struct TypeOf {
     std::uint32_t operator()(const StreamInfo&) const { return message_type::kStreamInfo; }
     std::uint32_t operator()(const ControllerConnection&) const { return message_type::kControllerConnection; }
     std::uint32_t operator()(const CorruptFrames&) const { return message_type::kCorruptFrame; }
+    std::uint32_t operator()(const ConnectionQuality&) const { return message_type::kConnectionQuality; }
 };
 
 }  // namespace
@@ -471,6 +514,7 @@ std::optional<StreamMessage> parse_message(std::span<const std::uint8_t> bytes) 
         if (present[kFieldProbe]) ok = parse_probe(bodies[kFieldProbe], message.body);
         break;
     case message_type::kStreamInfo: ok = take(kFieldStreamInfo, parse_stream_info); break;
+    case message_type::kConnectionQuality: ok = take(kFieldConnectionQuality, parse_connection_quality); break;
     case message_type::kControllerConnection: ok = take(kFieldControllerConnection, parse_controller_connection); break;
     case message_type::kProtocolRequest:
         if (present[kFieldProtocolRequest]) {

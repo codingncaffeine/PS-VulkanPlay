@@ -73,6 +73,8 @@ struct StreamCounters {
     std::uint64_t keyframe_requests = 0;
     std::uint64_t congestion_reports = 0;
     std::uint64_t input_states = 0;       // input state packets sent
+    std::uint64_t input_events = 0;       // button, trigger and touch changes told to the console
+    std::uint64_t history_packets = 0;    // input history packets sent, repeats of the last one included
     std::uint64_t other_datagrams = 0;    // of a kind this version does not read
     std::uint64_t heartbeats_sent = 0;
     std::uint64_t split_messages = 0;     // messages from the console that came in more than one chunk
@@ -104,6 +106,7 @@ public:
     static constexpr std::chrono::milliseconds kHeartbeatEvery{1000};
     static constexpr std::chrono::milliseconds kCongestionEvery{200};
     static constexpr std::chrono::milliseconds kInputEvery{200};  // when nothing about the controller changes
+    static constexpr std::chrono::milliseconds kInputAtMostEvery{8};  // when it changes all the time
     static constexpr std::uint16_t kReportChannel = 2;
     static constexpr std::size_t kMaxUnreported = 8;
     static constexpr std::size_t kMaxConsoleData = 256;  // kept until taken; further ones are only counted
@@ -125,8 +128,10 @@ public:
     [[nodiscard]] MediaOutput take_media() { return std::exchange(media_, {}); }
     // What the console sent besides picture, sound and heartbeats since the last call.
     [[nodiscard]] std::vector<ConsoleData> take_console_data() { return std::exchange(console_data_, {}); }
-    // The controller's sticks and sensors, as the next input state packets will tell them.
-    void set_input(const InputState& state) noexcept { input_ = state; }
+    // The controller as it is now. What changed about its buttons, triggers and touchpad goes out at once,
+    // in input history packets; its sticks and sensors in an input state packet, at most every 8 ms.
+    // Before the stream is set up nothing is sent, and the buttons count as not yet told.
+    [[nodiscard]] Datagrams set_controller(const Buttons& buttons, const InputState& state, TimePoint now);
     // Asks the console for a picture that needs no earlier one. Nothing while the stream is not set up.
     [[nodiscard]] Datagrams request_keyframe(TimePoint now);
     [[nodiscard]] const FrameCounters& video() const noexcept { return video_.counters(); }
@@ -139,6 +144,8 @@ public:
     [[nodiscard]] bool closed_by_console() const noexcept { return closed_by_console_; }
     [[nodiscard]] const std::optional<BangFacts>& bang() const noexcept { return bang_; }
     [[nodiscard]] const std::optional<StreamInfo>& info() const noexcept { return info_; }
+    // The console's latest word on how it sees the connection.
+    [[nodiscard]] const std::optional<ConnectionQuality>& quality() const noexcept { return quality_; }
     [[nodiscard]] const StreamCounters& counters() const noexcept { return counters_; }
     [[nodiscard]] std::uint64_t control_rejected() const noexcept { return messenger_.rejected(); }
     // The opening message: its size and how many datagrams it went out in.
@@ -156,7 +163,8 @@ private:
     void note_lost(const FrameOutput& frames);
     void send_reports(Datagrams& out, TimePoint now);
     void send_congestion(Datagrams& out);
-    void send_input(Datagrams& out);
+    void send_input(Datagrams& out, TimePoint now);
+    void send_history(Datagrams& out, const InputHistory::Packet& packet);
 
     Messenger messenger_;
     StreamRequest request_;
@@ -173,11 +181,16 @@ private:
     TimePoint next_input_{};
     InputState input_;
     std::uint16_t input_sequence_ = 0;
+    TimePoint last_input_{};
+    bool input_changed_ = false;  // since the last input state packet
+    Buttons buttons_;             // as the console was last told
+    InputHistory history_;
     std::shared_ptr<SendKeys> send_keys_;
     std::shared_ptr<ReceiveKeys> receive_keys_;
     std::optional<BangFacts> bang_;
     std::optional<StreamInfo> info_;
     std::optional<StreamInfo> early_info_;
+    std::optional<ConnectionQuality> quality_;
     StreamCounters counters_;
     std::size_t opening_size_ = 0;
     std::size_t opening_datagrams_ = 0;
@@ -220,7 +233,12 @@ public:
         unsigned sound_repeats = 2;                // earlier frames sent again in every sound packet
         unsigned lose_sound_every = 0;             // every sound packet whose frame index this divides is not sent
         unsigned haptics_every = 0;                // a haptics packet with every Nth sound packet (PS5); 0: none
+        // What a PS5 was seen to send on its own once a stream is set up; 0: not sent.
+        std::chrono::milliseconds heartbeat_every{0};  // its heartbeats (a PS5: about three a second)
+        std::chrono::milliseconds quality_every{0};    // its view of the connection (a PS5: every 1.2 s or so)
     };
+    // The channel a PS5 was seen to send its own messages and data on.
+    static constexpr std::uint16_t kOwnChannel = 0;
 
     ConsoleStream(std::uint32_t local_tag, const Endpoint& client, Options options, const KeyExchange& keys);
 
@@ -255,6 +273,8 @@ private:
     bool client_info_answered_ = false;
     std::optional<TimePoint> next_media_;
     std::optional<TimePoint> next_frame_;
+    std::optional<TimePoint> next_heartbeat_;
+    std::optional<TimePoint> next_quality_;
     std::optional<MediaSender> media_;
     std::uint16_t frame_index_ = 0;
     std::uint16_t sound_index_ = 0;
@@ -271,6 +291,10 @@ private:
     std::uint64_t input_unreadable_ = 0;
     std::optional<std::uint16_t> input_sequence_;
     std::uint64_t input_out_of_order_ = 0;
+    std::uint64_t history_packets_ = 0;
+    std::uint64_t history_events_ = 0;      // events not seen in an earlier packet
+    std::uint64_t history_unreadable_ = 0;
+    std::optional<std::uint16_t> history_sequence_;  // the number of the newest event seen
     std::uint64_t heartbeats_ = 0;
     std::map<std::uint8_t, std::uint64_t> authentic_;  // packets that are not messages, by kind
     std::map<std::uint8_t, std::uint64_t> rejected_;

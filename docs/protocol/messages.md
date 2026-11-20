@@ -41,6 +41,7 @@ the reference **[checked]** (its probe against the mock console: every message e
 | 12 | network probe | 14 |
 | 13 | stream information | 15 |
 | 14 | stream information received | none |
+| 16 | the console's view of the connection | 17 |
 | 21 | controller connection | 22 |
 | 25 | keyframe request | none |
 | 31 | protocol version request | 31 |
@@ -69,6 +70,14 @@ header (bytes; all three required); 2 the sound format (bytes, required); 3 star
 idle timeout before disconnecting, 6 congestion control interval (numbers). A further field 7 (sound channels)
 is not read.
 
+**The console's view of the connection** (console): 1 the picture's target bitrate in bits per second, 2 an
+upstream bitrate (numbers); 3 an upstream loss (four bytes, a floating-point number); 4 upstream sound off
+(yes or no); 5 a round-trip value (eight bytes, a floating-point number); 6 a loss count (number).
+**[seen]** A PS5 sends one every 1.2 seconds or so, with all six fields and two more (7 and 8) that are not
+read. Its target bitrate was 97% of the bitrate the launch specification asked for (9,708,000 for 10,000
+kbit/s; 14,563,000 for 15,000). Its round-trip value lay near 200 or near 400 on a path measured at 2 to 5 ms; what
+it counts is not known.
+
 **Controller connection**: 1 controller number, 2 connected or not, 3 controller type (1 DualShock 3, 2
 DualShock 4, 3 Vita, 4 XInput, 5 mobile, 6 DualSense, 7 VR2 Sense).
 
@@ -88,6 +97,6 @@ version chosen.
 **[seen]** A PS5 on system software 14.23 answered the version request, the opening message, the echo
 command, the size requests and the client size test built as above, with messages this client read
 (2026-11-19). **[checked]** The opening message with its key fields, the three messages a client sends after
-the stream information, the heartbeat, the keyframe request, the report of frames that did not arrive and the
-goodbye are byte for byte what the reference's coder writes; the answer and the stream information as this project writes them are read by the
+the stream information, the heartbeat, the keyframe request, the report of frames that did not arrive, the
+console's view of the connection and the goodbye are byte for byte what the reference's coder writes; the answer and the stream information as this project writes them are read by the
 reference's coder to the same values.

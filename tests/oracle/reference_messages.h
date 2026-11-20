@@ -20,6 +20,8 @@ size_t psvp_ref_encode_controller(bool dualsense, uint8_t *out, size_t out_size)
 size_t psvp_ref_encode_audio_info(const uint8_t *audio_header, size_t audio_header_size, uint8_t *out, size_t out_size);
 size_t psvp_ref_encode_disconnect(const char *reason, uint8_t *out, size_t out_size);
 size_t psvp_ref_encode_corrupt_frames(uint32_t start, uint32_t end, uint8_t *out, size_t out_size);
+size_t psvp_ref_encode_connection_quality(uint32_t target_bitrate, uint32_t upstream_bitrate, float upstream_loss,
+                                          bool disable_upstream_audio, double rtt, uint64_t loss, uint8_t *out, size_t out_size);
 
 struct psvp_ref_bang {
     uint32_t server_version;

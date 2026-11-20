@@ -10,6 +10,8 @@
 //   psvp_reference_client session HOST ps5|ps4 REGIST_KEY SECRET_HEX SECONDS
 //       starts a whole session and stops it after SECONDS (the mock console
 //       only goes as far as this project has implemented)
+//       With PSVP_REFERENCE_TAPS=1 it presses right one second after the session
+//       is connected and cross half a second later, each for 100 ms.
 //       With PSVP_REFERENCE_DUMP=FOLDER in the environment it keeps what the
 //       session hands to a decoder: FOLDER/video.bin (every picture sample, in
 //       order) and FOLDER/sound.bin (every sound frame, in order).
@@ -26,6 +28,7 @@
 
 #include <chiaki/base64.h>
 #include <chiaki/common.h>
+#include <chiaki/controller.h>
 #include <chiaki/discovery.h>
 #include <chiaki/log.h>
 #include <chiaki/regist.h>
@@ -33,6 +36,7 @@
 
 static volatile int g_done = 0;
 static volatile int g_ok = 0;
+static volatile int g_connected = 0;
 
 static void wait_done(int tenths) {
     for (int i = 0; i < tenths && !g_done; ++i) usleep(100 * 1000);
@@ -76,6 +80,7 @@ static void on_session_event(ChiakiEvent *event, void *user) {
         printf("reference: the console asks for its passcode\n");
     } else if (event->type == CHIAKI_EVENT_CONNECTED) {
         printf("reference: connected\n");
+        g_connected = 1;
     }
 }
 
@@ -202,7 +207,28 @@ int main(int argc, char **argv) {
         sink.frame_cb = on_audio_frame;
         chiaki_session_set_audio_sink(&session, &sink);
         if (chiaki_session_start(&session) != CHIAKI_ERR_SUCCESS) return 3;
-        wait_done(atoi(argv[6]) * 10);
+        if (getenv("PSVP_REFERENCE_TAPS")) {
+            /* In steps of 10 ms from the moment the session is connected: right down at 1 s and up at 1.1 s,
+             * cross down at 1.5 s and up at 1.6 s. */
+            ChiakiControllerState pad;
+            chiaki_controller_state_set_idle(&pad);
+            int since = 0;
+            for (int i = 0; i < atoi(argv[6]) * 100 && !g_done; ++i) {
+                usleep(10 * 1000);
+                if (!g_connected) continue;
+                ++since;
+                uint32_t buttons = pad.buttons;
+                if (since == 100) buttons |= CHIAKI_CONTROLLER_BUTTON_DPAD_RIGHT;
+                if (since == 110) buttons &= ~(uint32_t)CHIAKI_CONTROLLER_BUTTON_DPAD_RIGHT;
+                if (since == 150) buttons |= CHIAKI_CONTROLLER_BUTTON_CROSS;
+                if (since == 160) buttons &= ~(uint32_t)CHIAKI_CONTROLLER_BUTTON_CROSS;
+                if (buttons != pad.buttons) {
+                    pad.buttons = buttons;
+                    chiaki_session_set_controller_state(&session, &pad);
+                }
+            }
+        }
+        wait_done(g_done ? 0 : (getenv("PSVP_REFERENCE_TAPS") ? 0 : atoi(argv[6]) * 10));
         chiaki_session_stop(&session);
         chiaki_session_join(&session);
         chiaki_session_fini(&session);

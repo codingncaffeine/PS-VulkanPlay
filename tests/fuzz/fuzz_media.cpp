@@ -10,6 +10,7 @@
 
 #include "proto/erasure.h"
 #include "proto/frame_assembler.h"
+#include "proto/input.h"
 #include "proto/media_packet.h"
 #include "proto/sound.h"
 #include "proto/stream_setup.h"
@@ -108,6 +109,20 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
         if (ahead == 0 || ahead >= 0x8000U) std::abort();
     }
     if (sound_frames.size() != sound.counters().frames) std::abort();
+
+    // The bytes as the events of an input history packet: what reads back is the same events when written again.
+    if (const auto events = parse_history_events(input)) {
+        std::vector<std::uint8_t> written;
+        for (const ReadEvent& event : *events) {
+            const HistoryEvent again = event.what == ReadEvent::What::button    ? button_event(event.button, event.pressed)
+                                       : event.what == ReadEvent::What::trigger ? trigger_event(event.right, event.value)
+                                                                                : touch_event(event.touch);
+            written.insert(written.end(), again.data().begin(), again.data().end());
+            (void)describe(event);
+        }
+        if (written.size() != size || !std::equal(written.begin(), written.end(), data)) std::abort();
+    }
+    for (const ConsoleKind kind : {ConsoleKind::ps5, ConsoleKind::ps4}) (void)parse_input_state(kind, input);
 
     // The repair code on whatever sizes the bytes name.
     if (size >= 4) {

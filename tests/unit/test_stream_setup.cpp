@@ -631,12 +631,13 @@ PSVP_TEST(stream_setup_completes_on_a_clean_link) {
     };
     std::vector<std::string> after_spec(link.events.begin() + 2, link.events.end());
     CHECK(after_spec == expected);
-    // Those two chunks, as a PS5 was seen to send them: "stream information received" and controller information.
+    // Those two chunks, as a PS5 was seen to send them, on channel 0: controller information and "stream information received".
     const std::vector<ConsoleData> data = link.client.take_console_data();
     CHECK(data.size() == 2);
     if (data.size() == 2) {
-        CHECK(data[0].message && data[0].kind == message_type::kStreamInfoAck && data[0].channel == 1 && hex(data[0].bytes) == "080e");
-        CHECK(!data[1].message && data[1].kind == data_type::kPadInfo && data[1].channel == 1 && data[1].bytes == std::vector<std::uint8_t>(25, 0));
+        CHECK(!data[0].message && data[0].kind == data_type::kPadInfo && data[0].channel == 0 &&
+              hex(data[0].bytes) == "0000000001000001000000010101000000");
+        CHECK(data[1].message && data[1].kind == message_type::kStreamInfoAck && data[1].channel == 0 && hex(data[1].bytes) == "080e");
     }
     CHECK(link.client.counters().messages.at(message_type::kStreamInfoAck) == 1 && link.client.counters().other_data.at(data_type::kPadInfo) == 1);
     CHECK(link.client.take_console_data().empty());
@@ -650,6 +651,7 @@ PSVP_TEST(stream_setup_completes_on_a_clean_link) {
     CHECK(link.client.counters().congestion_reports == 17 && link.client.counters().input_states == 17);
     CHECK(link.console.summary() == "heartbeats 3 control-rejected 0 before-keys 0 kind-5-authentic 17 kind-6-authentic 17 "
                                     "key-positions 44 out-of-step 0 input-states 17 at-rest 17 unreadable 0 out-of-order 0 "
+                                    "history-packets 0 events 0 unreadable 0 "
                                     "frames-sent 0 sound-sent 0 withheld 0 congestion-received 0 congestion-lost 0");
 
     // The goodbye.
@@ -1016,6 +1018,132 @@ PSVP_TEST(stream_keeps_loss_reports_it_cannot_send_yet) {
     link.run(5000ms);
     CHECK(link.client.state() == ClientStream::State::failed);
     CHECK(link.client.reason() == "the console stopped acknowledging the stream's messages");
+}
+
+PSVP_TEST(stream_takes_what_the_console_says_on_its_own) {
+    // The message, byte for byte: type 16, then field 17 with the six values in their codings.
+    ConnectionQuality quality;
+    quality.target_bitrate = 300;
+    quality.upstream_bitrate = 2;
+    quality.upstream_loss = 0.5F;
+    quality.disable_upstream_audio = true;
+    quality.rtt = 2.0;
+    quality.loss = 7;
+    const auto bytes = encode_message(make_message(quality));
+    CHECK(hex(bytes) == "0810" "8a0117"              // type 16; field 17, 23 bytes (3 + 2 + 5 + 2 + 9 + 2)
+                        "08ac02" "1002"              // 300, 2
+                        "1d0000003f"                 // 0.5 in four bytes, least significant first
+                        "2001"                       // true
+                        "290000000000000040"         // 2.0 in eight bytes
+                        "3007");
+    const auto back = parse_message(bytes);
+    CHECK(back && back->as<ConnectionQuality>() != nullptr && *back->as<ConnectionQuality>() == quality);
+    CHECK(parse_message(encode_message(make_message(ConnectionQuality{}))).value().as<ConnectionQuality>() != nullptr);
+    // A value in another coding than its field's is not this message.
+    CHECK(!parse_message(std::vector<std::uint8_t>{0x08, 0x10, 0x8a, 0x01, 0x02, 0x18, 0x01}));
+
+    // A console that sends heartbeats of its own and its view of the connection, as a PS5 does.
+    auto options = StreamLink::options(ConsoleKind::ps5);
+    options.heartbeat_every = 330ms;
+    options.quality_every = 1200ms;
+    StreamLink link(StreamLink::request(ConsoleKind::ps5, kMtuCeiling), options);
+    link.start();
+    link.run_until_settled();
+    CHECK(!link.client.quality());
+    // From 6 ms on, when the client's stream information arrived: heartbeats at 336, 666, ... and the view at 1206, 2406.
+    link.run(2500ms);
+    const StreamCounters& counters = link.client.counters();
+    CHECK(counters.messages.at(message_type::kHeartbeat) == 7 && counters.messages.at(message_type::kConnectionQuality) == 2);
+    CHECK(link.client.quality() && link.client.quality()->target_bitrate == 9708000U && link.client.quality()->rtt == 200.0);
+    // The heartbeats are counted, not kept: what is kept is the controller information, the answer and the two views.
+    const std::vector<ConsoleData> data = link.client.take_console_data();
+    CHECK(data.size() == 4 && data[2].message && data[2].kind == message_type::kConnectionQuality && data[2].channel == 0);
+    CHECK(link.client.state() == ClientStream::State::ready && link.console.summary().find("out-of-step 0") != std::string::npos);
+}
+
+PSVP_TEST(stream_tells_the_console_what_the_controller_does) {
+    StreamLink link;
+    Buttons buttons;
+    buttons.set(Button::cross, true);
+    // Before the stream is set up nothing is sent.
+    CHECK(link.client.set_controller(buttons, InputState{}, link.now).empty());
+    link.start();
+    link.run_until_settled();
+    link.run(96ms);  // to 100 ms
+    // Now the same state is news to the console.
+    link.post(true, link.client.set_controller(buttons, InputState{}, link.now));
+    link.run(10ms);
+    CHECK(link.has("input 0: cross pressed"));
+    buttons.set(Button::cross, false);
+    buttons.set(Button::ps, true);
+    buttons.r2 = 200;
+    link.post(true, link.client.set_controller(buttons, InputState{}, link.now));
+    link.run(300ms);
+    const std::vector<std::string> expected{"input 0: cross pressed", "input 1: cross released", "input 2: ps pressed", "input 3: r2 at 200"};
+    std::vector<std::string> told;
+    for (const std::string& line : link.events) {
+        if (line.starts_with("input ")) told.push_back(line);
+    }
+    CHECK(told == expected);
+    CHECK(link.client.counters().input_events == 4);
+    // One packet per event. The first one was not sent again: the next change came 10 ms after it,
+    // before its 20 ms were over. The last one was, four times.
+    CHECK(link.client.counters().history_packets == 1 + 3 + 4);
+    CHECK(link.console.summary().find(" history-packets 8 events 4 unreadable 0") != std::string::npos);
+    CHECK(link.console.summary().find("out-of-step 0") != std::string::npos);
+    CHECK(link.console.summary().find("REJECTED") == std::string::npos);
+}
+
+PSVP_TEST(stream_repeats_cover_a_lost_history_packet) {
+    StreamLink link;
+    link.start();
+    link.run_until_settled();
+    // The first two history packets are lost: the press's and the release's. (A packet that is sent
+    // again is sealed anew, so it is told from the first by the count, not by its bytes.)
+    int history_packets = 0;
+    link.lose = [&](bool to_console, const std::vector<std::uint8_t>& datagram) {
+        return to_console && (datagram[0] & 0x0f) == packet_kind::kInputHistory && ++history_packets <= 2;
+    };
+    Buttons buttons;
+    buttons.set(Button::left, true);
+    link.post(true, link.client.set_controller(buttons, InputState{}, link.now));
+    link.run(5ms);
+    buttons.set(Button::left, false);
+    link.post(true, link.client.set_controller(buttons, InputState{}, link.now));
+    link.run(15ms);
+    // Neither has arrived yet: the release's packet goes out again 20 ms after it was first sent.
+    CHECK(link.count("input ") == 0);
+    link.run(10ms);
+    // That one packet tells both, in order: it carries the press again.
+    CHECK(link.has("input 0: left pressed") && link.has("input 1: left released") && link.count("input ") == 2);
+    link.run(300ms);
+    CHECK(link.count("input ") == 2);
+}
+
+PSVP_TEST(stream_sends_the_sticks_when_they_move_but_not_all_the_time) {
+    StreamLink link;
+    link.start();
+    link.run_until_settled();
+    link.run(96ms);  // to 100 ms; nothing but resting states so far, none yet (the first is due at 204 ms)
+    CHECK(link.client.counters().input_states == 0);
+    InputState state;
+    // The stick moves every millisecond for twenty: a state goes out at once, then at most every 8 ms,
+    // and what was held back goes out when its 8 ms are over: at 100, 108, 116 and 124 ms.
+    for (int i = 0; i <= 20; ++i) {
+        state.left_x = static_cast<std::int16_t>(1000 + i);
+        link.post(true, link.client.set_controller(Buttons{}, state, link.now));
+        if (i < 20) link.run(1ms);
+    }
+    CHECK(link.client.counters().input_states == 3);
+    link.run(10ms);
+    CHECK(link.client.counters().input_states == 4);
+    // Then every 200 ms from the last one: 324 ms.
+    link.run(189ms);
+    CHECK(link.client.counters().input_states == 4);
+    link.run(10ms);
+    CHECK(link.client.counters().input_states == 5);
+    // The console read them all, in order; none of them is a resting controller's.
+    CHECK(link.console.summary().find(" input-states 5 at-rest 0 unreadable 0 out-of-order 0 ") != std::string::npos);
 }
 
 PSVP_TEST(stream_closes_when_the_console_says_goodbye) {

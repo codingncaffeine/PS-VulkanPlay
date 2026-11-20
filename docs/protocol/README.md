@@ -35,4 +35,5 @@ The reference implementation is [chiaki-ng](https://github.com/chiaki-ng/chiaki-
   authentication and the stream information
 - [Picture and sound](video.md): the picture and sound packets, frames and their repair units, what the client
   reports back
-- [The controller's state](input.md): the input state packet with the sticks and the motion sensors
+- [The controller's state](input.md): the input state packet with the sticks and the motion sensors, and the
+  input history packet with the buttons, the triggers and the touchpad

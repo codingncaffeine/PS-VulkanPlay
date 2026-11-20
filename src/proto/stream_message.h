@@ -128,6 +128,17 @@ struct ControllerConnection {
     friend bool operator==(const ControllerConnection&, const ControllerConnection&) = default;
 };
 
+// How the console sees the connection; it sends one about every second.
+struct ConnectionQuality {
+    std::optional<std::uint32_t> target_bitrate;    // of the picture, in bits per second
+    std::optional<std::uint32_t> upstream_bitrate;
+    std::optional<float> upstream_loss;
+    std::optional<bool> disable_upstream_audio;
+    std::optional<double> rtt;
+    std::optional<std::uint64_t> loss;
+    friend bool operator==(const ConnectionQuality&, const ConnectionQuality&) = default;
+};
+
 // "These picture frames did not arrive whole", first to last, both included.
 struct CorruptFrames {
     std::uint32_t start = 0;
@@ -138,7 +149,7 @@ struct CorruptFrames {
 struct StreamMessage {
     using Body = std::variant<std::monostate, BigMessage, BangMessage, DisconnectMessage, ProbeEcho, ProbeMtu,
                               ProbeClientMtu, ProtocolRequest, ProtocolRequestAck, StreamInfo, ControllerConnection,
-                              CorruptFrames>;
+                              CorruptFrames, ConnectionQuality>;
     std::uint32_t type = 0;
     Body body;  // nothing for a type without a body here, or whose body was missing
 

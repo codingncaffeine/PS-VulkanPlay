@@ -703,6 +703,41 @@ private:
     std::uint64_t sound_bytes_ = 0;
 };
 
+// A button to press for a moment, so many milliseconds after the stream is set up.
+struct Tap {
+    proto::transport::Button button = proto::transport::Button::cross;
+    std::chrono::milliseconds at{0};
+};
+
+// "right@1,left@2.5": names of buttons with the second they are pressed in. Nothing for a text that is not that.
+std::optional<std::vector<Tap>> parse_taps(std::string_view text) {
+    std::vector<Tap> taps;
+    while (!text.empty()) {
+        const std::size_t comma = text.find(',');
+        const std::string_view item = text.substr(0, comma);
+        text = comma == std::string_view::npos ? std::string_view() : text.substr(comma + 1);
+        const std::size_t at = item.find('@');
+        if (at == std::string_view::npos) return std::nullopt;
+        const auto button = proto::transport::button_named(item.substr(0, at));
+        // Seconds with up to three decimals.
+        const std::string_view when = item.substr(at + 1);
+        const std::size_t point = when.find('.');
+        const std::string_view whole = when.substr(0, point);
+        std::string decimals(point == std::string_view::npos ? std::string_view() : when.substr(point + 1));
+        std::uint32_t seconds = 0;
+        std::uint32_t thousandths = 0;
+        if (!button || whole.empty() || decimals.size() > 3 || (point != std::string_view::npos && decimals.empty())) return std::nullopt;
+        decimals.resize(3, '0');
+        if (std::from_chars(whole.data(), whole.data() + whole.size(), seconds).ptr != whole.data() + whole.size() || seconds > 600 ||
+            std::from_chars(decimals.data(), decimals.data() + 3, thousandths).ptr != decimals.data() + 3) {
+            return std::nullopt;
+        }
+        taps.push_back(Tap{*button, std::chrono::milliseconds(seconds * 1000 + thousandths)});
+    }
+    if (taps.empty()) return std::nullopt;
+    return taps;
+}
+
 template <typename Key> std::string counts_text(const std::map<Key, std::uint64_t>& counts, std::string_view label) {
     std::string text;
     for (const auto& [key, count] : counts) text += std::format("{}{} {} x{}", text.empty() ? "" : ", ", label, +key, count);
@@ -717,7 +752,7 @@ template <typename Key> std::string counts_text(const std::map<Key, std::uint64_
 int command_session(std::span<const std::string_view> args) {
     namespace transport = proto::transport;
     const Parsed parsed = parse(
-        args, {"--host", "--seconds", "--passcode", "--resolution", "--fps", "--bitrate", "--codec", "--session-id", "--dump"}, {"--rest"}, 1);
+        args, {"--host", "--seconds", "--passcode", "--resolution", "--fps", "--bitrate", "--codec", "--session-id", "--dump", "--tap"}, {"--rest"}, 1);
     if (!parsed.error.empty()) return usage("session: {}", parsed.error);
     if (parsed.words.empty()) return usage("session: which console? Give its name or hardware address");
     std::chrono::milliseconds hold = 3s;
@@ -751,6 +786,23 @@ int command_session(std::span<const std::string_view> args) {
     }
     const std::string_view id_choice = parsed.option("--session-id").value_or("console");
     if (id_choice != "console" && id_choice != "invented") return usage("session: --session-id is console or invented");
+    // What the controller does while the stream is held: each button down, and up again 100 ms later.
+    struct Action {
+        std::chrono::milliseconds at{0};
+        transport::Button button = transport::Button::cross;
+        bool down = false;
+    };
+    std::vector<Action> actions;
+    if (const auto text = parsed.option("--tap")) {
+        const auto taps = parse_taps(*text);
+        if (!taps) return usage("session: --tap takes buttons with the second they are pressed in, like right@2,left@3.5 (cross circle square "
+                                "triangle left right up down l1 r1 l3 r3 options share touchpad ps)");
+        for (const Tap& tap : *taps) {
+            actions.push_back(Action{tap.at, tap.button, true});
+            actions.push_back(Action{tap.at + 100ms, tap.button, false});
+        }
+        std::ranges::stable_sort(actions, {}, &Action::at);
+    }
     std::optional<StreamDump> dump;
     if (const auto folder = parsed.option("--dump")) {
         if (folder->empty()) return usage("session: --dump takes a folder");
@@ -987,8 +1039,21 @@ int command_session(std::span<const std::string_view> args) {
     say("Stream set up in {} ms.", std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - setup_started).count());
 
     // Hold it: heartbeats go out, and whatever the console sends is counted and its codes checked.
-    const auto hold_until = Clock::now() + hold;
-    if (const auto ran = run_stream([&] { return Clock::now() >= hold_until; }); !ran) return fail("session: {}", ran.error());
+    const auto hold_started = Clock::now();
+    const auto hold_until = hold_started + hold;
+    transport::Buttons buttons;
+    std::size_t next_action = 0;
+    const auto held = run_stream([&] {
+        const auto now = Clock::now();
+        for (; next_action < actions.size() && now >= hold_started + actions[next_action].at; ++next_action) {
+            buttons.set(actions[next_action].button, actions[next_action].down);
+            send_all(stream.set_controller(buttons, transport::InputState{}, now));
+            say("{:.3f} s: {} {}.", std::chrono::duration<double>(now - hold_started).count(), transport::button_name(actions[next_action].button),
+                actions[next_action].down ? "pressed" : "released");
+        }
+        return now >= hold_until;
+    });
+    if (!held) return fail("session: {}", held.error());
     if (!control_failure.empty()) return fail("{}", control_failure);
     const transport::StreamCounters& counters = stream.counters();
     say("Stream held for {} seconds: {} picture and {} sound packets arrived with the right authentication code, {} with a wrong one, "
@@ -1011,6 +1076,10 @@ int command_session(std::span<const std::string_view> args) {
         say("Told the console: {} times of frames that did not arrive, {} congestion reports, {} input states (a resting controller's); "
             "receive buffer: {} bytes.",
             counters.loss_reports, counters.congestion_reports, counters.input_states, receive_buffer);
+        if (!actions.empty()) {
+            say("Buttons: {} changes told to the console in {} input history packets (each change's packet, and the last one sent again).",
+                counters.input_events, counters.history_packets);
+        }
     }
     if (dump) {
         const bool written = dump->close();
@@ -1018,6 +1087,10 @@ int command_session(std::span<const std::string_view> args) {
             dump->video_bytes(), dump->sound_bytes(), written ? "" : "; SOMETHING COULD NOT BE WRITTEN");
     }
     if (!counters.messages.empty()) say("Messages from the console: {}.", counts_text(counters.messages, "type"));
+    if (const auto& quality = stream.quality()) {
+        say("The console's latest view of the connection: target bitrate {} kbit/s, round-trip value {:.1f}, loss {}.",
+            quality->target_bitrate.value_or(0) / 1000, quality->rtt.value_or(0.0), quality->loss.value_or(0));
+    }
     if (!counters.other_data.empty()) say("Other data from the console: {}.", counts_text(counters.other_data, "kind"));
     if (counters.split_messages != 0) say("Messages that came in more than one chunk: {}.", counters.split_messages);
     if (counters.other_datagrams != 0) say("Datagrams of kinds this version does not read: {}.", counters.other_datagrams);
@@ -1179,10 +1252,11 @@ std::string commands_help() {
         "      wake a registered console from rest mode\n"
         "  {0} session CONSOLE [--host ADDRESS] [--seconds N] [--passcode DIGITS] [--rest]\n"
         "          [--resolution 360|540|720|1080] [--fps 30|60] [--bitrate KBPS] [--codec h264|hevc|hdr]\n"
-        "          [--session-id console|invented] [--dump FOLDER]\n"
+        "          [--session-id console|invented] [--dump FOLDER] [--tap BUTTON@SECOND,...]\n"
         "      open a session with a console, set a stream up, hold it for N seconds and close it\n"
         "      (a connection check: the picture's frames and the sound's are put together and counted,\n"
-        "      nothing is shown yet); --dump keeps them in FOLDER; --rest then sends the console to rest mode\n"
+        "      nothing is shown yet); --dump keeps them in FOLDER; --tap presses buttons for a moment while the\n"
+        "      stream is held; --rest then sends the console to rest mode\n"
         "  {0} consoles [--json]\n"
         "      list the registered consoles\n"
         "  {0} forget CONSOLE\n"

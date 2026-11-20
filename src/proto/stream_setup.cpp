@@ -1,6 +1,7 @@
 #include "proto/stream_setup.h"
 
 #include <algorithm>
+#include <array>
 #include <format>
 #include <string_view>
 #include <utility>
@@ -152,6 +153,7 @@ void ClientStream::on_stream_info(Datagrams& out, const StreamInfo& info, TimePo
     next_heartbeat_ = now + kHeartbeatEvery;
     next_congestion_ = now + kCongestionEvery;
     next_input_ = now + kInputEvery;
+    last_input_ = now;
 }
 
 // A picture or sound packet that carried the right code.
@@ -209,7 +211,10 @@ Datagrams ClientStream::request_keyframe(TimePoint now) {
 }
 
 // The controller's state: encrypted from sixteen bytes behind the packet's key position on, then sealed.
-void ClientStream::send_input(Datagrams& out) {
+void ClientStream::send_input(Datagrams& out, TimePoint now) {
+    last_input_ = now;
+    next_input_ = now + kInputEvery;
+    input_changed_ = false;
     std::vector<std::uint8_t> state = encode_input_state(request_.kind, input_);
     const std::uint64_t position = send_keys_->take(state.size() + kPayloadKeyOffset);
     send_keys_->cipher.apply_key_stream(position + kPayloadKeyOffset, state);
@@ -217,6 +222,32 @@ void ClientStream::send_input(Datagrams& out) {
     if (!seal_datagram(send_keys_->cipher, position, packet)) return;
     out.push_back(std::move(packet));
     ++counters_.input_states;
+}
+
+// Button, trigger and touchpad changes: encrypted and sealed like the state.
+void ClientStream::send_history(Datagrams& out, const InputHistory::Packet& packet) {
+    std::vector<std::uint8_t> payload = packet.payload;
+    const std::uint64_t position = send_keys_->take(payload.size() + kPayloadKeyOffset);
+    send_keys_->cipher.apply_key_stream(position + kPayloadKeyOffset, payload);
+    std::vector<std::uint8_t> datagram = encode_history_packet(packet.sequence, packet.events, payload);
+    if (!seal_datagram(send_keys_->cipher, position, datagram)) return;
+    out.push_back(std::move(datagram));
+    ++counters_.history_packets;
+}
+
+Datagrams ClientStream::set_controller(const Buttons& buttons, const InputState& state, TimePoint now) {
+    Datagrams out;
+    if (!(state == input_)) {
+        input_ = state;
+        input_changed_ = true;
+    }
+    if (state_ != State::ready) return out;
+    const std::vector<InputHistory::Packet> packets = history_.on_change(buttons_, buttons, now);
+    buttons_ = buttons;
+    counters_.input_events += packets.size();
+    for (const InputHistory::Packet& packet : packets) send_history(out, packet);
+    if (input_changed_ && now - last_input_ >= kInputAtMostEvery) send_input(out, now);
+    return out;
 }
 
 // How many picture and sound packets arrived and how many did not, since the report before.
@@ -249,6 +280,7 @@ void ClientStream::on_message(Datagrams& out, const DataChunk& chunk, const Stre
         break;
     case State::ready:
         ++counters_.messages[message.type];
+        if (const auto* quality = message.as<ConnectionQuality>()) quality_ = *quality;
         // Kept for whoever wants to look at them; the console's heartbeats are only counted.
         if (message.type != message_type::kHeartbeat && console_data_.size() < kMaxConsoleData) {
             console_data_.push_back(ConsoleData{true, message.type, chunk.channel, chunk.data});
@@ -346,10 +378,9 @@ Datagrams ClientStream::on_timeout(TimePoint now) {
             send_congestion(out);
             next_congestion_ = now + kCongestionEvery;
         }
-        if (now >= next_input_) {
-            send_input(out);
-            next_input_ = now + kInputEvery;
-        }
+        if (now >= next_input_ || (input_changed_ && now - last_input_ >= kInputAtMostEvery)) send_input(out, now);
+        // The last history packet again, while nothing new follows it.
+        if (const auto again = history_.on_timeout(now)) send_history(out, *again);
     }
     return out;
 }
@@ -360,6 +391,8 @@ TimePoint ClientStream::deadline() const {
     if (state_ == State::awaiting_bang || state_ == State::awaiting_stream_info) when = std::min(when, step_deadline_);
     else if (state_ == State::ready) {
         when = std::min({when, next_heartbeat_, next_congestion_, next_input_});
+        if (input_changed_) when = std::min(when, last_input_ + kInputAtMostEvery);
+        if (const auto again = history_.deadline()) when = std::min(when, *again);
         if (const auto frame = video_.deadline()) when = std::min(when, *frame);
     }
     return when;
@@ -473,19 +506,22 @@ void ConsoleStream::on_message(Datagrams& out, const DataChunk& chunk, TimePoint
     events_.push_back(std::format("message type {} channel {} flags {} key-position {} {}: {}", message->type, chunk.channel, chunk.flags,
                                   chunk.key_position, chunk.authentic ? "authentic" : "NOT SEALED", hex_encode(chunk.data)));
     if (message->type == message_type::kStreamInfo && messenger_.keyed() && !std::exchange(client_info_answered_, true)) {
-        // What a PS5 was seen to send once a client's stream was set up: "stream information received",
-        // and one chunk of information for the controller (kind 9, here 25 zero bytes). On which
-        // channels it sends them has not been recorded yet.
-        send(out, make_plain_message(message_type::kStreamInfoAck), ClientStream::kSessionChannel, now);
-        const std::vector<std::uint8_t> pad_info(25, 0);
-        if (auto sent = messenger_.send(chunk_flag::kLast, ClientStream::kSessionChannel, pad_info, now, data_type::kPadInfo)) {
+        // What a PS5 was seen to send once a client's stream was set up, on channel 0: one chunk of
+        // information for the controller (kind 9, seventeen bytes), then "stream information received".
+        constexpr std::array<std::uint8_t, 17> kPadInfo{0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 1, 1, 1, 0, 0, 0};
+        if (auto sent = messenger_.send(chunk_flag::kLast, kOwnChannel, kPadInfo, now, data_type::kPadInfo)) {
             out.push_back(std::move(sent->datagram));
         }
+        send(out, make_plain_message(message_type::kStreamInfoAck), kOwnChannel, now);
+        if (options_.heartbeat_every.count() > 0) next_heartbeat_ = now + options_.heartbeat_every;
+        if (options_.quality_every.count() > 0) next_quality_ = now + options_.quality_every;
     }
     if (const auto* goodbye = message->as<DisconnectMessage>()) {
         disconnected_ = true;
         next_media_.reset();
         next_frame_.reset();
+    next_heartbeat_.reset();
+    next_quality_.reset();
         events_.push_back(std::format("goodbye: {}", goodbye->reason));
     }
 }
@@ -542,6 +578,26 @@ Datagrams ConsoleStream::on_datagram(std::span<const std::uint8_t> datagram, Tim
             }
             else if (kind == packet_kind::kInputState || kind == packet_kind::kInputHistory) {
                 positions_[receive_keys_->positions.last()] = datagram.size() - 12 + 16;
+                if (kind == packet_kind::kInputHistory && datagram.size() > kInputHeaderSize) {
+                    std::vector<std::uint8_t> payload(datagram.begin() + kInputHeaderSize, datagram.end());
+                    receive_keys_->cipher.apply_key_stream(receive_keys_->positions.last() + kPayloadKeyOffset, payload);
+                    const auto sequence = static_cast<std::uint16_t>((datagram[1] << 8) | datagram[2]);
+                    const auto events = parse_history_events(payload);
+                    ++history_packets_;
+                    if (!events || events->size() != datagram[3] + 1U) {
+                        ++history_unreadable_;
+                    } else {
+                        // Newest first in the packet: event j has the number sequence - j. Those not seen yet are told, oldest first.
+                        for (std::size_t j = events->size(); j-- > 0;) {
+                            const auto number = static_cast<std::uint16_t>(sequence - j);
+                            const bool is_new = !history_sequence_ || (number != *history_sequence_ && static_cast<std::uint16_t>(number - *history_sequence_) < 0x8000U);
+                            if (!is_new) continue;
+                            ++history_events_;
+                            events_.push_back(std::format("input {}: {}", number, describe((*events)[j])));
+                        }
+                        if (!history_sequence_ || static_cast<std::uint16_t>(sequence - *history_sequence_) < 0x8000U) history_sequence_ = sequence;
+                    }
+                }
                 if (kind == packet_kind::kInputState && datagram.size() > kInputHeaderSize) {
                     // Its state is encrypted from sixteen bytes behind its key position on.
                     std::vector<std::uint8_t> state(datagram.begin() + kInputHeaderSize, datagram.end());
@@ -567,6 +623,21 @@ Datagrams ConsoleStream::on_datagram(std::span<const std::uint8_t> datagram, Tim
 Datagrams ConsoleStream::on_timer(TimePoint now) {
     Messenger::Timer timer = messenger_.on_timer(now);
     Datagrams out = std::move(timer.resend);
+    while (next_heartbeat_ && now >= *next_heartbeat_) {
+        send(out, make_plain_message(message_type::kHeartbeat), kOwnChannel, now);
+        *next_heartbeat_ += options_.heartbeat_every;
+    }
+    while (next_quality_ && now >= *next_quality_) {
+        ConnectionQuality quality;
+        quality.target_bitrate = 9708000;
+        quality.upstream_bitrate = 2;
+        quality.upstream_loss = 0.0F;
+        quality.disable_upstream_audio = false;
+        quality.rtt = 200.0;
+        quality.loss = 0;
+        send(out, make_message(quality), kOwnChannel, now);
+        *next_quality_ += options_.quality_every;
+    }
     while (next_frame_ && media_ && now >= *next_frame_) {
         send_frame(out);
         *next_frame_ += options_.frame_every;
@@ -638,6 +709,8 @@ std::optional<TimePoint> ConsoleStream::deadline() const {
     std::optional<TimePoint> when = messenger_.deadline();
     if (next_media_ && (!when || *next_media_ < *when)) when = next_media_;
     if (next_frame_ && (!when || *next_frame_ < *when)) when = next_frame_;
+    if (next_heartbeat_ && (!when || *next_heartbeat_ < *when)) when = next_heartbeat_;
+    if (next_quality_ && (!when || *next_quality_ < *when)) when = next_quality_;
     return when;
 }
 
@@ -646,6 +719,8 @@ Datagrams ConsoleStream::disconnect(const std::string& reason, TimePoint now) {
     send(out, make_message(DisconnectMessage{reason}), ClientStream::kSessionChannel, now);
     next_media_.reset();
     next_frame_.reset();
+    next_heartbeat_.reset();
+    next_quality_.reset();
     return out;
 }
 
@@ -669,6 +744,7 @@ std::string ConsoleStream::summary() const {
     }
     text += std::format(" input-states {} at-rest {} unreadable {} out-of-order {}", input_states_, input_at_rest_, input_unreadable_,
                         input_out_of_order_);
+    text += std::format(" history-packets {} events {} unreadable {}", history_packets_, history_events_, history_unreadable_);
     text += std::format(" frames-sent {} sound-sent {} withheld {} congestion-received {} congestion-lost {}", frames_sent_, sound_packets_,
                         packets_withheld_, congestion_received_, congestion_lost_);
     return text;

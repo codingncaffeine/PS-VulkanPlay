@@ -21,6 +21,9 @@ public:
     void boolean(std::uint32_t field, bool value) { varint(field, value ? 1 : 0); }
     void bytes(std::uint32_t field, std::span<const std::uint8_t> value);
     void text(std::uint32_t field, std::string_view value);
+    // Four or eight bytes, least significant first.
+    void fixed32(std::uint32_t field, std::uint32_t value);
+    void fixed64(std::uint32_t field, std::uint64_t value);
     // A message inside this one.
     void message(std::uint32_t field, const Writer& inner) { bytes(field, inner.out_); }
 

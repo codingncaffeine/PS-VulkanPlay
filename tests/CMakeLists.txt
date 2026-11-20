@@ -6,6 +6,7 @@ add_executable(psvp_tests
     unit/test_erasure.cpp
     unit/test_hex.cpp
     unit/test_import.cpp
+    unit/test_input.cpp
     unit/test_json.cpp
     unit/test_media.cpp
     unit/test_paths.cpp

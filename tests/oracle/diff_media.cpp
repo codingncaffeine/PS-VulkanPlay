@@ -8,6 +8,7 @@
 #include <vector>
 
 #include <chiaki/fec.h>
+#include <chiaki/controller.h>
 #include <chiaki/feedback.h>
 #include <chiaki/frameprocessor.h>
 #include <chiaki/gkcrypt.h>
@@ -221,6 +222,26 @@ void diff_reports(Compare& compare, Random& random, bool plant) {
         compare(parsed && parsed->as<CorruptFrames>() != nullptr && *parsed->as<CorruptFrames>() == CorruptFrames{start, end},
                 "frames-not-arrived message read back");
     }
+    // The console's view of the connection, as the reference's coder writes it and as ours reads it.
+    for (int round = 0; round < 500; ++round) {
+        ConnectionQuality quality;
+        quality.target_bitrate = random.below(round % 2 == 0 ? 200 : 0x7fffffff);
+        quality.upstream_bitrate = random.below(0x10000);
+        quality.upstream_loss = static_cast<float>(random.below(1001)) / 1000.0F;
+        quality.disable_upstream_audio = random.below(2) == 1;
+        quality.rtt = static_cast<double>(random.below(1000000)) / 997.0;
+        quality.loss = random.next() >> (round % 64);
+        std::uint8_t theirs[96];
+        const std::size_t theirs_size = psvp_ref_encode_connection_quality(*quality.target_bitrate, *quality.upstream_bitrate, *quality.upstream_loss,
+                                                                           *quality.disable_upstream_audio, *quality.rtt, *quality.loss, theirs,
+                                                                           sizeof(theirs));
+        std::vector<std::uint8_t> ours = encode_message(make_message(quality));
+        if (round == 0 && plant) ours.back() ^= 1;
+        compare(theirs_size != 0 && ours.size() == theirs_size && std::memcmp(ours.data(), theirs, theirs_size) == 0, "connection quality message");
+        const auto parsed = parse_message(std::span<const std::uint8_t>(theirs, theirs_size));
+        compare(parsed && parsed->as<ConnectionQuality>() != nullptr && *parsed->as<ConnectionQuality>() == quality,
+                "connection quality message read back");
+    }
     std::uint8_t message[16];
     const std::size_t size = psvp_ref_encode_plain(message_type::kKeyframeRequest, message, sizeof(message));
     const auto mine = encode_message(make_plain_message(message_type::kKeyframeRequest));
@@ -275,6 +296,108 @@ void diff_input(Compare& compare, Random& random, bool plant) {
     }
 }
 
+// What the reference's history buffer holds after each event, as its sender would put it in a packet.
+struct ReferencePackets {
+    ChiakiFeedbackHistoryBuffer* buffer = nullptr;
+    std::vector<std::vector<std::uint8_t>> payloads;
+    std::vector<std::size_t> counts;
+};
+
+void reference_event_pushed(void* user) {
+    auto* packets = static_cast<ReferencePackets*>(user);
+    std::uint8_t bytes[0x300];
+    std::size_t size = sizeof(bytes);
+    if (chiaki_feedback_history_buffer_format(packets->buffer, bytes, &size) != CHIAKI_ERR_SUCCESS) size = 0;
+    packets->payloads.emplace_back(bytes, bytes + size);
+    packets->counts.push_back(packets->buffer->len);
+    // The reference's sender keeps eight events for the next packet (FEEDBACK_HISTORY_RESEND_EVENT_COUNT).
+    if (packets->buffer->len > 8) packets->buffer->len = 8;
+}
+
+// Buttons, triggers and touches: single events, then a long row of controller changes.
+void diff_history(Compare& compare, Random& random, bool plant) {
+    for (unsigned i = 0; i < kButtons; ++i) {
+        for (const bool pressed : {true, false}) {
+            ChiakiFeedbackHistoryEvent theirs;
+            const bool ok = chiaki_feedback_history_event_set_button(&theirs, std::uint64_t{1} << i, pressed ? 0xff : 0) == CHIAKI_ERR_SUCCESS;
+            const HistoryEvent ours = button_event(static_cast<Button>(i), pressed);
+            compare(ok && theirs.len == ours.size && std::memcmp(theirs.buf, ours.bytes.data(), ours.size) == 0, "input history button event");
+        }
+    }
+    for (unsigned value = 0; value < 256; ++value) {
+        for (const bool right : {false, true}) {
+            ChiakiFeedbackHistoryEvent theirs;
+            const bool ok = chiaki_feedback_history_event_set_button(&theirs, right ? CHIAKI_CONTROLLER_ANALOG_BUTTON_R2 : CHIAKI_CONTROLLER_ANALOG_BUTTON_L2,
+                                                                     static_cast<std::uint8_t>(value)) == CHIAKI_ERR_SUCCESS;
+            const HistoryEvent ours = trigger_event(right, static_cast<std::uint8_t>(value));
+            compare(ok && theirs.len == ours.size && std::memcmp(theirs.buf, ours.bytes.data(), ours.size) == 0, "input history trigger event");
+        }
+    }
+    for (int round = 0; round < 2000; ++round) {
+        const Touch touch{random.below(2) == 1, static_cast<std::uint8_t>(random.below(128)), static_cast<std::uint16_t>(random.below(4096)),
+                          static_cast<std::uint16_t>(random.below(4096))};
+        ChiakiFeedbackHistoryEvent theirs;
+        chiaki_feedback_history_event_set_touchpad(&theirs, touch.down, touch.id, touch.x, touch.y);
+        const HistoryEvent ours = touch_event(touch);
+        compare(theirs.len == ours.size && std::memcmp(theirs.buf, ours.bytes.data(), ours.size) == 0, "input history touch event");
+        const auto back = parse_history_events(std::span<const std::uint8_t>(theirs.buf, theirs.len));
+        compare(back && back->size() == 1 && (*back)[0].what == ReadEvent::What::touch && (*back)[0].touch == touch, "input history touch event read back");
+    }
+
+    // A controller that keeps changing: after every change both must want the same packets.
+    ChiakiFeedbackHistoryBuffer buffer;
+    if (chiaki_feedback_history_buffer_init(&buffer, 16) != CHIAKI_ERR_SUCCESS) {
+        compare(false, "the reference's history buffer");
+        return;
+    }
+    ChiakiLog quiet;
+    chiaki_log_init(&quiet, 0, nullptr, nullptr);
+    ChiakiControllerState theirs_before;
+    chiaki_controller_state_set_idle(&theirs_before);
+    Buttons before;
+    InputHistory history;
+    std::uint16_t next_number = 0;
+    for (int round = 0; round < 4000; ++round) {
+        Buttons now = before;
+        // A few buttons, a trigger, a touch: sometimes several at once, sometimes nothing.
+        for (unsigned n = random.below(4); n > 0; --n) now.pressed = static_cast<std::uint16_t>(now.pressed ^ (1U << random.below(16)));
+        if (random.below(4) == 0) now.l2 = static_cast<std::uint8_t>(random.below(256));
+        if (random.below(4) == 0) now.r2 = static_cast<std::uint8_t>(random.below(256));
+        for (Touch& touch : now.touches) {
+            switch (random.below(8)) {
+            case 0: touch = Touch{}; break;                                                                    // lifted
+            case 1: touch = Touch{true, static_cast<std::uint8_t>(random.below(128)), static_cast<std::uint16_t>(random.below(1920)),
+                                  static_cast<std::uint16_t>(random.below(1080))}; break;                    // down, or another finger
+            case 2: if (touch.down) touch.x = static_cast<std::uint16_t>(random.below(1920)); break;           // moved
+            default: break;
+            }
+        }
+        ChiakiControllerState theirs_now = theirs_before;
+        theirs_now.buttons = now.pressed;
+        theirs_now.l2_state = now.l2;
+        theirs_now.r2_state = now.r2;
+        for (std::size_t i = 0; i < now.touches.size(); ++i) {
+            theirs_now.touches[i].id = now.touches[i].down ? static_cast<std::int8_t>(now.touches[i].id) : std::int8_t{-1};
+            theirs_now.touches[i].x = now.touches[i].down ? now.touches[i].x : std::uint16_t{0};
+            theirs_now.touches[i].y = now.touches[i].down ? now.touches[i].y : std::uint16_t{0};
+        }
+        ReferencePackets theirs{&buffer, {}, {}};
+        chiaki_feedback_history_buffer_record_state(&buffer, &quiet, &theirs_before, &theirs_now, reference_event_pushed, &theirs);
+        std::vector<InputHistory::Packet> ours = history.on_change(before, now, TimePoint{});
+        if (round == 0 && plant && !ours.empty()) ours[0].payload[1] ^= 1;
+        bool same = ours.size() == theirs.payloads.size();
+        for (std::size_t i = 0; same && i < ours.size(); ++i) {
+            same = ours[i].payload == theirs.payloads[i] && ours[i].events == theirs.counts[i] && ours[i].sequence == next_number++;
+        }
+        if (!same) next_number = static_cast<std::uint16_t>(next_number + theirs.payloads.size());
+        compare(same, "input history after a change");
+        // A lifted finger keeps no place in our state; the reference's keeps the place it had.
+        before = now;
+        theirs_before = theirs_now;
+    }
+    chiaki_feedback_history_buffer_fini(&buffer);
+}
+
 }  // namespace
 
 Outcome diff_media(bool plant) {
@@ -284,6 +407,7 @@ Outcome diff_media(bool plant) {
     diff_frames(compare, random, plant);
     diff_reports(compare, random, plant);
     diff_input(compare, random, plant);
+    diff_history(compare, random, plant);
     std::fprintf(stderr, "  media: %d comparisons, %d mismatches\n", compare.outcome.compared, compare.outcome.mismatches);
     return compare.outcome;
 }

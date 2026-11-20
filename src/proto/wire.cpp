@@ -26,6 +26,16 @@ void Writer::bytes(std::uint32_t field, std::span<const std::uint8_t> value) {
     out_.insert(out_.end(), value.begin(), value.end());
 }
 
+void Writer::fixed32(std::uint32_t field, std::uint32_t value) {
+    raw_varint((std::uint64_t{field} << 3) | static_cast<std::uint64_t>(Kind::fixed32));
+    for (int shift = 0; shift < 32; shift += 8) out_.push_back(static_cast<std::uint8_t>(value >> shift));
+}
+
+void Writer::fixed64(std::uint32_t field, std::uint64_t value) {
+    raw_varint((std::uint64_t{field} << 3) | static_cast<std::uint64_t>(Kind::fixed64));
+    for (int shift = 0; shift < 64; shift += 8) out_.push_back(static_cast<std::uint8_t>(value >> shift));
+}
+
 void Writer::text(std::uint32_t field, std::string_view value) {
     bytes(field, {reinterpret_cast<const std::uint8_t*>(value.data()), value.size()});
 }

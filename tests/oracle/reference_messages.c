@@ -86,6 +86,27 @@ size_t psvp_ref_encode_corrupt_frames(uint32_t start, uint32_t end, uint8_t *out
     return encode(&msg, out, out_size);
 }
 
+size_t psvp_ref_encode_connection_quality(uint32_t target_bitrate, uint32_t upstream_bitrate, float upstream_loss,
+                                          bool disable_upstream_audio, double rtt, uint64_t loss, uint8_t *out, size_t out_size) {
+    tkproto_TakionMessage msg;
+    memset(&msg, 0, sizeof(msg));
+    msg.type = tkproto_TakionMessage_PayloadType_CONNECTIONQUALITY;
+    msg.has_connection_quality_payload = true;
+    msg.connection_quality_payload.has_target_bitrate = true;
+    msg.connection_quality_payload.target_bitrate = target_bitrate;
+    msg.connection_quality_payload.has_upstream_bitrate = true;
+    msg.connection_quality_payload.upstream_bitrate = upstream_bitrate;
+    msg.connection_quality_payload.has_upstream_loss = true;
+    msg.connection_quality_payload.upstream_loss = upstream_loss;
+    msg.connection_quality_payload.has_disable_upstream_audio = true;
+    msg.connection_quality_payload.disable_upstream_audio = disable_upstream_audio;
+    msg.connection_quality_payload.has_rtt = true;
+    msg.connection_quality_payload.rtt = rtt;
+    msg.connection_quality_payload.has_loss = true;
+    msg.connection_quality_payload.loss = loss;
+    return encode(&msg, out, out_size);
+}
+
 size_t psvp_ref_encode_disconnect(const char *reason, uint8_t *out, size_t out_size) {
     tkproto_TakionMessage msg;
     memset(&msg, 0, sizeof(msg));
