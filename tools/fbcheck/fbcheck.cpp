@@ -3,13 +3,16 @@
 //   Xvfb ... -fbdir DIR      keeps the screen in DIR/Xvfb_screen0, in XWD format
 //   psvp_fbcheck DIR/Xvfb_screen0 R G B [TOLERANCE] [MIN_PERCENT]
 //
+//   psvp_fbcheck DIR/Xvfb_screen0 --count R G B [TOLERANCE]
+//
 // Exit 0 when at least MIN_PERCENT (default 50) of the screen is the color
 // within TOLERANCE (default 2) per channel, 1 when it is not, 2 when the file
-// cannot be read. A window check uses it to see what is on the screen instead
+// cannot be read. With --count it prints the number of such pixels and exits 0. A window check uses it to see what is on the screen instead
 // of trusting the program's own word that it drew.
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <iterator>
 #include <vector>
@@ -46,8 +49,14 @@ int fail(const char* file, const char* why) {
 }  // namespace
 
 int main(int argc, char** argv) {
-    if (argc < 5 || argc > 7) {
-        std::fprintf(stderr, "usage: %s XWD_FILE R G B [TOLERANCE] [MIN_PERCENT]\n", argv[0]);
+    const bool count_only = argc > 2 && std::strcmp(argv[2], "--count") == 0;
+    if (count_only) {
+        // The same arguments without the word.
+        for (int i = 2; i + 1 < argc; ++i) argv[i] = argv[i + 1];
+        --argc;
+    }
+    if (argc < 5 || argc > (count_only ? 6 : 7)) {
+        std::fprintf(stderr, "usage: %s XWD_FILE R G B [TOLERANCE] [MIN_PERCENT]\n       %s XWD_FILE --count R G B [TOLERANCE]\n", argv[0], argv[0]);
         return 2;
     }
     const char* file = argv[1];
@@ -107,6 +116,10 @@ int main(int argc, char** argv) {
         }
     }
 
+    if (count_only) {
+        std::printf("%llu\n", static_cast<unsigned long long>(matching));
+        return 0;
+    }
     const std::uint64_t total = std::uint64_t{width} * height;
     const double percent = 100.0 * static_cast<double>(matching) / static_cast<double>(total);
     const bool enough = percent >= min_percent;

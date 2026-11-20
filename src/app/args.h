@@ -16,6 +16,8 @@ struct Options {
     bool verbose = false;
     // Present this many frames, then exit by itself. For automated checks.
     std::optional<std::uint64_t> frames;
+    // Show the generated clip instead of a console's picture: a check of the decoder and of the drawing.
+    bool test_clip = false;
 };
 
 // The arguments after the program name. The error is a sentence for the user.

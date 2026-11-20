@@ -10,26 +10,29 @@ interface as goals.
 
 ## Status
 
-Early development; nothing here is ready for players yet, and there is no streaming. What exists so far:
+Early development: there is no release and no interface yet, only the command line. What exists so far:
 
-- finding consoles on the network, waking them from rest mode and registering with them, from the command
-  line (`ps-vulkanplay --help` lists the commands)
+- finding consoles on the network, waking them from rest mode and registering with them
+  (`ps-vulkanplay --help` lists the commands)
 - taking over the consoles already registered in Chiaki or chiaki-ng (`ps-vulkanplay import`)
-- starting a session with a registered console, setting a stream up with it and receiving its picture and
-  sound frames, as a connection check (`ps-vulkanplay session`); nothing is decoded, shown or played yet
+- playing: `ps-vulkanplay play CONSOLE` shows the console's picture in a window, plays its sound and sends
+  what a controller does (buttons, sticks, triggers, touchpad, motion). Pictures are decoded in software for
+  now; rumble, the controller's lights and HDR output are not there yet
+- a connection check that counts, keeps or decodes what a console sends (`ps-vulkanplay session`)
 
 Releases will appear on the Releases page when there is something to play.
 
 ## Building from source
 
-You need a C++23 compiler (GCC 13 or Clang 17, or later), CMake 3.25 or later, Ninja, SDL 3.2 or later and the
-Vulkan headers and loader, and OpenSSL 3 or later.
+You need a C++23 compiler (GCC 13 or Clang 17, or later), CMake 3.25 or later, Ninja, pkg-config, SDL 3.2 or
+later, FFmpeg 7 or later (libavcodec), Opus, OpenSSL 3 or later, the Vulkan headers and loader, and glslang to
+compile the shaders.
 
 | Distribution | Packages |
 |---|---|
-| Arch Linux | `base-devel cmake ninja openssl sdl3 vulkan-headers vulkan-icd-loader` |
-| Debian 13 | `g++ cmake ninja-build libssl-dev libsdl3-dev libvulkan-dev` |
-| Alpine Linux | `build-base cmake samurai openssl-dev sdl3-dev vulkan-headers vulkan-loader-dev` |
+| Arch Linux | `base-devel cmake ninja openssl ffmpeg opus sdl3 vulkan-headers vulkan-icd-loader glslang` |
+| Debian 13 | `g++ cmake ninja-build pkg-config libssl-dev libavcodec-dev libavutil-dev libopus-dev libsdl3-dev libvulkan-dev glslang-tools` |
+| Alpine Linux | `build-base cmake samurai pkgconf openssl-dev ffmpeg-dev opus-dev sdl3-dev vulkan-headers vulkan-loader-dev glslang` |
 
 ```sh
 cmake -S . -B build -G Ninja

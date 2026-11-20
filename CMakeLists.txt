@@ -67,6 +67,19 @@ add_library(psvp_net STATIC
 target_include_directories(psvp_net PUBLIC src)
 psvp_setup_target(psvp_net)
 
+# Decoding: pictures with FFmpeg, sound with Opus, and the generated clip that checks both.
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(PSVP_FFMPEG REQUIRED IMPORTED_TARGET libavcodec libavutil)
+pkg_check_modules(PSVP_OPUS REQUIRED IMPORTED_TARGET opus)
+add_library(psvp_media STATIC
+    src/media/color.cpp
+    src/media/sound_decoder.cpp
+    src/media/test_clip.cpp
+    src/media/video_decoder.cpp)
+target_include_directories(psvp_media PUBLIC src)
+target_link_libraries(psvp_media PRIVATE PkgConfig::PSVP_FFMPEG PkgConfig::PSVP_OPUS)
+psvp_setup_target(psvp_media)
+
 # What the application needs besides a window: options, folders, the log, the
 # list of registered consoles and the command-line commands.
 add_library(psvp_core STATIC
@@ -75,19 +88,35 @@ add_library(psvp_core STATIC
     src/app/chiaki_import.cpp
     src/app/commands.cpp
     src/app/console_store.cpp
+    src/app/decoding.cpp
     src/app/json.cpp
     src/app/log.cpp
     src/app/paths.cpp)
 target_include_directories(psvp_core PUBLIC src "${CMAKE_CURRENT_BINARY_DIR}/generated")
-target_link_libraries(psvp_core PUBLIC psvp_proto psvp_net)
+target_link_libraries(psvp_core PUBLIC psvp_proto psvp_net psvp_media)
 psvp_setup_target(psvp_core)
 
 if(PSVP_BUILD_APP)
     find_package(SDL3 3.2 REQUIRED CONFIG)
     find_package(Vulkan REQUIRED)
 
+    # The shaders are compiled when the program is built, into arrays inside it.
+    find_program(PSVP_GLSLANG NAMES glslangValidator glslang REQUIRED)
+    function(psvp_shader source name variable)
+        set(output "${CMAKE_CURRENT_BINARY_DIR}/generated/psvp/${name}.inc")
+        add_custom_command(OUTPUT "${output}"
+            COMMAND "${PSVP_GLSLANG}" -V --quiet --vn "${variable}" -o "${output}" "${CMAKE_CURRENT_SOURCE_DIR}/${source}"
+            DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${source}" VERBATIM)
+        set_property(GLOBAL APPEND PROPERTY PSVP_SHADERS "${output}")
+    endfunction()
+    psvp_shader(src/render/shaders/video.vert video_vert kVideoVertexShader)
+    psvp_shader(src/render/shaders/video.frag video_frag kVideoFragmentShader)
+    get_property(PSVP_SHADER_FILES GLOBAL PROPERTY PSVP_SHADERS)
+
     add_library(psvp_render STATIC
-        src/render/vk_window.cpp)
+        src/render/video_pass.cpp
+        src/render/vk_window.cpp
+        ${PSVP_SHADER_FILES})
     # The window's icon, in two sizes, inside the program: it needs no installed file to show it.
     include(cmake/EmbedFile.cmake)
     psvp_embed("${CMAKE_CURRENT_SOURCE_DIR}/assets/icons/window-256.bmp" "${CMAKE_CURRENT_BINARY_DIR}/generated/psvp/window_icon_256.inc")
@@ -96,8 +125,9 @@ if(PSVP_BUILD_APP)
     psvp_setup_target(psvp_render)
 
     add_executable(ps-vulkanplay
-        src/app/main.cpp)
-    target_link_libraries(ps-vulkanplay PRIVATE psvp_core psvp_proto psvp_render)
+        src/app/main.cpp
+        src/app/player.cpp)
+    target_link_libraries(ps-vulkanplay PRIVATE psvp_core psvp_proto psvp_render SDL3::SDL3)
     psvp_setup_target(ps-vulkanplay)
 
     include(GNUInstallDirs)

@@ -42,6 +42,8 @@ lane launch            launch release
 # Memory errors only: the window system's libraries hold allocations until exit.
 lane launch-asan       env ASAN_OPTIONS=detect_leaks=0 tools/wall.sh tools/launch-check.sh build/san/ps-vulkanplay
 lane launch-libcxx     launch clang-libcxx
+# Every Vulkan call of the window under the Khronos validation layer.
+lane validation        tools/wall.sh tools/validation-check.sh build/release/ps-vulkanplay
 lane identity          tools/identity-audit.sh
 
 # The commands against the mock console, with the reference's own client as the control.
@@ -59,6 +61,11 @@ lane receive           scenario phase2d build/release build/oracle &
 lane receive-asan      scenario phase2d build/san &
 lane input             scenario phase2e build/release build/oracle &
 lane input-asan        scenario phase2e build/san &
+lane decode            scenario phase3a build/release &
+lane decode-asan       scenario phase3a build/san &
+lane play              scenario phase3b build/release &
+# Memory errors only, as for the other window runs.
+lane play-asan         env ASAN_OPTIONS=detect_leaks=0 tools/wall.sh tests/scenario/phase3b.sh build/san &
 wait
 
 if [ "$scope" = all ]; then

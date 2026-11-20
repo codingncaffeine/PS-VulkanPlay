@@ -54,5 +54,7 @@ if [ $launch = 1 ]; then
     tools/wall.sh tests/scenario/phase2c.sh "$dir"
     tools/wall.sh tests/scenario/phase2d.sh "$dir"
     tools/wall.sh tests/scenario/phase2e.sh "$dir"
+    tools/wall.sh tests/scenario/phase3a.sh "$dir"
+    tools/wall.sh tests/scenario/phase3b.sh "$dir"
 fi
 echo "BUILD AND CHECK PASSED"

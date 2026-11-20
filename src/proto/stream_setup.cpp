@@ -496,6 +496,7 @@ void ConsoleStream::on_message(Datagrams& out, const DataChunk& chunk, TimePoint
     if (const auto* frames = message->as<CorruptFrames>()) {
         events_.push_back(std::format("frames {} to {} reported as not arrived (channel {}, {})", frames->start, frames->end, chunk.channel,
                                       chunk.authentic ? "authentic" : "NOT SEALED"));
+        if (options_.picture_lost) options_.picture_lost(static_cast<std::uint16_t>(frames->start), static_cast<std::uint16_t>(frames->end));
         return;
     }
     if (message->type == message_type::kKeyframeRequest) {
@@ -658,8 +659,9 @@ Datagrams ConsoleStream::on_timer(TimePoint now) {
 void ConsoleStream::send_frame(Datagrams& out) {
     const std::uint16_t index = ++frame_index_;
     const bool keyframe = std::exchange(keyframe_wanted_, false);
-    const auto frame = pattern_video_frame(options_.seed, index, options_.frame_bytes, keyframe);
-    const std::uint8_t codec = 0;
+    const auto frame = options_.picture_source ? options_.picture_source(index, keyframe)
+                                               : pattern_video_frame(options_.seed, index, options_.frame_bytes, keyframe);
+    const std::uint8_t codec = options_.picture_codec;
     Datagrams packets = media_->video_frame(index, 0, codec, frame, options_.unit_data, options_.repair_units);
     ++frames_sent_;
     events_.push_back(std::format("frame {} sent: {} bytes in {} packets{}", index, frame.size(), packets.size(), keyframe ? ", a keyframe" : ""));
@@ -684,6 +686,18 @@ void ConsoleStream::send_frame(Datagrams& out) {
 // One sound packet with a new frame and the frames before it again; now and then one for the haptics too.
 void ConsoleStream::send_sound(Datagrams& out) {
     const auto packet_for = [&](std::uint16_t index, bool haptics) {
+        if (options_.sound_source && !haptics) {
+            // A source gives every frame once; the frames before it are sent again from what was
+            // kept, and before there are any, the first frame stands in for them.
+            const std::vector<std::vector<std::uint8_t>> fresh{options_.sound_source(index)};
+            std::vector<std::vector<std::uint8_t>> repeated;
+            for (unsigned back = options_.sound_repeats; back >= 1; --back) {
+                repeated.push_back(back <= recent_sound_.size() ? recent_sound_[recent_sound_.size() - back] : fresh.front());
+            }
+            recent_sound_.push_back(fresh.front());
+            if (recent_sound_.size() > options_.sound_repeats) recent_sound_.pop_front();
+            return media_->sound_packet(index, fresh, repeated, haptics);
+        }
         const std::vector<std::vector<std::uint8_t>> fresh{pattern_sound_frame(options_.seed, index, options_.sound_bytes, haptics)};
         std::vector<std::vector<std::uint8_t>> repeated;
         for (unsigned back = options_.sound_repeats; back >= 1; --back) {

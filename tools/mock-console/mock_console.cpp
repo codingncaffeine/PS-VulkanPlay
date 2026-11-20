@@ -36,6 +36,9 @@
 //     --lose-units N          ...this many, from their first on
 //     --late-every N          the last packet of such a frame goes out behind the next frame's first
 //     --corrupt-media yes     change a byte of each picture and sound packet after sealing it
+//     --clip WIDTHxHEIGHT     send the generated clip instead of the pattern: H.264 pictures that show
+//                             their frame's number (src/media/test_clip.h) and a tone as Opus sound;
+//                             after a loss report the next frame repairs the picture, as a console's does
 //
 //   psvp-mock-console --check-dump FOLDER [--media-seed N] [--frame-bytes N]
 //     compares what 'session --dump FOLDER' kept with what a mock with these options sends;
@@ -54,6 +57,7 @@
 #include <fstream>
 #include <iterator>
 #include <map>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -66,6 +70,8 @@
 #include "proto/base64.h"
 #include "proto/discovery.h"
 #include "proto/hex.h"
+#include "media/sound_decoder.h"
+#include "media/test_clip.h"
 #include "proto/regist.h"
 #include "proto/rp_cipher.h"
 #include "proto/key_exchange.h"
@@ -116,6 +122,7 @@ struct Options {
     psvp::proto::transport::ConsoleStream::Options media;  // the picture and sound it sends
     int frame_ms = 0;
     std::string check_dump;
+    unsigned clip_width = 0, clip_height = 0;  // 0: the pattern, not the clip
 };
 
 // The header of the one picture size the mock offers: a placeholder, not a decoder's.
@@ -564,6 +571,18 @@ int main(int argc, char** argv) {
             }
         } else if (arg == "--check-dump") {
             options.check_dump = *text;
+        } else if (arg == "--clip") {
+            const std::size_t by = text->find('x');
+            const auto number = [&](std::string_view part, unsigned& into) {
+                const auto [end, error] = std::from_chars(part.data(), part.data() + part.size(), into);
+                return error == std::errc{} && end == part.data() + part.size();
+            };
+            if (by == std::string_view::npos || !number(text->substr(0, by), options.clip_width) || !number(text->substr(by + 1), options.clip_height) ||
+                options.clip_width < psvp::media::kClipMinWidth || options.clip_height < psvp::media::kClipMinHeight || options.clip_width % 2 != 0 ||
+                options.clip_height % 2 != 0 || options.clip_width > 1920 || options.clip_height > 1088) {
+                return usage(std::format("--clip takes a size like 416x240: even numbers from {}x{} to 1920x1088", psvp::media::kClipMinWidth,
+                                         psvp::media::kClipMinHeight));
+            }
         } else if (arg == "--frame-ms" || arg == "--frames" || arg == "--media-seed" || arg == "--frame-bytes" || arg == "--repair-units" ||
                    arg == "--lose-every" || arg == "--lose-units" || arg == "--late-every" || arg == "--lose-sound-every" ||
                    arg == "--haptics-every") {
@@ -683,6 +702,17 @@ int main(int argc, char** argv) {
                 stream_options.session_id = std::string(session_id(options.kind));
                 // One picture size; its header is a placeholder, not a decoder's.
                 stream_options.resolutions.push_back(psvp::proto::StreamResolution{1280, 720, {kPictureHeader.begin(), kPictureHeader.end()}});
+                if (options.clip_width != 0) {
+                    // The clip: pictures a decoder gives back sample for sample, and a tone.
+                    auto clip = std::make_shared<psvp::media::ClipWriter>(options.clip_width, options.clip_height);
+                    auto tone = std::make_shared<psvp::media::ToneWriter>();
+                    stream_options.resolutions.front() = psvp::proto::StreamResolution{options.clip_width, options.clip_height, clip->parameter_sets()};
+                    stream_options.picture_codec = 3;  // what a PS5 writes for H.264
+                    stream_options.picture_source = [clip](std::uint16_t index, bool keyframe) { return clip->frame(index, keyframe); };
+                    stream_options.picture_lost = [clip](std::uint16_t first, std::uint16_t last) { clip->decoder_lost(first, last); };
+                    stream_options.sound_source = [tone](std::uint16_t) { return tone->frame(); };
+                    stream_options.audio.frame_size = psvp::media::ToneWriter::kFrameSamples;
+                }
                 stream_options.max_datagram = std::min(options.path.mtu_in, options.path.mtu_out) - psvp::proto::transport::kSplitMargin;
                 stream_options.accept_version = !options.refuse_version;
                 stream_options.wrong_signature = options.wrong_signature;

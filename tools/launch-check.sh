@@ -96,5 +96,57 @@ else
 fi
 [ -f "$log.1" ] && ok "the previous run's log was kept beside the new one" || fail "the previous log was not kept"
 
+# A third start shows the generated clip: decoded like a console's picture and drawn. The clip is
+# 416x240 in blocks of 16; the window is 1280x720, so it is drawn at three times its size, 1248x720,
+# and every block is 48 screen pixels wide and high. Where two blocks of different brightness meet,
+# one pixel on each side is a mix; a color sample is two brightness samples wide, so there it is up
+# to three. A block's own color therefore fills from 42x42 to 48x48 pixels.
+# The colors are what BT.709 in the limited range makes of the clip's samples
+# (src/media/test_clip.cpp): gray (64 - 16) * 255 / 219 = 56; the patches 0.75 * 255 = 191.
+count() { "$fbcheck" "$PSVP_TEST_FB" --count "$@" 2>/dev/null; }
+within() { [ -n "$1" ] && [ "$1" -ge "$2" ] && [ "$1" -le "$3" ]; }
+before="$(count 191 0 1) $(count 0 191 0) $(count 0 0 191) $(count 56 56 56)"
+[ "$before" = "0 0 0 0" ] && ok "before the clip: none of its colors is on the screen" || fail "before the clip the screen already has its colors: $before"
+: > "$log"
+"$app" --test-clip > "$PSVP_TEST_TMP/clip.out" 2>&1 &
+pid=$!
+for _ in $(seq 150); do
+    [ -n "$(line 'render: first picture shown.*')" ] && break
+    kill -0 $pid 2>/dev/null || break
+    sleep 0.1
+done
+l=$(line 'test clip: .*');                    [ -n "$l" ] && ok "$l" || fail "the clip's decoder did not open"
+l=$(line 'render: first picture shown.*');    [ -n "$l" ] && ok "$l" || fail "no picture was shown"
+case "$l" in *"416x240, 8 bits, limited range, BT.709, drawn at 1248x720"*) ok "the picture is drawn as large as it fits" ;; *) fail "the picture's size or colors are not the clip's" ;; esac
+if kill -0 $pid 2>/dev/null; then
+    sleep 0.7
+    for patch in "red 191 0 1" "green 0 191 0" "blue 0 0 191" "yellow 191 191 0" "cyan 0 191 191" "magenta 191 0 191"; do
+        set -- $patch
+        n=$(count "$2" "$3" "$4")
+        within "$n" $((42 * 42)) $((48 * 48)) && ok "the $1 patch: $n pixels of its color" || fail "the $1 patch: '$n' pixels of ($2,$3,$4), not $((42 * 42)) to $((48 * 48))"
+    done
+    # Sixteen white blocks show the frame's number (each bit is white in one of the two rows), one moves.
+    # The screen is read while the clip plays: the moving block may be caught between two places.
+    n=$(count 255 255 255)
+    within "$n" $((16 * 46 * 46)) $((17 * 48 * 48)) && ok "white: $n pixels, the sixteen blocks of the number and the moving one" || fail "white: '$n' pixels, not sixteen to seventeen blocks"
+    # 390 blocks less the 32 of the number, the 8 patches and the moving one.
+    n=$(count 56 56 56)
+    within "$n" $((349 * 46 * 46)) $((349 * 48 * 48)) && ok "gray: $n pixels, the other 349 blocks" || fail "gray: '$n' pixels, not 349 blocks"
+    n=$(count "${color[@]}")
+    [ "$n" = 0 ] && ok "beside the picture the window is black, not its background color" || fail "$n pixels of the background color beside a picture"
+    kill -TERM $pid 2>/dev/null
+    wait $pid; rc=$?
+    [ $rc -eq 0 ] && ok "stopped cleanly when asked (exit 0)" || fail "exit code $rc when asked to stop"
+    shown=$(line 'render: stopped after [0-9]* frames, [0-9]* pictures' | sed -E 's/.* ([0-9]+) pictures/\1/')
+    # A new frame sixty times a second, for the second and a half or so that this took.
+    within "$shown" 40 400 && ok "$shown pictures were shown" || fail "pictures shown: '$shown'"
+else
+    wait $pid; rc=$?
+    fail "exited by itself with code $rc"; sed 's/^/           | /' "$PSVP_TEST_TMP/clip.out" | head -20
+fi
+if grep -q ' ERROR ' "$log" 2>/dev/null; then
+    fail "the application logged an error:"; grep ' ERROR ' "$log" | sed 's/^/           | /' | head -5
+fi
+
 [ $failed = 0 ] && echo "LAUNCH CHECK PASSED" || echo "LAUNCH CHECK FAILED"
 exit $failed

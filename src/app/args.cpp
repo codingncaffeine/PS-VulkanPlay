@@ -17,6 +17,8 @@ std::expected<Options, std::string> parse_args(std::span<const std::string_view>
             options.show_help = true;
         } else if (arg == "--verbose") {
             options.verbose = true;
+        } else if (arg == "--test-clip") {
+            options.test_clip = true;
         } else if (arg == "--frames") {
             if (i + 1 >= args.size()) return std::unexpected(std::string("--frames needs a number"));
             const std::string_view text = args[++i];
@@ -42,7 +44,9 @@ std::string help_text() {
         "  --version      print the version and exit\n"
         "  --help, -h     print this help and exit\n"
         "  --verbose      log more detail\n"
-        "  --frames N     present N frames, then exit (for automated checks)\n",
+        "  --frames N     present N frames, then exit (for automated checks)\n"
+        "  --test-clip    show a generated clip instead of a console's picture: moving blocks,\n"
+        "                 color patches (a check that pictures are decoded and drawn right)\n",
         PSVP_NAME, PSVP_VERSION, PSVP_BINARY);
 }
 

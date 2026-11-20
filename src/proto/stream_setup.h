@@ -7,6 +7,8 @@
 
 #include <chrono>
 #include <cstdint>
+#include <deque>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -233,6 +235,13 @@ public:
         unsigned sound_repeats = 2;                // earlier frames sent again in every sound packet
         unsigned lose_sound_every = 0;             // every sound packet whose frame index this divides is not sent
         unsigned haptics_every = 0;                // a haptics packet with every Nth sound packet (PS5); 0: none
+        // Where the frames' content comes from when it is not the fixed pattern: a clip a decoder
+        // can decode. The picture source is asked for every frame in order, the sound source
+        // for every sound frame once; `picture_lost` hears which frames the client reported.
+        std::function<std::vector<std::uint8_t>(std::uint16_t index, bool keyframe)> picture_source;
+        std::function<void(std::uint16_t first, std::uint16_t last)> picture_lost;
+        std::function<std::vector<std::uint8_t>(std::uint16_t index)> sound_source;
+        std::uint8_t picture_codec = 0;            // the codec byte of picture packets (a PS5: 3 for H.264, 6 for HEVC)
         // What a PS5 was seen to send on its own once a stream is set up; 0: not sent.
         std::chrono::milliseconds heartbeat_every{0};  // its heartbeats (a PS5: about three a second)
         std::chrono::milliseconds quality_every{0};    // its view of the connection (a PS5: every 1.2 s or so)
@@ -282,6 +291,7 @@ private:
     std::uint64_t sound_packets_ = 0;
     bool keyframe_wanted_ = true;
     std::optional<std::vector<std::uint8_t>> held_;  // a packet that goes out late on purpose
+    std::deque<std::vector<std::uint8_t>> recent_sound_;  // the last frames of a sound source, to send again
     std::uint64_t frames_sent_ = 0;
     std::uint64_t packets_withheld_ = 0;
     std::uint64_t congestion_received_ = 0;

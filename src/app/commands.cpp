@@ -13,14 +13,17 @@
 #include <iterator>
 #include <map>
 #include <optional>
+#include <ranges>
 #include <thread>
 #include <vector>
 
 #include "app/account_id.h"
 #include "app/chiaki_import.h"
 #include "app/console_store.h"
+#include "app/decoding.h"
 #include "app/json.h"
 #include "app/paths.h"
+#include "app/session_run.h"
 #include "net/socket.h"
 #include "proto/base64.h"
 #include "proto/discovery.h"
@@ -749,77 +752,68 @@ template <typename Key> std::string counts_text(const std::map<Key, std::uint64_
 // connection with its keys and the stream information. The stream is held for a
 // few seconds: its packets are checked, its picture frames and sound frames put
 // together and counted, and kept in a folder on request. Nothing is decoded or shown.
-int command_session(std::span<const std::string_view> args) {
-    namespace transport = proto::transport;
-    const Parsed parsed = parse(
-        args, {"--host", "--seconds", "--passcode", "--resolution", "--fps", "--bitrate", "--codec", "--session-id", "--dump", "--tap"}, {"--rest"}, 1);
-    if (!parsed.error.empty()) return usage("session: {}", parsed.error);
-    if (parsed.words.empty()) return usage("session: which console? Give its name or hardware address");
-    std::chrono::milliseconds hold = 3s;
-    if (const auto text = parsed.option("--seconds")) {
-        const auto seconds = parse_seconds(*text, 600);
-        if (!seconds) return usage("session: --seconds takes a number from 1 to 600");
-        hold = *seconds;
-    }
-    transport::VideoProfile video;
+// The options that 'session' and 'play' share, read into a plan. Returns what is wrong with them, if anything.
+std::optional<std::string> read_plan(const Parsed& parsed, SessionPlan& plan) {
+    if (parsed.words.empty()) return "which console? Give its name or hardware address";
+    plan.console = std::string(parsed.words.front());
+    if (const auto host = parsed.option("--host")) plan.host = std::string(*host);
+    if (const auto passcode = parsed.option("--passcode")) plan.passcode = std::string(*passcode);
+    plan.rest = parsed.flag("--rest");
     if (const auto text = parsed.option("--resolution")) {
         const auto choice = std::ranges::find(kVideoChoices, *text, &VideoChoice::name);
-        if (choice == std::end(kVideoChoices)) return usage("session: --resolution is 360, 540, 720 or 1080");
-        video.width = choice->width;
-        video.height = choice->height;
-        video.bitrate_kbps = choice->bitrate_kbps;
+        if (choice == std::end(kVideoChoices)) return "--resolution is 360, 540, 720 or 1080";
+        plan.video.width = choice->width;
+        plan.video.height = choice->height;
+        plan.video.bitrate_kbps = choice->bitrate_kbps;
     }
     if (const auto text = parsed.option("--fps")) {
-        if (*text != "30" && *text != "60") return usage("session: --fps is 30 or 60");
-        video.max_fps = *text == "30" ? 30 : 60;
+        if (*text != "30" && *text != "60") return "--fps is 30 or 60";
+        plan.video.max_fps = *text == "30" ? 30 : 60;
     }
     if (const auto text = parsed.option("--bitrate")) {
         const auto kbps = parse_number(*text, 500, 100000);
-        if (!kbps) return usage("session: --bitrate is in kbit/s, from 500 to 100000");
-        video.bitrate_kbps = *kbps;
+        if (!kbps) return "--bitrate is in kbit/s, from 500 to 100000";
+        plan.video.bitrate_kbps = *kbps;
     }
     if (const auto text = parsed.option("--codec")) {
-        if (*text == "h264") video.codec = proto::Codec::h264;
-        else if (*text == "hevc") video.codec = proto::Codec::hevc;
-        else if (*text == "hdr") video.codec = proto::Codec::hevc_hdr;
-        else return usage("session: --codec is h264, hevc or hdr");
+        if (*text == "h264") plan.video.codec = proto::Codec::h264;
+        else if (*text == "hevc") plan.video.codec = proto::Codec::hevc;
+        else if (*text == "hdr") plan.video.codec = proto::Codec::hevc_hdr;
+        else return "--codec is h264, hevc or hdr";
     }
-    const std::string_view id_choice = parsed.option("--session-id").value_or("console");
-    if (id_choice != "console" && id_choice != "invented") return usage("session: --session-id is console or invented");
     // What the controller does while the stream is held: each button down, and up again 100 ms later.
-    struct Action {
-        std::chrono::milliseconds at{0};
-        transport::Button button = transport::Button::cross;
-        bool down = false;
-    };
-    std::vector<Action> actions;
     if (const auto text = parsed.option("--tap")) {
         const auto taps = parse_taps(*text);
-        if (!taps) return usage("session: --tap takes buttons with the second they are pressed in, like right@2,left@3.5 (cross circle square "
-                                "triangle left right up down l1 r1 l3 r3 options share touchpad ps)");
-        for (const Tap& tap : *taps) {
-            actions.push_back(Action{tap.at, tap.button, true});
-            actions.push_back(Action{tap.at + 100ms, tap.button, false});
+        if (!taps) {
+            return "--tap takes buttons with the second they are pressed in, like right@2,left@3.5 (cross circle square "
+                   "triangle left right up down l1 r1 l3 r3 options share touchpad ps)";
         }
-        std::ranges::stable_sort(actions, {}, &Action::at);
+        for (const Tap& tap : *taps) {
+            plan.actions.push_back(SessionPlan::Action{tap.at, tap.button, true});
+            plan.actions.push_back(SessionPlan::Action{tap.at + 100ms, tap.button, false});
+        }
+        std::ranges::stable_sort(plan.actions, {}, &SessionPlan::Action::at);
     }
-    std::optional<StreamDump> dump;
-    if (const auto folder = parsed.option("--dump")) {
-        if (folder->empty()) return usage("session: --dump takes a folder");
-        auto opened = StreamDump::open(std::filesystem::path(*folder));
-        if (!opened) return fail("session: --dump: {}", opened.error());
-        dump.emplace(std::move(*opened));
-    }
+    return std::nullopt;
+}
+
+// With a controller of the caller's, the stream's loop looks at it this often at least.
+constexpr auto kControllerEvery = 2ms;
+
+int run_session_here(const SessionPlan& plan) {
+    namespace transport = proto::transport;
+    const transport::VideoProfile& video = plan.video;
+    const std::vector<SessionPlan::Action>& actions = plan.actions;
 
     auto context = load_context();
     if (!context) return fail("session: {}", context.error());
-    const StoredConsole* console = context->store.find(parsed.words.front());
+    const StoredConsole* console = context->store.find(plan.console);
     if (console == nullptr) {
-        return fail("No registered console is called '{}'. '{} consoles' lists them.", parsed.words.front(), PSVP_BINARY);
+        return fail("No registered console is called '{}'. '{} consoles' lists them.", plan.console, PSVP_BINARY);
     }
     const proto::RegisteredConsole& registration = console->registration;
     if (registration.kind == ConsoleKind::ps4 && video.codec != proto::Codec::h264) return usage("session: a PS4 streams H.264 only");
-    const std::string host(parsed.option("--host").value_or(console->last_address));
+    const std::string host(plan.host.value_or(console->last_address));
     if (host.empty()) return fail("The address of {} is not known yet: '{} discover' finds it, or give --host ADDRESS.", registration.nickname, PSVP_BINARY);
     const auto ip = net::resolve_ipv4(host);
     if (!ip) return fail("session: {}", ip.error());
@@ -901,7 +895,7 @@ int command_session(std::span<const std::string_view> args) {
                 if (!send(kHeartbeatReply)) return broke("session: the connection to the console broke");
                 ++heartbeats;
             } else if (message->type == kLoginPinRequest) {
-                const auto passcode = parsed.option("--passcode");
+                const auto& passcode = plan.passcode;
                 if (!passcode) return broke(std::format("{} asks for its login passcode: add --passcode DIGITS.", registration.nickname));
                 if (!send(kLoginPinReply, net::bytes_of(*passcode))) return broke("session: the connection to the console broke");
                 passcode_sent = true;
@@ -968,7 +962,7 @@ int command_session(std::span<const std::string_view> args) {
     if (!link) return fail("{}: the stream connection: {}.", registration.nickname, link.error());
     transport::StreamRequest stream_request;
     stream_request.kind = registration.kind;
-    const bool own_id = id_choice == "invented" || !session_id;
+    const bool own_id = plan.invented_id || !session_id;
     stream_request.session_id = own_id ? invented_session_id() : *session_id;
     stream_request.session_cipher = cipher;
     stream_request.network = measured;
@@ -984,9 +978,9 @@ int command_session(std::span<const std::string_view> args) {
         transport::MediaOutput media = stream.take_media();
         for (const auto& frame : media.video) video_bytes += frame.data.size();
         for (const auto& frame : media.sound) sound_bytes += frame.data.size();
-        if (dump) dump->take(std::move(media), stream.info());
+        if (plan.on_media && (!media.video.empty() || !media.sound.empty())) plan.on_media(media, stream.info());
         const auto data = stream.take_console_data();
-        if (dump && !data.empty()) dump->take(data, std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - setup_started));
+        if (plan.on_console_data && !data.empty()) plan.on_console_data(data, std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - setup_started));
     };
 
     const auto send_all = [&](const transport::Datagrams& datagrams) {
@@ -996,12 +990,12 @@ int command_session(std::span<const std::string_view> args) {
     const auto run_stream = [&](const std::function<bool()>& stop) -> std::expected<void, std::string> {
         while (!stop() && stream.state() != State::failed && !(stream.state() == State::closed && !stream.goodbye_pending())) {
             if (!service()) return {};
-            const auto datagram = link->socket.receive(std::min(stream.deadline(), Clock::now() + kServiceEvery));
+            const auto datagram = link->socket.receive(std::min(stream.deadline(), Clock::now() + (plan.controller ? kControllerEvery : kServiceEvery)));
             if (!datagram) return std::unexpected(datagram.error());
             if (*datagram) {
                 if ((*datagram)->from != link->console) continue;
                 const auto now = Clock::now();
-                if (dump) dump->packet(registration.kind, (*datagram)->data, std::chrono::duration_cast<std::chrono::microseconds>(now - setup_started));
+                if (plan.on_packet) plan.on_packet(registration.kind, (*datagram)->data, std::chrono::duration_cast<std::chrono::microseconds>(now - setup_started));
                 send_all(stream.on_datagram((*datagram)->data, now));
             }
             // A deadline may pass while packets keep coming: it is looked at after every one of them.
@@ -1040,8 +1034,9 @@ int command_session(std::span<const std::string_view> args) {
 
     // Hold it: heartbeats go out, and whatever the console sends is counted and its codes checked.
     const auto hold_started = Clock::now();
-    const auto hold_until = hold_started + hold;
+    const auto hold_until = hold_started + plan.hold;
     transport::Buttons buttons;
+    transport::InputState controller_state;
     std::size_t next_action = 0;
     const auto held = run_stream([&] {
         const auto now = Clock::now();
@@ -1051,14 +1046,19 @@ int command_session(std::span<const std::string_view> args) {
             say("{:.3f} s: {} {}.", std::chrono::duration<double>(now - hold_started).count(), transport::button_name(actions[next_action].button),
                 actions[next_action].down ? "pressed" : "released");
         }
-        return now >= hold_until;
+        // A controller of the caller's: what it does goes out when it changes.
+        if (plan.controller && actions.empty() && plan.controller(buttons, controller_state)) {
+            send_all(stream.set_controller(buttons, controller_state, now));
+        }
+        return now >= hold_until || (plan.stop && plan.stop());
     });
+    const auto held_for = Clock::now() - hold_started;
     if (!held) return fail("session: {}", held.error());
     if (!control_failure.empty()) return fail("{}", control_failure);
     const transport::StreamCounters& counters = stream.counters();
     say("Stream held for {} seconds: {} picture and {} sound packets arrived with the right authentication code, {} with a wrong one, "
         "{} before the keys; control packets refused: {}; heartbeats sent: {}.",
-        std::chrono::duration_cast<std::chrono::seconds>(hold).count(), counters.video_packets, counters.audio_packets, counters.media_rejected,
+        std::chrono::duration_cast<std::chrono::seconds>(held_for).count(), counters.video_packets, counters.audio_packets, counters.media_rejected,
         counters.media_before_keys, stream.control_rejected(), counters.heartbeats_sent);
     {
         const transport::FrameCounters& frames = stream.video();
@@ -1081,11 +1081,7 @@ int command_session(std::span<const std::string_view> args) {
                 counters.input_events, counters.history_packets);
         }
     }
-    if (dump) {
-        const bool written = dump->close();
-        say("Kept in {}: video.bin ({} bytes), sound.bin ({} bytes), and a line per frame, per packet and per other message{}.", dump->folder().string(),
-            dump->video_bytes(), dump->sound_bytes(), written ? "" : "; SOMETHING COULD NOT BE WRITTEN");
-    }
+    if (plan.on_report) plan.on_report();
     if (!counters.messages.empty()) say("Messages from the console: {}.", counts_text(counters.messages, "type"));
     if (const auto& quality = stream.quality()) {
         say("The console's latest view of the connection: target bitrate {} kbit/s, round-trip value {:.1f}, loss {}.",
@@ -1098,7 +1094,7 @@ int command_session(std::span<const std::string_view> args) {
     const bool console_closed = stream.state() == State::closed;
     if (console_closed) say("{} closed the stream: {}.", registration.nickname, stream.reason());
 
-    if (parsed.flag("--rest")) {
+    if (plan.rest) {
         if (!send(proto::ctrl_type::kGoToRest)) return fail("session: the connection to the console broke");
         say("Asked {} to go to rest mode.", registration.nickname);
     }
@@ -1111,6 +1107,168 @@ int command_session(std::span<const std::string_view> args) {
     }
     say("Control channel held for {:.1f} seconds; heartbeats answered: {}.",
         std::chrono::duration<double>(Clock::now() - control_opened).count(), heartbeats);
+    if (plan.verdict) {
+        if (const auto failure = plan.verdict()) return fail("session: {}", *failure);
+    }
+    return kDone;
+}
+
+int command_session(std::span<const std::string_view> args) {
+    const Parsed parsed = parse(
+        args, {"--host", "--seconds", "--passcode", "--resolution", "--fps", "--bitrate", "--codec", "--session-id", "--dump", "--tap"},
+        {"--rest", "--decode", "--expect-clip"}, 1);
+    if (!parsed.error.empty()) return usage("session: {}", parsed.error);
+    SessionPlan plan;
+    if (const auto wrong = read_plan(parsed, plan)) return usage("session: {}", *wrong);
+    if (const auto text = parsed.option("--seconds")) {
+        const auto seconds = parse_seconds(*text, 600);
+        if (!seconds) return usage("session: --seconds takes a number from 1 to 600");
+        plan.hold = *seconds;
+    }
+    const std::string_view id_choice = parsed.option("--session-id").value_or("console");
+    if (id_choice != "console" && id_choice != "invented") return usage("session: --session-id is console or invented");
+    plan.invented_id = id_choice == "invented";
+
+    std::optional<StreamDump> dump;
+    if (const auto folder = parsed.option("--dump")) {
+        if (folder->empty()) return usage("session: --dump takes a folder");
+        auto opened = StreamDump::open(std::filesystem::path(*folder));
+        if (!opened) return fail("session: --dump: {}", opened.error());
+        dump.emplace(std::move(*opened));
+    }
+    const bool expect_clip = parsed.flag("--expect-clip");
+    std::optional<Decoding> decoding;
+    if (parsed.flag("--decode") || expect_clip) decoding.emplace(Decoding::Options{.expect_clip = expect_clip});
+
+    // The frames that are ready leave the stream at once; they are decoded and kept only when that was asked for.
+    if (dump) {
+        plan.on_packet = [&](ConsoleKind kind, std::span<const std::uint8_t> datagram, std::chrono::microseconds since) { dump->packet(kind, datagram, since); };
+        plan.on_console_data = [&](const std::vector<proto::transport::ConsoleData>& data, std::chrono::microseconds since) { dump->take(data, since); };
+    }
+    plan.on_media = [&](proto::transport::MediaOutput& media, const std::optional<proto::StreamInfo>& stream_info) {
+        if (decoding && stream_info) {
+            const proto::StreamInfo& info = *stream_info;
+            for (const auto& frame : media.video) {
+                const std::span<const std::uint8_t> header =
+                    frame.adaptive_stream < info.resolutions.size() ? std::span<const std::uint8_t>(info.resolutions[frame.adaptive_stream].video_header)
+                                                                    : std::span<const std::uint8_t>();
+                decoding->video(header, frame.adaptive_stream, frame.index, frame.data, frame.lost_before);
+            }
+            const proto::AudioHeader audio = proto::parse_audio_header(info.audio_header).value_or(proto::AudioHeader{});
+            for (const auto& frame : media.sound) {
+                if (!frame.haptics) decoding->sound(audio.rate, audio.channels, audio.frame_size, frame.data, frame.lost_before);
+            }
+        }
+        if (dump) dump->take(std::move(media), stream_info);
+    };
+    plan.on_report = [&] {
+        if (dump) {
+            const bool written = dump->close();
+            say("Kept in {}: video.bin ({} bytes), sound.bin ({} bytes), and a line per frame, per packet and per other message{}.", dump->folder().string(),
+                dump->video_bytes(), dump->sound_bytes(), written ? "" : "; SOMETHING COULD NOT BE WRITTEN");
+        }
+        if (decoding) {
+            for (const std::string& line : decoding->report()) say("{}", line);
+        }
+    };
+    plan.verdict = [&]() -> std::optional<std::string> {
+        if (!decoding || decoding->good()) return std::nullopt;
+        return expect_clip ? "what was decoded is not the test clip" : "nothing of the stream could be decoded";
+    };
+    return run_session_here(plan);
+}
+
+PlayRunner play_runner = nullptr;
+
+// The stream in a window, with its sound and a controller: what the program is for.
+int command_play(std::span<const std::string_view> args) {
+    const Parsed parsed = parse(args, {"--host", "--seconds", "--passcode", "--resolution", "--fps", "--bitrate", "--codec", "--tap", "--frames"}, {"--rest"}, 1);
+    if (!parsed.error.empty()) return usage("play: {}", parsed.error);
+    SessionPlan plan;
+    // What a console sends when nothing else is asked for: 1080p, 60 pictures a second, HEVC from a PS5.
+    plan.video.width = 1920;
+    plan.video.height = 1080;
+    plan.video.bitrate_kbps = 15000;
+    plan.video.codec = proto::Codec::hevc;
+    if (const auto wrong = read_plan(parsed, plan)) return usage("play: {}", *wrong);
+    plan.hold = std::chrono::hours(24);
+    if (const auto text = parsed.option("--seconds")) {
+        const auto seconds = parse_seconds(*text, 600);
+        if (!seconds) return usage("play: --seconds takes a number from 1 to 600");
+        plan.hold = *seconds;
+    }
+    PlayOptions options;
+    if (const auto text = parsed.option("--frames")) {
+        const auto frames = parse_number(*text, 1, 100000000);
+        if (!frames) return usage("play: --frames takes a whole number above zero");
+        options.frames = *frames;
+    }
+    // A PS4 streams H.264 only: for one, the codec nobody chose is that.
+    if (!parsed.option("--codec")) {
+        if (auto context = load_context()) {
+            const StoredConsole* console = context->store.find(plan.console);
+            if (console != nullptr && console->registration.kind == ConsoleKind::ps4) plan.video.codec = proto::Codec::h264;
+        }
+    }
+    if (play_runner == nullptr) return fail("play: this build has no window to play in");
+    return play_runner(std::move(plan), options);
+}
+
+// Decodes what 'session --dump' kept: the same decoders, without a console.
+int command_decode(std::span<const std::string_view> args) {
+    const Parsed parsed = parse(args, {}, {"--expect-clip"}, 1);
+    if (!parsed.error.empty()) return usage("decode: {}", parsed.error);
+    if (parsed.words.empty()) return usage("decode: which folder? Give one that 'session --dump' wrote");
+    const std::filesystem::path folder(parsed.words.front());
+    const auto read = [&](const char* name) -> std::optional<std::string> {
+        std::ifstream file(folder / name, std::ios::binary);
+        if (!file) return std::nullopt;
+        return std::string(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+    };
+    // The lists: a heading, then a line of numbers per frame.
+    const auto rows = [](std::string_view text) {
+        std::vector<std::vector<std::uint64_t>> out;
+        bool heading = true;
+        for (const auto line : std::views::split(text, '\n')) {
+            if (std::exchange(heading, false) || line.empty()) continue;
+            std::vector<std::uint64_t> row;
+            for (const auto field : std::views::split(line, '\t')) {
+                std::uint64_t value = 0;
+                std::from_chars(field.data(), field.data() + field.size(), value);
+                row.push_back(value);
+            }
+            out.push_back(std::move(row));
+        }
+        return out;
+    };
+    const auto video = read("video.bin"), video_list = read("video.tsv"), sound = read("sound.bin"), sound_list = read("sound.tsv");
+    if (!video || !video_list || !sound || !sound_list) return fail("decode: {} is not a folder that 'session --dump' wrote", folder.string());
+
+    Decoding decoding(Decoding::Options{.expect_clip = parsed.flag("--expect-clip")});
+    const auto bytes = [](const std::string& text, std::size_t at, std::size_t size) {
+        return std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(text.data()) + at, size);
+    };
+    // video.tsv: frame, bytes, repaired, lost-before, picture-size, header-bytes (the header stands before the frame).
+    std::size_t at = 0;
+    std::map<std::uint64_t, std::span<const std::uint8_t>> headers;
+    for (const auto& row : rows(*video_list)) {
+        if (row.size() < 6 || row[5] > video->size() - at || row[1] > video->size() - at - row[5]) return fail("decode: video.tsv does not fit video.bin");
+        if (row[5] != 0) headers[row[4]] = bytes(*video, at, row[5]);
+        at += row[5];
+        decoding.video(headers[row[4]], static_cast<unsigned>(row[4]), static_cast<std::uint16_t>(row[0]), bytes(*video, at, row[1]),
+                       static_cast<std::uint32_t>(row[3]));
+        at += row[1];
+    }
+    // sound.tsv: frame, bytes, haptics, from-a-later-packet, lost-before. The format is the one every console was seen to send.
+    const proto::AudioHeader format;
+    at = 0;
+    for (const auto& row : rows(*sound_list)) {
+        if (row.size() < 5 || row[1] > sound->size() - at) return fail("decode: sound.tsv does not fit sound.bin");
+        if (row[2] == 0) decoding.sound(format.rate, format.channels, format.frame_size, bytes(*sound, at, row[1]), static_cast<std::uint32_t>(row[4]));
+        at += row[1];
+    }
+    for (const std::string& line : decoding.report()) say("{}", line);
+    if (!decoding.good()) return fail("decode: {}", parsed.flag("--expect-clip") ? "what was decoded is not the test clip" : "nothing could be decoded");
     return kDone;
 }
 
@@ -1225,6 +1383,9 @@ int command_account(std::span<const std::string_view> args) {
 
 }  // namespace
 
+int run_session(const SessionPlan& plan) { return run_session_here(plan); }
+void set_play_runner(PlayRunner runner) { play_runner = runner; }
+
 bool is_command(std::span<const std::string_view> args) { return !args.empty() && !args.front().starts_with("-"); }
 
 int run_command(std::span<const std::string_view> args) {
@@ -1234,6 +1395,8 @@ int run_command(std::span<const std::string_view> args) {
     if (name == "register") return command_register(rest);
     if (name == "wake") return command_wake(rest);
     if (name == "session") return command_session(rest);
+    if (name == "decode") return command_decode(rest);
+    if (name == "play") return command_play(rest);
     if (name == "consoles") return command_consoles(rest);
     if (name == "forget") return command_forget(rest);
     if (name == "import") return command_import(rest);
@@ -1252,11 +1415,18 @@ std::string commands_help() {
         "      wake a registered console from rest mode\n"
         "  {0} session CONSOLE [--host ADDRESS] [--seconds N] [--passcode DIGITS] [--rest]\n"
         "          [--resolution 360|540|720|1080] [--fps 30|60] [--bitrate KBPS] [--codec h264|hevc|hdr]\n"
-        "          [--session-id console|invented] [--dump FOLDER] [--tap BUTTON@SECOND,...]\n"
+        "          [--session-id console|invented] [--dump FOLDER] [--decode] [--tap BUTTON@SECOND,...]\n"
         "      open a session with a console, set a stream up, hold it for N seconds and close it\n"
         "      (a connection check: the picture's frames and the sound's are put together and counted,\n"
-        "      nothing is shown yet); --dump keeps them in FOLDER; --tap presses buttons for a moment while the\n"
-        "      stream is held; --rest then sends the console to rest mode\n"
+        "      nothing is shown yet); --dump keeps them in FOLDER; --decode decodes them and says what came\n"
+        "      out; --tap presses buttons for a moment while the stream is held; --rest then sends the\n"
+        "      console to rest mode\n"
+        "  {0} play CONSOLE [--host ADDRESS] [--passcode DIGITS] [--resolution 360|540|720|1080] [--fps 30|60]\n"
+        "          [--bitrate KBPS] [--codec h264|hevc|hdr] [--rest]\n"
+        "      play: the console's picture in a window, its sound, and a controller that is plugged in\n"
+        "      or paired; closing the window ends the session (--rest then sends the console to rest mode)\n"
+        "  {0} decode FOLDER\n"
+        "      decode the picture and the sound that 'session --dump FOLDER' kept, and say what came out\n"
         "  {0} consoles [--json]\n"
         "      list the registered consoles\n"
         "  {0} forget CONSOLE\n"

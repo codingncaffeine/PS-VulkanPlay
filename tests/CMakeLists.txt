@@ -2,6 +2,8 @@ add_executable(psvp_tests
     main.cpp
     unit/test_args.cpp
     unit/test_base64.cpp
+    unit/test_color.cpp
+    unit/test_decoder.cpp
     unit/test_discovery.cpp
     unit/test_erasure.cpp
     unit/test_hex.cpp
@@ -20,7 +22,8 @@ add_executable(psvp_tests
     unit/test_text_message.cpp
     unit/test_transport.cpp)
 target_include_directories(psvp_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-target_compile_definitions(psvp_tests PRIVATE "PSVP_TEST_FIXTURES=\"${CMAKE_CURRENT_SOURCE_DIR}/scenario/fixtures\"")
+target_compile_definitions(psvp_tests PRIVATE "PSVP_TEST_FIXTURES=\"${CMAKE_CURRENT_SOURCE_DIR}/scenario/fixtures\""
+    "PSVP_TEST_DATA=\"${CMAKE_CURRENT_SOURCE_DIR}/data\"")
 target_link_libraries(psvp_tests PRIVATE psvp_proto psvp_core)
 psvp_setup_target(psvp_tests)
 add_test(NAME unit COMMAND psvp_tests)
@@ -58,7 +61,7 @@ psvp_setup_target(psvp_fbcheck)
 
 # Stands in for a console in the scenario tests (tests/scenario).
 add_executable(psvp-mock-console ../tools/mock-console/mock_console.cpp)
-target_link_libraries(psvp-mock-console PRIVATE psvp_proto psvp_net)
+target_link_libraries(psvp-mock-console PRIVATE psvp_proto psvp_net psvp_media)
 psvp_setup_target(psvp-mock-console)
 
 # Differential tests against the reference implementation. Test only: the

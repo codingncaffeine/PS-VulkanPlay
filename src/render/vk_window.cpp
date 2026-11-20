@@ -1,10 +1,13 @@
 #include "render/vk_window.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <format>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <SDL3/SDL.h>
@@ -13,6 +16,7 @@
 
 #include "app/log.h"
 #include "psvp/version.h"
+#include "render/video_pass.h"
 
 namespace psvp::render {
 namespace {
@@ -100,7 +104,8 @@ private:
     void destroy_swapchain();
     void destroy();
     // Returns false on a failed call; `presented` says whether a frame reached the swapchain.
-    bool draw_frame(bool& presented);
+    // `fresh` is a picture to show from this frame on.
+    bool draw_frame(bool& presented, const media::Picture* fresh);
 
     SDL_Window* window_ = nullptr;
     bool sdl_started_ = false;
@@ -126,7 +131,14 @@ private:
     std::vector<VkFramebuffer> framebuffers_;
     std::vector<VkSemaphore> render_done_;  // one per swapchain image
     bool swapchain_stale_ = true;
+    const char* present_mode_name_ = "";
+
+    VideoPass video_;
+    bool picture_refused_ = false;  // said once
 };
+
+// The event that wakes the window's wait; 0 until a window registered it.
+std::atomic<std::uint32_t> wake_event{0};
 
 bool Window::check(VkResult result, std::string_view what) {
     if (result == VK_SUCCESS) return true;
@@ -278,6 +290,7 @@ bool Window::create_frame_objects() {
 
 void Window::destroy_swapchain() {
     if (device_ == VK_NULL_HANDLE) return;
+    video_.destroy_pipeline();
     for (const VkSemaphore semaphore : render_done_) vkDestroySemaphore(device_, semaphore, nullptr);
     render_done_.clear();
     for (const VkFramebuffer framebuffer : framebuffers_) vkDestroyFramebuffer(device_, framebuffer, nullptr);
@@ -356,7 +369,18 @@ bool Window::create_swapchain() {
     info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
     info.preTransform = caps.currentTransform;
     info.compositeAlpha = alpha;
+    // Shown at the screen's refresh, never torn. Where the newest waiting picture can replace
+    // an older one that was not shown yet, it does: a late picture adds no delay.
     info.presentMode = VK_PRESENT_MODE_FIFO_KHR;  // always available
+    present_mode_name_ = "one after another";
+    std::uint32_t mode_count = 0;
+    vkGetPhysicalDeviceSurfacePresentModesKHR(physical_, surface_, &mode_count, nullptr);
+    std::vector<VkPresentModeKHR> modes(mode_count);
+    vkGetPhysicalDeviceSurfacePresentModesKHR(physical_, surface_, &mode_count, modes.data());
+    if (std::ranges::find(modes, VK_PRESENT_MODE_MAILBOX_KHR) != modes.end()) {
+        info.presentMode = VK_PRESENT_MODE_MAILBOX_KHR;
+        present_mode_name_ = "the newest replaces the one waiting";
+    }
     info.clipped = VK_TRUE;
     info.oldSwapchain = previous;
     VkSwapchainKHR created = VK_NULL_HANDLE;
@@ -399,6 +423,7 @@ bool Window::create_swapchain() {
     pass.dependencyCount = 1;
     pass.pDependencies = &dependency;
     if (!check(vkCreateRenderPass(device_, &pass, nullptr, &render_pass_), "vkCreateRenderPass")) return false;
+    if (!video_.create_pipeline(render_pass_, is_srgb_format(format_))) return false;
 
     std::uint32_t actual_count = 0;
     vkGetSwapchainImagesKHR(device_, swapchain_, &actual_count, nullptr);
@@ -447,9 +472,13 @@ bool Window::create_swapchain() {
     return true;
 }
 
-bool Window::draw_frame(bool& presented) {
+bool Window::draw_frame(bool& presented, const media::Picture* fresh) {
     presented = false;
     if (!check(vkWaitForFences(device_, 1, &frame_done_, VK_TRUE, UINT64_MAX), "vkWaitForFences")) return false;
+    // The frame before is done: the picture's textures are free to be written or made anew.
+    if (fresh != nullptr && !video_.set_picture(*fresh) && !std::exchange(picture_refused_, true)) {
+        log::error("render: a picture of {}x{} with {} bits cannot be shown", fresh->width, fresh->height, fresh->bits);
+    }
 
     std::uint32_t index = 0;
     const VkResult acquired =
@@ -468,10 +497,13 @@ bool Window::draw_frame(bool& presented) {
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     if (!check(vkBeginCommandBuffer(command_buffer_, &begin), "vkBeginCommandBuffer")) return false;
 
+    video_.record_upload(command_buffer_);
+
     // An sRGB swapchain encodes what we write, so it gets the linear value of the same color.
+    // Beside a picture the window is black, as a screen is beside a film.
     VkClearValue clear{};
     for (std::size_t channel = 0; channel < 3; ++channel) {
-        const float encoded = static_cast<float>(kBackground[channel]) / 255.0F;
+        const float encoded = video_.has_picture() ? 0.0F : static_cast<float>(kBackground[channel]) / 255.0F;
         clear.color.float32[channel] = is_srgb_format(format_) ? srgb_to_linear(encoded) : encoded;
     }
     clear.color.float32[3] = 1.0F;
@@ -484,6 +516,7 @@ bool Window::draw_frame(bool& presented) {
     pass.clearValueCount = 1;
     pass.pClearValues = &clear;
     vkCmdBeginRenderPass(command_buffer_, &pass, VK_SUBPASS_CONTENTS_INLINE);
+    video_.record_draw(command_buffer_, extent_);
     vkCmdEndRenderPass(command_buffer_);
     if (!check(vkEndCommandBuffer(command_buffer_), "vkEndCommandBuffer")) return false;
 
@@ -520,6 +553,7 @@ void Window::destroy() {
     if (device_ != VK_NULL_HANDLE) {
         vkDeviceWaitIdle(device_);
         destroy_swapchain();
+        video_.destroy();
         if (swapchain_ != VK_NULL_HANDLE) vkDestroySwapchainKHR(device_, swapchain_, nullptr);
         if (frame_done_ != VK_NULL_HANDLE) vkDestroyFence(device_, frame_done_, nullptr);
         if (image_available_ != VK_NULL_HANDLE) vkDestroySemaphore(device_, image_available_, nullptr);
@@ -540,7 +574,9 @@ void Window::destroy() {
         window_ = nullptr;
     }
     if (sdl_started_) {
-        SDL_Quit();
+        // Only the window's own part: sound and controllers may still be in someone's use.
+        SDL_QuitSubSystem(SDL_INIT_VIDEO);
+        if (SDL_WasInit(0) == 0) SDL_Quit();
         sdl_started_ = false;
     }
 }
@@ -621,7 +657,7 @@ int Window::open(const WindowOptions& options) {
                                 "an updated graphics driver usually provides it.",
                                 PSVP_NAME, version_text(kMinimumApi)));
     }
-    if (!create_device() || !create_frame_objects()) {
+    if (!create_device() || !create_frame_objects() || !video_.create(physical_, device_)) {
         return fail(kExitVulkanFailed, PSVP_NAME " cannot start",
                     std::format("The graphics device {} could not be set up. The log has the details.", device_name_));
     }
@@ -630,15 +666,28 @@ int Window::open(const WindowOptions& options) {
 
 int Window::run(const WindowOptions& options) {
     if (const int code = open(options); code != 0) return code;
+    if (wake_event.load() == 0) wake_event.store(SDL_RegisterEvents(1));
 
     std::uint64_t frames = 0;
+    std::uint64_t pictures = 0;
+    // With a picture source a frame is drawn when there is something new to show; without
+    // one, every time round, as fast as the screen takes frames.
+    const bool on_demand = static_cast<bool>(options.next_picture);
+    bool stale = true;
     bool running = true;
     while (running) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_EVENT_QUIT || event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) running = false;
             if (event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) swapchain_stale_ = true;
+            if (event.type == SDL_EVENT_WINDOW_EXPOSED || event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) stale = true;
+            // F11, as everywhere: the whole screen, and back.
+            if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_F11 && !event.key.repeat) {
+                SDL_SetWindowFullscreen(window_, (SDL_GetWindowFlags(window_) & SDL_WINDOW_FULLSCREEN) == 0);
+            }
+            if (options.on_event) options.on_event(event);
         }
+        if (options.finished && options.finished()) running = false;
         if (!running) break;
 
         if (swapchain_stale_ && !create_swapchain()) return kExitVulkanFailed;
@@ -648,19 +697,39 @@ int Window::run(const WindowOptions& options) {
             continue;
         }
 
-        bool presented = false;
-        if (!draw_frame(presented)) return kExitVulkanFailed;
-        if (!presented) continue;
-        if (++frames == 1) {
-            log::info("render: first frame presented, {}x{} on {}", extent_.width, extent_.height, device_name_);
+        std::optional<media::Picture> fresh;
+        if (options.next_picture) fresh = options.next_picture();
+        if (on_demand && !fresh && !stale && !swapchain_stale_) {
+            SDL_WaitEventTimeout(nullptr, static_cast<Sint32>(options.ask_every.count()));
+            continue;
         }
+
+        bool presented = false;
+        if (!draw_frame(presented, fresh ? &*fresh : nullptr)) return kExitVulkanFailed;
+        if (!presented) {
+            stale = true;
+            continue;
+        }
+        stale = false;
+        if (++frames == 1) {
+            log::info("render: first frame presented, {}x{} on {} ({})", extent_.width, extent_.height, device_name_, present_mode_name_);
+        }
+        if (fresh && video_.has_picture() && ++pictures == 1) log::info("render: first picture shown, {}", video_.describe());
         if (options.frame_limit && frames >= *options.frame_limit) running = false;
     }
-    log::info("render: stopped after {} frames", frames);
+    log::info("render: stopped after {} frames, {} pictures", frames, pictures);
     return 0;
 }
 
 }  // namespace
+
+void wake_window() {
+    const std::uint32_t type = wake_event.load();
+    if (type == 0 || SDL_WasInit(SDL_INIT_EVENTS) == 0) return;
+    SDL_Event event{};
+    event.type = type;
+    SDL_PushEvent(&event);
+}
 
 int run_window(const WindowOptions& options) {
     Window window;
