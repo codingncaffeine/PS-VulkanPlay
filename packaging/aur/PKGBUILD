@@ -37,16 +37,16 @@ source=("$url/releases/download/v$pkgver/PS-VulkanPlay-$pkgver-linux-x64.tar.gz"
         "ps-vulkanplay-$pkgver-64.png::$_raw/icons/hicolor/64x64/apps/$_id.png"
         "ps-vulkanplay-$pkgver-128.png::$_raw/icons/hicolor/128x128/apps/$_id.png"
         "ps-vulkanplay-$pkgver-256.png::$_raw/icons/hicolor/256x256/apps/$_id.png")
-sha256sums=('SKIP'
-            'SKIP'
-            'SKIP'
-            'SKIP'
-            'SKIP'
-            'SKIP'
-            'SKIP'
-            'SKIP'
-            'SKIP'
-            'SKIP')
+sha256sums=('a072dbedffc4b780e1970f979f87a6cfb86d5fa462579d238ff09d74f601003c'
+            'c3598296fbc11a9e828ff8ab6521445fc22f78bbd380fd20fd516f90e714f18e'
+            '87e6e1e3cd03157ee0d7a1349882b2a2cbbe8c36766644f76182f6c8faa9cdfb'
+            'f20847f3df2dd0e13075a7b569ad2a754e438719756bbef5cf63cf96c0ac5f95'
+            'eda0bd9a618eda2cbbb102f9a902c68e365f06ce5b2dd635a7fe30f8226b51b4'
+            'f042d4a92955082e788fca572bc6ad429696d5eca11ef772ecbeb97acca5aab3'
+            '57e0dd56bb07b0ea8e6661d029254623717fda0dd14c38c884e36d920f17974e'
+            '96c08de540d23be0773bc5b51486090eaa3dc3a8ace0282f25552e8a223558cf'
+            '7d93d88f8d55c5e29d85a53a3188111c09e2cf6952d0463d3b335cec349c97b8'
+            'e00334521ad60f71fd9d98dcde5a51f434043da63acc2b34212af30b9069af79')
 
 package() {
     local _payload="$srcdir/PS-VulkanPlay-$pkgver-linux-x64"
