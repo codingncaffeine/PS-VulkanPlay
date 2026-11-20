@@ -20,8 +20,11 @@ namespace psvp::media {
 class SoundBuffer {
 public:
     using TimePoint = std::chrono::steady_clock::time_point;
-    // How many frames are aimed to be in line when the device takes one. A frame is 10 ms.
-    static constexpr std::size_t kLeastDepth = 2, kStartDepth = 3, kMostDepth = 5;
+    // How many frames are aimed to be in line when the device takes one. A frame is 10 ms. The
+    // most is what a link needs that stops for a tenth of a second every few seconds: sound that
+    // late against its picture is still taken as belonging to it (ITU-R BT.1359 puts the limit
+    // of what is noticed at 125 ms), and a hole in the sound is not.
+    static constexpr std::size_t kLeastDepth = 2, kStartDepth = 3, kMostDepth = 10;
     // This many frames beyond the aim, the oldest are let go, down to one beyond it.
     static constexpr std::size_t kSurplus = 3;
     // Frames in a row that continue the sound before with nothing in line; silence after that.

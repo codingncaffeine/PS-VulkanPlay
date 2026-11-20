@@ -74,7 +74,7 @@ PSVP_TEST(sound_buffer_continues_the_sound_over_a_pause) {
     while (buffer.depth() != 0) (void)buffer.pull(kStart + 150ms);
     CHECK(buffer.pull(kStart + 200ms).kind == Kind::concealed && buffer.counters().ran_empty == 2);
     // The aim has an end, whatever the network does.
-    for (int i = 0; i < 10; ++i) {
+    for (int i = 0; i < 20; ++i) {
         buffer.push(frame(100), 0, kStart + 1s + i * 100ms);
         (void)buffer.pull(kStart + 1s + i * 100ms);
         (void)buffer.pull(kStart + 1s + i * 100ms);
