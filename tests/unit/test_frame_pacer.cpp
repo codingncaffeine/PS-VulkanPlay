@@ -91,6 +91,28 @@ PSVP_TEST(pacer_does_not_play_a_pause_back) {
     CHECK(end_wait < 0.1);
 }
 
+// What a player sees behind a pause: the frames of the pause are there before the first of them is
+// decoded. Each picture with a newer frame behind it is shown at once; only the last takes its
+// distance, and that is all the delay there is.
+PSVP_TEST(pacer_does_not_wait_while_newer_frames_are_there) {
+    FramePacer pacer(60.0);
+    for (int n = 0; n < 120; ++n) (void)pacer.schedule(tick(n));
+    const auto burst = tick(119) + 100ms;
+    // Six frames, decoded one after the other, 4 ms each; five of them with newer ones behind.
+    for (int i = 0; i < 5; ++i) {
+        const auto ready = burst + i * 4ms;
+        const auto slot = pacer.schedule(ready, true);
+        CHECK(slot.late && slot.at == ready);
+    }
+    const auto last_ready = burst + 20ms;
+    const auto last = pacer.schedule(last_ready, false);
+    CHECK(!last.late && ms(last.at - last_ready) > 12.6 && ms(last.at - last_ready) < 12.7);  // a frame's time behind the fifth
+    // The next frame comes at its own time, 15 ms behind the last one of the bunch: it waits less than a frame's
+    // time, and the hundred milliseconds of the pause are nowhere.
+    const auto next = pacer.schedule(tick(127) + 2ms);
+    CHECK(!next.late && ms(next.at - (tick(127) + 2ms)) < 16.7);
+}
+
 PSVP_TEST(pacer_keeps_what_uneven_frames_need_and_gives_back_the_rest) {
     FramePacer pacer(60.0);
     std::int64_t n = 0;

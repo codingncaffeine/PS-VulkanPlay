@@ -44,8 +44,12 @@ public:
         // pause. It is to be shown at once, and not at all when a newer one is already there.
         bool late = false;
     };
-    // A picture is ready at `ready`, the one after the picture of the last call.
-    [[nodiscard]] Slot schedule(TimePoint ready) noexcept;
+    // A picture is ready at `ready`, the one after the picture of the last call. With
+    // `newer_waiting`, frames that came after it are already there to be decoded: the stream is
+    // behind, and this picture is `late` whatever its place would be. Without that, the frames of
+    // a pause would be shown a frame's time apart one after the other, and the pause would stay
+    // as delay for as long as it takes to give it back.
+    [[nodiscard]] Slot schedule(TimePoint ready, bool newer_waiting = false) noexcept;
     // The picture of the last call was not shown after all (a newer one took its place).
     void skipped() noexcept;
 

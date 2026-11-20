@@ -403,20 +403,11 @@ void Player::decode_loop() {
         const auto ready = Clock::now();
         longest_behind_since_ms_ = std::max(longest_behind_since_ms_, std::chrono::duration<double, std::milli>(ready - job.arrived).count());
         if (pacer_) {
-            const media::FramePacer::Slot slot = pacer_->schedule(ready);
             std::unique_lock lock(jobs_mutex_);
-            if (slot.late) {
-                // Frames have piled up behind a pause. With a newer one already waiting this picture is not
-                // shown: the picture catches up instead of playing the pause back.
-                ++paced_late_;
-                if (!jobs_.empty()) {
-                    lock.unlock();
-                    pacer_->skipped();
-                    const std::lock_guard picture_lock(picture_mutex_);
-                    ++replaced_;
-                    continue;
-                }
-            }
+            // With frames already waiting behind this one the stream is behind (a bunch came after a pause):
+            // the picture is shown at once, so that the pause does not stay as delay.
+            const media::FramePacer::Slot slot = pacer_->schedule(ready, !jobs_.empty());
+            if (slot.late) ++paced_late_;
             if (slot.at > ready) {
                 ++paced_;
                 const auto wait = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(slot.at - ready).count());
@@ -768,7 +759,7 @@ std::vector<std::string> Player::report() {
         lines.push_back(std::format("Pictures went to the screen this far apart: {}.", handed_spacing_.text()));
         if (pacer_) {
             lines.push_back(std::format("Pacing: {} of {} pictures were held back to follow the one before by a frame's time, by {:.1f} ms on average "
-                                        "and {:.1f} ms at most; {} came in a bunch behind a pause and were not waited behind.",
+                                        "and {:.1f} ms at most; {} had newer frames waiting behind them (a bunch after a pause) and were shown at once.",
                                         paced_, pictures_, static_cast<double>(paced_microseconds_) / 1000.0 / static_cast<double>(std::max<std::uint64_t>(paced_, 1)),
                                         static_cast<double>(paced_most_microseconds_) / 1000.0, paced_late_));
         } else {

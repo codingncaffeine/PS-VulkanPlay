@@ -12,10 +12,11 @@ FramePacer::Duration FramePacer::spare() const noexcept {
     return *std::min_element(waits_.begin(), waits_.end());
 }
 
-FramePacer::Slot FramePacer::schedule(TimePoint ready) noexcept {
+FramePacer::Slot FramePacer::schedule(TimePoint ready, bool newer_waiting) noexcept {
     Slot slot;
     slot.at = ready;
-    if (last_at_) {
+    slot.late = newer_waiting;
+    if (last_at_ && !newer_waiting) {
         // A frame's time behind the picture before it; a little less while there is delay to give back.
         const Duration spacing = period_ - std::min(spare(), kGiveBack);
         const TimePoint place = *last_at_ + spacing;
