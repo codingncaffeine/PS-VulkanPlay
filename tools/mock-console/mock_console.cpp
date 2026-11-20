@@ -16,7 +16,7 @@
 //     --ready-file FILE       created once it is listening
 //     --session-nonce HEX     the nonce it hands out for a session (default: random)
 //     --passcode DIGITS       ask for this login passcode before it names the session
-//     --in-use yes            refuse a session because Remote Play is already in use
+//     --in-use yes|N          refuse a session because Remote Play is already in use: every one, or the first N
 //     --heartbeat-ms N        how often it asks the client for a heartbeat (default 500)
 //     --mtu-in N              the largest packet that reaches the client (default 1454)
 //     --mtu-out N             the largest packet that reaches the console (default 1454)
@@ -115,6 +115,7 @@ struct Options {
     std::optional<psvp::proto::Key16> session_nonce;
     std::string passcode;
     bool in_use = false;
+    mutable int in_use_times = -1;  // how many session requests are still refused as in use; -1: all of them
     int heartbeat_ms = 500;
     psvp::proto::transport::ConsoleProbe::Path path;
     bool probe = true;
@@ -297,7 +298,8 @@ std::string serve_session_request(const Options& options, psvp::net::TcpStream& 
         refuse("80108bff");
         return "session request refused: not readable";
     }
-    if (options.in_use) {
+    if (options.in_use && options.in_use_times != 0) {
+        if (options.in_use_times > 0) --options.in_use_times;
         refuse("80108b10");
         return "session request refused: already in use";
     }
@@ -549,6 +551,10 @@ int main(int argc, char** argv) {
             options.passcode = *text;
         } else if (arg == "--in-use") {
             options.in_use = *text == "yes";
+            if (int times = 0; !options.in_use && std::from_chars(text->data(), text->data() + text->size(), times).ec == std::errc{} && times > 0) {
+                options.in_use = true;
+                options.in_use_times = times;
+            }
         } else if (arg == "--heartbeat-ms") {
             if (std::from_chars(text->data(), text->data() + text->size(), options.heartbeat_ms).ec != std::errc{} || options.heartbeat_ms < 10) {
                 return usage("--heartbeat-ms is a number of at least 10");

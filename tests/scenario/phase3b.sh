@@ -141,8 +141,42 @@ echo "a session that does not start opens no window"
 start_mock in-use --kind ps5 --in-use yes
 "$app" play "Living Room" --seconds 2 > "$work/in-use.out" 2> "$work/in-use.err"; rc=$?
 stop_mock
-[ $rc -ne 0 ] && ok "exit $rc" || fail "a session with a console that is in use passed"
+[ $rc -eq 1 ] && ok "exit 1" || fail "a session with a console that is in use: exit $rc"
 check "no window was opened for it" lacks "$work/in-use.err" "window: SDL"
+
+echo "play --wake wakes a console in rest mode, and asks one that takes no session yet again"
+start_mock wake --kind ps5 --state standby --in-use 1 --clip 416x240 --frame-ms 16 --media-ms 10
+"$app" play "Living Room" --wake --seconds 2 > "$work/wake.out" 2> "$work/wake.err"; rc=$?
+sleep 0.3; stop_mock
+[ $rc -eq 0 ] && ok "play --wake: exit 0" || fail "play --wake: exit $rc: $(tail -3 "$work/wake.out") $(tail -3 "$work/wake.err")"
+check "it saw that the console rests and woke it" has "$work/wake.out" "Living Room is in rest mode: waking it."
+check "the mock took the wake-up" has "$work/wake.log" "wake-up accepted, now on"
+check "the first try was refused as in use, and it asked again" has "$work/wake.out" "Living Room is not taking a session yet: asking again in 5 seconds."
+check "then it played" grep -aqE "^Played \(H\.264" "$work/wake.out"
+# Without --wake nothing is sent to wake a resting console. (The mock takes a session while it rests, which a
+# console does not: what is checked is that no wake-up was sent.)
+start_mock asleep --kind ps5 --state standby --clip 416x240 --frame-ms 16 --media-ms 10
+"$app" play "Living Room" --seconds 1 > "$work/asleep.out" 2> "$work/asleep.err"
+stop_mock
+check "without --wake no wake-up is sent" lacks "$work/asleep.log" "wake-up"
+check "the mock was reached all the same" has "$work/asleep.log" "session request"
+
+echo "the controllers that are connected are listed: behind the wall there is none, and one can be pretended"
+"$app" controllers > "$work/controllers.out" 2>&1; rc=$?
+[ $rc -eq 0 ] && has "$work/controllers.out" "No controller is connected." && ok "no controller of this machine is seen, and the program says so" || fail "controllers: exit $rc: $(head -2 "$work/controllers.out")"
+[ "$("$app" controllers --json 2>/dev/null)" = '{"controllers": []}' ] && ok "as JSON: an empty list on one line" || fail "controllers --json: $("$app" controllers --json 2>&1 | head -2)"
+"$app" controllers --json --pretend 054c:0df2 > "$work/pretend.out" 2>&1; rc=$?
+[ $rc -eq 0 ] && [ "$(wc -l < "$work/pretend.out")" = 1 ] && grep -aq '"kind": "dualsense-edge"' "$work/pretend.out" \
+    && ok "a pretended DualSense Edge is listed as one" || fail "controllers --pretend: exit $rc: $(head -2 "$work/pretend.out")"
+check "with no sound device of its own its haptics would be rumble" grep -aq '"haptics": "rumble"' "$work/pretend.out"
+# Watching goes on until the program is told to end, and ends then.
+"$app" controllers --json --watch > "$work/watch.out" 2>&1 &
+watch_pid=$!
+sleep 1; kill -TERM $watch_pid 2>/dev/null
+for _ in $(seq 50); do kill -0 $watch_pid 2>/dev/null || break; sleep 0.1; done
+kill -0 $watch_pid 2>/dev/null && { fail "controllers --watch did not end when told to"; kill -KILL $watch_pid; } || ok "controllers --watch says the list once and ends when told to"
+wait $watch_pid 2>/dev/null
+[ "$(cat "$work/watch.out")" = '{"controllers": []}' ] && ok "what it said while nothing changed: the list, once" || fail "watch said: $(head -3 "$work/watch.out")"
 
 [ $failed -eq 0 ] && echo "PHASE 3B PASSED" || echo "PHASE 3B FAILED"
 exit $failed

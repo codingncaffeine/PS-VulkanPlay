@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
+#include <filesystem>
 #include <format>
 #include <memory>
 #include <optional>
@@ -13,6 +14,7 @@
 
 #include "app/args.h"
 #include "app/commands.h"
+#include "app/controllers.h"
 #include "app/log.h"
 #include "app/paths.h"
 #include "app/player.h"
@@ -21,6 +23,10 @@
 #include "media/video_decoder.h"
 #include "psvp/version.h"
 #include "render/vk_window.h"
+
+#if defined(__linux__)
+#include <unistd.h>
+#endif
 
 namespace {
 
@@ -58,6 +64,27 @@ std::string compiler() {
 #endif
 }
 
+// Started with nothing to do, by a person: what they want is the app, which is its own program
+// (the windows around the stream: consoles, settings, setting up). It is looked for where a
+// build and a package put it, and takes this process over; it is told where this program is, to
+// run it for everything a console is asked. Returns when there is no app here.
+void hand_over_to_the_app() {
+#if defined(__linux__)
+    std::error_code failed;
+    const std::filesystem::path self = std::filesystem::read_symlink("/proc/self/exe", failed);
+    if (failed) return;
+    const std::filesystem::path beside = self.parent_path();
+    for (const std::filesystem::path& app : {beside / "app" / "PSVulkanPlay", beside.parent_path() / "lib" / PSVP_BINARY / "app" / "PSVulkanPlay"}) {
+        if (::access(app.c_str(), X_OK) != 0) continue;
+        ::setenv("PSVP_NATIVE", self.c_str(), 1);
+        std::string path = app.string();
+        char* const arguments[] = {path.data(), nullptr};
+        ::execv(path.c_str(), arguments);
+        std::fprintf(stderr, "%s: the app at %s could not be started; opening the stream window alone\n", PSVP_BINARY, path.c_str());
+    }
+#endif
+}
+
 int run(int argc, char** argv) {
     std::vector<std::string_view> args;
     for (int i = 1; i < argc; ++i) args.emplace_back(argv[i]);
@@ -67,7 +94,9 @@ int run(int argc, char** argv) {
 
     // A command does its work in the terminal and opens neither the log nor a window.
     psvp::app::set_play_runner(&psvp::app::run_player);
+    psvp::app::set_controllers_runner(&psvp::app::run_controllers);
     if (psvp::app::is_command(args)) return psvp::app::run_command(args);
+    if (args.empty()) hand_over_to_the_app();
 
     const auto options = psvp::app::parse_args(args);
     if (!options) {

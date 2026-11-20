@@ -56,7 +56,9 @@ struct SessionPlan {
     std::function<std::optional<std::string>()> verdict;
 };
 
-// Returns the process exit code: 0 done, 1 it did not work (the reason is printed).
+// Returns the process exit code: 0 done, 1 it did not work (the reason is printed), kSessionNotYet
+// when the console is there but takes no session at this moment: asking again later can work.
+inline constexpr int kSessionNotYet = 75;
 [[nodiscard]] int run_session(const SessionPlan& plan);
 
 // What 'play' needs besides the plan.
@@ -81,5 +83,11 @@ struct PlayOptions {
 // The part of 'play' that has a window: the program that has one sets it before it runs a command.
 using PlayRunner = int (*)(SessionPlan plan, const PlayOptions& options);
 void set_play_runner(PlayRunner runner);
+
+// The 'controllers' command reads the controllers through the input library, which only the
+// program with the window is built with: it hands the command in here (app/controllers.h).
+struct ControllersOptions;
+using ControllersRunner = int (*)(const ControllersOptions& options);
+void set_controllers_runner(ControllersRunner runner);
 
 }  // namespace psvp::app

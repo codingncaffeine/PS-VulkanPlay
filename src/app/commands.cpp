@@ -21,6 +21,7 @@
 #include "app/account_id.h"
 #include "app/chiaki_import.h"
 #include "app/console_store.h"
+#include "app/controllers.h"
 #include "app/decoding.h"
 #include "app/json.h"
 #include "app/log.h"
@@ -417,33 +418,19 @@ int command_register(std::span<const std::string_view> args) {
     return kDone;
 }
 
-int command_wake(std::span<const std::string_view> args) {
-    const Parsed parsed = parse(args, {"--host", "--wait"}, {"--no-wait"}, 1);
-    if (!parsed.error.empty()) return usage("wake: {}", parsed.error);
-    if (parsed.words.empty()) return usage("wake: which console? Give its name or hardware address");
-    std::chrono::milliseconds wait = 45s;
-    if (const auto text = parsed.option("--wait")) {
-        const auto seconds = parse_seconds(*text, 300);
-        if (!seconds) return usage("wake: --wait takes a number of seconds from 1 to 300");
-        wait = *seconds;
-    }
-    auto context = load_context();
-    if (!context) return fail("wake: {}", context.error());
-    StoredConsole* console = context->store.find(parsed.words.front());
-    if (console == nullptr) {
-        return fail("No registered console is called '{}'. '{} consoles' lists them.", parsed.words.front(), PSVP_BINARY);
-    }
-    const proto::RegisteredConsole& registration = console->registration;
+// Wakes a registered console and, unless `no_wait`, repeats the wake-up until it answers as ready.
+int wake_console(Context& context, StoredConsole& console, std::optional<std::string_view> host, std::chrono::milliseconds wait, bool no_wait) {
+    const proto::RegisteredConsole& registration = console.registration;
     const auto credential = proto::wake_credential(registration.regist_key);
     if (!credential) return fail("wake: the registration with {} is damaged; register again", registration.nickname);
 
     // To its last known address when there is one, and to everyone on the network otherwise.
     std::vector<std::uint32_t> targets;
-    if (const auto host = parsed.option("--host")) {
+    if (host) {
         const auto address = net::resolve_ipv4(std::string(*host));
         if (!address) return fail("wake: {}", address.error());
         targets = {*address};
-    } else if (const auto last = net::parse_ipv4(console->last_address)) {
+    } else if (const auto last = net::parse_ipv4(console.last_address)) {
         targets = {*last};
     } else {
         targets = broadcast_targets();
@@ -461,7 +448,7 @@ int command_wake(std::span<const std::string_view> args) {
         return sent;
     };
     if (!send_wake()) return fail("wake: the wake-up could not be sent to {}", registration.nickname);
-    if (parsed.flag("--no-wait")) {
+    if (no_wait) {
         say("Wake-up sent to {}.", registration.nickname);
         return kDone;
     }
@@ -473,9 +460,9 @@ int command_wake(std::span<const std::string_view> args) {
         if (!found) return fail("wake: {}", found.error());
         for (const Found& candidate : *found) {
             if (!same_host(registration, candidate.reply) || candidate.reply.state != proto::ConsoleState::ready) continue;
-            console->last_address = net::ip_to_string(candidate.from.ip);
+            console.last_address = net::ip_to_string(candidate.from.ip);
             const std::string nickname = registration.nickname;
-            if (const auto saved = save_store(context->store_file, context->store); !saved) return fail("wake: {}", saved.error());
+            if (const auto saved = save_store(context.store_file, context.store); !saved) return fail("wake: {}", saved.error());
             say("{} is on.", nickname);
             return kDone;
         }
@@ -484,6 +471,51 @@ int command_wake(std::span<const std::string_view> args) {
     return fail("{} did not come on within {} seconds. It wakes only if rest mode keeps it connected to the\n"
                 "network (on the console: the rest mode settings), and only for a client it is registered with.",
                 registration.nickname, std::chrono::duration_cast<std::chrono::seconds>(wait).count());
+}
+
+int command_wake(std::span<const std::string_view> args) {
+    const Parsed parsed = parse(args, {"--host", "--wait"}, {"--no-wait"}, 1);
+    if (!parsed.error.empty()) return usage("wake: {}", parsed.error);
+    if (parsed.words.empty()) return usage("wake: which console? Give its name or hardware address");
+    std::chrono::milliseconds wait = 45s;
+    if (const auto text = parsed.option("--wait")) {
+        const auto seconds = parse_seconds(*text, 300);
+        if (!seconds) return usage("wake: --wait takes a number of seconds from 1 to 300");
+        wait = *seconds;
+    }
+    auto context = load_context();
+    if (!context) return fail("wake: {}", context.error());
+    StoredConsole* console = context->store.find(parsed.words.front());
+    if (console == nullptr) {
+        return fail("No registered console is called '{}'. '{} consoles' lists them.", parsed.words.front(), PSVP_BINARY);
+    }
+    return wake_console(*context, *console, parsed.option("--host"), wait, parsed.flag("--no-wait"));
+}
+
+// For 'play --wake': a console that rests is woken first. One that does not answer at all is sent
+// the wake-up too: a console that is off the network's reach will not start a session either, and
+// the wake-up's own message says what to look at.
+int wake_if_resting(const SessionPlan& plan) {
+    auto context = load_context();
+    if (!context) return fail("play: {}", context.error());
+    StoredConsole* console = context->store.find(plan.console);
+    if (console == nullptr) return kDone;  // the session says so, in its own words
+    std::vector<std::uint32_t> targets = broadcast_targets();
+    if (const std::string host(plan.host.value_or(console->last_address)); !host.empty()) {
+        const auto address = net::resolve_ipv4(host);
+        if (!address) return fail("play: {}", address.error());
+        targets = {*address};
+    }
+    const auto found = search(targets, 1500ms, false);
+    if (!found) return fail("play: {}", found.error());
+    for (const Found& candidate : *found) {
+        if (!same_host(console->registration, candidate.reply)) continue;
+        if (candidate.reply.state == proto::ConsoleState::ready) return kDone;
+        say("{} is in rest mode: waking it.", console->registration.nickname);
+        return wake_console(*context, *console, plan.host, 60s, false);
+    }
+    say("{} did not answer: sending it a wake-up.", console->registration.nickname);
+    return wake_console(*context, *console, plan.host, 60s, false);
 }
 
 // The form of a payload without its content: its length, its first byte and
@@ -863,9 +895,10 @@ int run_session_here(const SessionPlan& plan) {
         auto stream = net::TcpStream::connect(address, Clock::now() + kStepWait);
         if (!stream && stream.error().ends_with("Connection refused")) {
             // Seen on a PS5 that answered the search as "ready" a moment before; half a minute later it took the session.
-            return fail("{} refused the connection: it is on, but is not taking Remote Play sessions at this moment "
-                        "(it may still be starting, or closing an earlier session). Try again in a few seconds.",
-                        registration.nickname);
+            (void)fail("{} refused the connection: it is on, but is not taking Remote Play sessions at this moment "
+                       "(it may still be starting, or closing an earlier session). Try again in a few seconds.",
+                       registration.nickname);
+            return kSessionNotYet;
         }
         if (!stream) return fail("session: {}", stream.error());
         const std::string request = proto::build_session_request(registration.kind, address_text, registration.regist_key);
@@ -873,7 +906,11 @@ int run_session_here(const SessionPlan& plan) {
         const auto head = net::read_text_head(*stream, Clock::now() + kStepWait, kMaxResponseHead);
         if (!head) return fail("session: {}", head.error());
         const auto parsed_nonce = proto::parse_session_response(head->head);
-        if (!parsed_nonce) return fail("{}: {}.", registration.nickname, proto::describe(parsed_nonce.error()));
+        if (!parsed_nonce) {
+            (void)fail("{}: {}.", registration.nickname, proto::describe(parsed_nonce.error()));
+            // A session that was just closed is still "in use" to the console for some seconds.
+            return parsed_nonce.error().refusal == proto::SessionRefusal::in_use ? kSessionNotYet : kFailed;
+        }
         nonce = *parsed_nonce;
     }
     const proto::RpCipher cipher = proto::make_session_cipher(registration.kind, nonce, registration.key);
@@ -1274,7 +1311,8 @@ int command_session(std::span<const std::string_view> args) {
         if (!decoding || decoding->good()) return std::nullopt;
         return expect_clip ? "what was decoded is not the test clip" : "nothing of the stream could be decoded";
     };
-    return run_session_here(plan);
+    const int code = run_session_here(plan);
+    return code == kSessionNotYet ? kFailed : code;
 }
 
 PlayRunner play_runner = nullptr;
@@ -1282,7 +1320,7 @@ PlayRunner play_runner = nullptr;
 // The stream in a window, with its sound and a controller: what the program is for.
 int command_play(std::span<const std::string_view> args) {
     const Parsed parsed = parse(args, {"--host", "--seconds", "--passcode", "--resolution", "--fps", "--bitrate", "--codec", "--tap", "--frames", "--controller", "--pacing", "--cushion", "--haptics-volume", "--back-left", "--back-right"},
-                                {"--rest"}, 1);
+                                {"--rest", "--wake"}, 1);
     if (!parsed.error.empty()) return usage("play: {}", parsed.error);
     SessionPlan plan;
     // What a console sends when nothing else is asked for: 1080p, 60 pictures a second, HEVC from a PS5.
@@ -1350,10 +1388,37 @@ int command_play(std::span<const std::string_view> args) {
         if (!failed) built = std::format(", built {:%Y-%m-%d %H:%M} UTC", std::chrono::floor<std::chrono::minutes>(std::chrono::file_clock::to_sys(written)));
     }
     log::info("{} {}{}: play {}", PSVP_BINARY, PSVP_VERSION, built, plan.console);
-    const int code = play_runner(std::move(plan), options);
+    // With --wake a resting console is woken first, and one that takes no session yet (it is still
+    // starting, or closing the session before) is asked again for a minute and a half.
+    const bool wake = parsed.flag("--wake");
+    int code = wake ? wake_if_resting(plan) : kDone;
+    if (code == kDone) {
+        const auto give_up = Clock::now() + 95s;
+        for (;;) {
+            code = play_runner(plan, options);
+            if (code != kSessionNotYet || !wake || Clock::now() >= give_up) break;
+            say("{} is not taking a session yet: asking again in 5 seconds.", plan.console);
+            std::this_thread::sleep_for(5s);
+        }
+        if (code == kSessionNotYet) code = kFailed;
+    }
     log::info("play ended with code {}", code);
     log::close_file();
     return code;
+}
+
+ControllersRunner controllers_runner = nullptr;
+
+// The controllers that are connected: what a session would find.
+int command_controllers(std::span<const std::string_view> args) {
+    const Parsed parsed = parse(args, {"--pretend"}, {"--json", "--watch"}, 0);
+    if (!parsed.error.empty()) return usage("controllers: {}", parsed.error);
+    if (controllers_runner == nullptr) return fail("controllers: this build does not read controllers");
+    ControllersOptions options;
+    options.json = parsed.flag("--json");
+    options.watch = parsed.flag("--watch");
+    if (const auto text = parsed.option("--pretend")) options.pretend = std::string(*text);
+    return controllers_runner(options);
 }
 
 // Decodes what 'session --dump' kept: the same decoders, without a console.
@@ -1528,7 +1593,7 @@ int command_import(std::span<const std::string_view> args) {
 }
 
 int command_account(std::span<const std::string_view> args) {
-    const Parsed parsed = parse(args, {}, {}, 1);
+    const Parsed parsed = parse(args, {}, {"--json"}, 1);
     if (!parsed.error.empty()) return usage("account: {}", parsed.error);
     auto context = load_context();
     if (!context) return fail("account: {}", context.error());
@@ -1537,6 +1602,10 @@ int command_account(std::span<const std::string_view> args) {
         if (!id) return usage("account: '{}' is not an account ID (a number, or twelve base64 characters)", parsed.words.front());
         context->store.account_id = id;
         if (const auto saved = save_store(context->store_file, context->store); !saved) return fail("account: {}", saved.error());
+    }
+    if (parsed.flag("--json")) {
+        std::fputs(Json(Json::Object{{"account_id", Json(context->store.account_id ? account_id_base64(*context->store.account_id) : std::string())}}).dump().c_str(), stdout);
+        return kDone;
     }
     if (!context->store.account_id) {
         say("No account ID is set. '{} account ID' sets it.", PSVP_BINARY);
@@ -1550,6 +1619,7 @@ int command_account(std::span<const std::string_view> args) {
 
 int run_session(const SessionPlan& plan) { return run_session_here(plan); }
 void set_play_runner(PlayRunner runner) { play_runner = runner; }
+void set_controllers_runner(ControllersRunner runner) { controllers_runner = runner; }
 
 bool is_command(std::span<const std::string_view> args) { return !args.empty() && !args.front().starts_with("-"); }
 
@@ -1566,6 +1636,7 @@ int run_command(std::span<const std::string_view> args) {
     if (name == "forget") return command_forget(rest);
     if (name == "import") return command_import(rest);
     if (name == "account") return command_account(rest);
+    if (name == "controllers") return command_controllers(rest);
     return usage("unknown command '{}'", name);
 }
 
@@ -1589,9 +1660,11 @@ std::string commands_help() {
         "  {0} play CONSOLE [--host ADDRESS] [--passcode DIGITS] [--resolution 360|540|720|1080] [--fps 30|60]\n"
         "          [--bitrate KBPS] [--codec h264|hevc|hdr] [--controller auto|dualsense|dualshock4]\n"
         "          [--pacing on|off] [--cushion 0-50] [--haptics-volume 0-100] [--back-left BUTTON]\n"
-        "          [--back-right BUTTON] [--rest]\n"
+        "          [--back-right BUTTON] [--wake] [--rest]\n"
         "      play: the console's picture in a window, its sound, and a controller that is plugged in\n"
         "      or paired; closing the window ends the session (--rest then sends the console to rest mode).\n"
+        "      --wake wakes a console that is in rest mode first, and asks one that takes no session yet\n"
+        "      again until it does;\n"
         "      --controller says what the console is told the controller is (auto: a DualSense when one\n"
         "      is connected at the start, which gets its haptics and trigger effects); --pacing off shows\n"
         "      every picture the moment it is there instead of evenly, a frame's time apart; --cushion keeps\n"
@@ -1610,8 +1683,11 @@ std::string commands_help() {
         "      remove a console from the list\n"
         "  {0} import [FILE]\n"
         "      take over the consoles registered in Chiaki or chiaki-ng\n"
-        "  {0} account [ID]\n"
-        "      show or set the PSN account ID used for registering\n",
+        "  {0} account [ID] [--json]\n"
+        "      show or set the PSN account ID used for registering\n"
+        "  {0} controllers [--json] [--watch]\n"
+        "      list the controllers that are connected, with battery and what each can do; --watch goes\n"
+        "      on and says it again whenever that changes\n",
         PSVP_BINARY);
 }
 
