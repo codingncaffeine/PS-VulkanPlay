@@ -814,6 +814,16 @@ std::optional<std::string> read_plan(const Parsed& parsed, SessionPlan& plan) {
         if (!kbps) return "--bitrate is in kbit/s, from 500 to 100000";
         plan.video.bitrate_kbps = *kbps;
     }
+    if (const auto text = parsed.option("--ack-copies")) {
+        const auto copies = parse_number(*text, 0, 2);
+        if (!copies && *text != "0") return "--ack-copies is 0, 1 or 2";
+        plan.ack_copies = copies.value_or(0);
+    }
+    if (const auto text = parsed.option("--loss-ceiling")) {
+        const auto percent = parse_number(*text, 0, 100);
+        if (!percent) return "--loss-ceiling is a percent, from 0 to 100";
+        plan.reported_loss_ceiling = *percent;
+    }
     if (const auto text = parsed.option("--codec")) {
         if (*text == "h264") plan.video.codec = proto::Codec::h264;
         else if (*text == "hevc") plan.video.codec = proto::Codec::hevc;
@@ -1053,12 +1063,17 @@ int run_session_here(const SessionPlan& plan) {
     stream_request.network = measured;
     stream_request.video = video;
     stream_request.dualsense = dualsense;
+    stream_request.reported_loss_ceiling = plan.reported_loss_ceiling;
+    stream_request.ack_copies = plan.ack_copies;
     transport::ClientStream stream(link->tag, link->endpoint, std::move(stream_request), proto::KeyExchange::generate(), proto::random_key());
     using State = transport::ClientStream::State;
     // A keyframe arrives as one burst of packets: room for them while the control channel is looked after.
     const std::size_t receive_buffer = link->socket.set_receive_buffer(4U << 20);
     const bool arrivals_timed = link->socket.note_arrival_times();
     ArrivalWatch arrivals;
+    transport::StreamCounters minute_from;
+    std::uint64_t repeats_said = 0;
+    auto next_minute = Clock::now() + std::chrono::minutes(1);
     // The frames that are ready leave the stream at once; they are kept only when a dump was asked for.
     std::uint64_t video_bytes = 0;
     std::uint64_t sound_bytes = 0;
@@ -1114,6 +1129,28 @@ int run_session_here(const SessionPlan& plan) {
                     log::debug("stream: {:.1f} s: the console's view of the connection: target bitrate {} kbit/s, round-trip value {:.1f}, loss {}",
                                std::chrono::duration<double>(now - setup_started).count(), quality->target_bitrate.value_or(0) / 1000, quality->rtt.value_or(0.0),
                                quality->loss.value_or(0));
+                }
+                // A message of the console's that came again: an acknowledgment of ours did not reach it, and it
+                // may count the 200 ms it waited as the round trip.
+                if (stream.counters().console_repeats != repeats_said) {
+                    repeats_said = stream.counters().console_repeats;
+                    log::debug("stream: {:.1f} s: the console sent a message again ({} so far): an acknowledgment did not reach it",
+                               std::chrono::duration<double>(now - setup_started).count(), repeats_said);
+                }
+                // Once a minute: what the congestion reports of that minute told the console, against what was counted.
+                if (now >= next_minute) {
+                    const transport::StreamCounters& told = stream.counters();
+                    const std::uint64_t received = told.congestion_received - minute_from.congestion_received;
+                    const std::uint64_t lost = told.congestion_lost - minute_from.congestion_lost;
+                    if (stream.state() == State::ready && (received != 0 || lost != 0)) {
+                        log::debug("stream: {:.1f} s: congestion reports of the last minute: {} packets arrived, {} lost ({:.2f}%); told of {} lost in {} reports, {} of them lowered to the {}% ceiling",
+                                   std::chrono::duration<double>(now - setup_started).count(), received, lost,
+                                   100.0 * static_cast<double>(lost) / static_cast<double>(received + lost), told.congestion_lost_told - minute_from.congestion_lost_told,
+                                   told.congestion_reports - minute_from.congestion_reports, told.congestion_lowered - minute_from.congestion_lowered,
+                                   plan.reported_loss_ceiling);
+                    }
+                    minute_from = told;
+                    next_minute = now + std::chrono::minutes(1);
                 }
             }
             // A deadline may pass while packets keep coming: it is looked at after every one of them.
@@ -1205,6 +1242,19 @@ int run_session_here(const SessionPlan& plan) {
         say("Told the console: {} times of frames that did not arrive, {} congestion reports, {} input states (a resting controller's); "
             "receive buffer: {} bytes.",
             counters.loss_reports, counters.congestion_reports, counters.input_states, receive_buffer);
+        if (counters.acks != 0) {
+            say("Acknowledgments of the console's messages: {}, and {} copies sent 40 and 120 ms behind them; the console sent {} of its "
+                "messages again (an acknowledgment had not reached it within 200 ms).",
+                counters.acks, counters.ack_copies, counters.console_repeats);
+        }
+        if (counters.congestion_reports != 0) {
+            const std::uint64_t total = counters.congestion_received + counters.congestion_lost;
+            say("Congestion reports: {} packets counted as arrived and {} as lost ({:.2f}%); the console was told of {} lost ({} of {} reports "
+                "lowered to the {}% ceiling).",
+                counters.congestion_received, counters.congestion_lost,
+                total != 0 ? 100.0 * static_cast<double>(counters.congestion_lost) / static_cast<double>(total) : 0.0,
+                counters.congestion_lost_told, counters.congestion_lowered, counters.congestion_reports, plan.reported_loss_ceiling);
+        }
         if (counters.keyframe_requests != 0) say("Asked the console for a frame that needs no earlier one: {} times.", counters.keyframe_requests);
         if (!actions.empty()) {
             say("Buttons: {} changes told to the console in {} input history packets (each change's packet, and the last one sent again).",
@@ -1262,7 +1312,7 @@ int run_session_here(const SessionPlan& plan) {
 
 int command_session(std::span<const std::string_view> args) {
     const Parsed parsed = parse(
-        args, {"--host", "--seconds", "--passcode", "--resolution", "--fps", "--bitrate", "--codec", "--session-id", "--dump", "--tap"},
+        args, {"--host", "--seconds", "--passcode", "--resolution", "--fps", "--bitrate", "--codec", "--session-id", "--dump", "--tap", "--loss-ceiling", "--ack-copies"},
         {"--rest", "--decode", "--expect-clip"}, 1);
     if (!parsed.error.empty()) return usage("session: {}", parsed.error);
     SessionPlan plan;
@@ -1330,7 +1380,7 @@ PlayRunner play_runner = nullptr;
 
 // The stream in a window, with its sound and a controller: what the program is for.
 int command_play(std::span<const std::string_view> args) {
-    const Parsed parsed = parse(args, {"--host", "--seconds", "--passcode", "--resolution", "--fps", "--bitrate", "--codec", "--tap", "--frames", "--controller", "--pacing", "--cushion", "--haptics-volume", "--back-left", "--back-right"},
+    const Parsed parsed = parse(args, {"--host", "--seconds", "--passcode", "--resolution", "--fps", "--bitrate", "--codec", "--tap", "--frames", "--controller", "--pacing", "--cushion", "--haptics-volume", "--back-left", "--back-right", "--loss-ceiling", "--ack-copies"},
                                 {"--rest", "--wake"}, 1);
     if (!parsed.error.empty()) return usage("play: {}", parsed.error);
     SessionPlan plan;
@@ -1667,6 +1717,7 @@ std::string commands_help() {
         "  {0} session CONSOLE [--host ADDRESS] [--seconds N] [--passcode DIGITS] [--rest]\n"
         "          [--resolution 360|540|720|1080] [--fps 30|60] [--bitrate KBPS] [--codec h264|hevc|hdr]\n"
         "          [--session-id console|invented] [--dump FOLDER] [--decode] [--tap BUTTON@SECOND,...]\n"
+        "          [--loss-ceiling PERCENT]\n"
         "      open a session with a console, set a stream up, hold it for N seconds and close it\n"
         "      (a connection check: the picture's frames and the sound's are put together and counted,\n"
         "      nothing is shown yet); --dump keeps them in FOLDER; --decode decodes them and says what came\n"
@@ -1675,7 +1726,7 @@ std::string commands_help() {
         "  {0} play CONSOLE [--host ADDRESS] [--passcode DIGITS] [--resolution 360|540|720|1080] [--fps 30|60]\n"
         "          [--bitrate KBPS] [--codec h264|hevc|hdr] [--controller auto|dualsense|dualshock4]\n"
         "          [--pacing on|off] [--cushion 0-50] [--haptics-volume 0-100] [--back-left BUTTON]\n"
-        "          [--back-right BUTTON] [--wake] [--rest]\n"
+        "          [--back-right BUTTON] [--loss-ceiling PERCENT] [--ack-copies 0-2] [--wake] [--rest]\n"
         "      play: the console's picture in a window, its sound, and a controller that is plugged in\n"
         "      or paired; closing the window ends the session (--rest then sends the console to rest mode).\n"
         "      --wake wakes a console that is in rest mode first, and asks one that takes no session yet\n"
@@ -1687,7 +1738,13 @@ std::string commands_help() {
         "      network's short pauses) are still shown in their place (none unless said);\n"
         "      --haptics-volume says how strong a DualSense's haptics are (100 unless said otherwise);\n"
         "      --back-left and --back-right say which of the console's buttons a DualSense Edge's back\n"
-        "      buttons are (cross, l3, options ...; nothing unless said)\n"
+        "      buttons are (cross, l3, options ...; nothing unless said);\n"
+        "      --loss-ceiling is the most loss the console is told of, in percent of the packets of each\n"
+        "      report (5 unless said): a console answers loss with a lower bitrate and fewer pictures,\n"
+        "      for a burst on a wireless network as for a slow line; 100 tells it all; --ack-copies says\n"
+        "      how often each acknowledgment of the console's messages is sent again, 40 and 120 ms later\n"
+        "      (2 unless said): one that is lost makes the console wait 200 ms, which it takes as the\n"
+        "      round trip and answers with a lower bitrate\n"
         "  {0} decode FOLDER [--lose FRAMES]\n"
         "      decode the picture and the sound that 'session --dump FOLDER' kept, and say what came out;\n"
         "      --lose 100,250-255 leaves those frames out, as if they had not arrived, and compares the\n"

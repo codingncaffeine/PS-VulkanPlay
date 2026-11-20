@@ -451,6 +451,7 @@ Messenger::Received Messenger::on_packet(const ControlPacket& packet) {
         hand_over(result);
     } else if (sequence_before(held.sequence, next_remote_)) {
         // Seen before: the acknowledgment for it was lost, so it is said again.
+        ++repeats_;
         if (delivered_any_) ack_due_ = true;
     }
     return result;
@@ -465,6 +466,15 @@ Messenger::Received Messenger::pump() {
 std::optional<std::vector<std::uint8_t>> Messenger::take_ack() {
     if (!ack_due_) return std::nullopt;
     ack_due_ = false;
+    return make_ack();
+}
+
+std::optional<std::vector<std::uint8_t>> Messenger::ack_again() {
+    if (!delivered_any_) return std::nullopt;
+    return make_ack();
+}
+
+std::vector<std::uint8_t> Messenger::make_ack() {
     ControlPacket reply;
     reply.tag = remote_tag_;
     reply.chunk_type = chunk::kDataAck;

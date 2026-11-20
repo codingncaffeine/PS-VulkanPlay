@@ -193,3 +193,16 @@ PSVP_TEST(transport_console_side_refuses_a_wrong_cookie) {
     CHECK(!console.on_datagram(encode_control(wrong)).has_value());
     CHECK(!console.connected());
 }
+
+// Below the ceiling a report is what was counted; above it, the ceiling's share of the same packets,
+// rounded down, and the rest count as arrived.
+PSVP_TEST(transport_loss_ceiling_lowers_only_what_is_above_it) {
+    CHECK(with_loss_ceiling({95, 5}, 5) == (PacketCounts{95, 5}));
+    CHECK(with_loss_ceiling({94, 6}, 5) == (PacketCounts{95, 5}));
+    CHECK(with_loss_ceiling({0, 200}, 5) == (PacketCounts{190, 10}));
+    CHECK(with_loss_ceiling({10, 9}, 5) == (PacketCounts{19, 0}));
+    CHECK(with_loss_ceiling({0, 0}, 5) == (PacketCounts{0, 0}));
+    CHECK(with_loss_ceiling({30, 70}, 100) == (PacketCounts{30, 70}));
+    CHECK(with_loss_ceiling({30, 70}, 250) == (PacketCounts{30, 70}));
+    CHECK(with_loss_ceiling({30, 70}, 0) == (PacketCounts{100, 0}));
+}

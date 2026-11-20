@@ -12,6 +12,7 @@ public sealed class AppSettings
     public int BitrateKbps { get; set; }                // 0: the program's own choice
     public bool Pacing { get; set; } = true;
     public int CushionMs { get; set; }                  // 0 to 50
+    public int LossCeiling { get; set; } = DefaultLossCeiling;   // percent, 0 to 100: the most loss the console is told of
     public string Controller { get; set; } = "auto";    // auto, dualsense, dualshock4
     public int HapticsVolume { get; set; } = 100;       // 0 to 100
     public string BackLeft { get; set; } = "";          // a button's name, or nothing
@@ -20,6 +21,7 @@ public sealed class AppSettings
     public bool RestAfter { get; set; }
     public string Theme { get; set; } = "system";       // "system", or a look's id (Theming/Themes.cs)
 
+    public const int DefaultLossCeiling = 5;
     public static readonly int[] Resolutions = [360, 540, 720, 1080];
     public static readonly int[] FrameRates = [30, 60];
     public static readonly string[] Codecs = ["h264", "hevc", "hdr"];
@@ -40,6 +42,7 @@ public sealed class AppSettings
             BitrateKbps = BitrateKbps == 0 ? 0 : Math.Clamp(BitrateKbps, 500, 100000),
             Pacing = Pacing,
             CushionMs = Math.Clamp(CushionMs, 0, 50),
+            LossCeiling = Math.Clamp(LossCeiling, 0, 100),
             Controller = Controllers.Contains(Controller) ? Controller : "auto",
             HapticsVolume = Math.Clamp(HapticsVolume, 0, 100),
             BackLeft = Buttons.Contains(BackLeft) ? BackLeft : "",
@@ -65,6 +68,7 @@ public sealed class AppSettings
         arguments.AddRange(["--controller", s.Controller]);
         if (!s.Pacing) arguments.AddRange(["--pacing", "off"]);
         else if (s.CushionMs > 0) arguments.AddRange(["--cushion", s.CushionMs.ToString()]);
+        if (s.LossCeiling != DefaultLossCeiling) arguments.AddRange(["--loss-ceiling", s.LossCeiling.ToString()]);
         arguments.AddRange(["--haptics-volume", s.HapticsVolume.ToString()]);
         if (s.BackLeft.Length > 0) arguments.AddRange(["--back-left", s.BackLeft]);
         if (s.BackRight.Length > 0) arguments.AddRange(["--back-right", s.BackRight]);

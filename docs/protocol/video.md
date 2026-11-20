@@ -210,6 +210,13 @@ It counts fifteen bytes of key position ([stream-setup.md](stream-setup.md)).
 This client counts a frame's units once the frame is four frames back, so that units which were merely late
 are not reported as lost; for the sound it counts the frames that never came, not even as a repeat.
 
+**[read]** The reference tells of no more than a ceiling's share of a report's packets as lost (a setting,
+5% unless changed): above it, the ceiling's share is reported as lost and the rest as arrived. **[seen]** A PS5
+answers reported loss by lowering its target bitrate and the pictures it sends a second, and it answered a
+burst (a Wi-Fi link that stopped for 2.1 s) with about 40 pictures a second for the 45 s after it and a
+target bitrate of a third of its usual one. This client has the same ceiling, 5% unless `--loss-ceiling`
+(or the app's setting) says otherwise; the play report says what was counted and what was told.
+
 ## Sound
 
 **[read]** Codec 5 is Opus; the stream information names channels, sample rate and samples per frame. Packets

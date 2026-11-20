@@ -182,6 +182,24 @@ struct CongestionReport {
 };
 [[nodiscard]] std::optional<CongestionReport> parse_congestion(std::span<const std::uint8_t> datagram);
 
+// What a report says when more was lost than a console should be told of. A console answers these
+// reports by lowering the picture's bitrate and its frame rate, and it answers a burst (a wireless
+// network that stops for a tenth of a second) as it would a line that is too slow, for most of a
+// minute. So a report tells of no more than a ceiling's share of its packets as lost (rounded down);
+// the rest count as arrived. 100 tells all of it.
+struct PacketCounts {
+    std::uint64_t received = 0;
+    std::uint64_t lost = 0;
+    friend bool operator==(const PacketCounts&, const PacketCounts&) = default;
+};
+inline constexpr unsigned kReportedLossCeiling = 5;  // percent, unless asked otherwise
+[[nodiscard]] constexpr PacketCounts with_loss_ceiling(PacketCounts measured, unsigned percent) noexcept {
+    const std::uint64_t total = measured.received + measured.lost;
+    const std::uint64_t most = total * (percent < 100 ? percent : 100) / 100;
+    if (measured.lost <= most) return measured;
+    return PacketCounts{total - most, most};
+}
+
 // ---- Messages that must arrive -------------------------------------------
 
 namespace data_type {
@@ -271,6 +289,13 @@ public:
     // The acknowledgment that is due, if one is. Made when asked for, so that it
     // is sealed with keys that the message it answers brought.
     [[nodiscard]] std::optional<std::vector<std::uint8_t>> take_ack();
+    // The latest acknowledgment once more, sealed afresh, should the first one be lost on the way:
+    // the other end sends a chunk again 200 ms after it, and may take those 200 ms as the round trip.
+    // Nothing before anything was handed over.
+    [[nodiscard]] std::optional<std::vector<std::uint8_t>> ack_again();
+    // Chunks that arrived although they had arrived before: the other end sent them again, because
+    // an acknowledgment of ours had not reached it.
+    [[nodiscard]] std::uint64_t repeats() const noexcept { return repeats_; }
 
     // From here on every packet sent is sealed and every packet received is checked.
     // Chunks that arrived earlier and wait for their turn are checked now.
@@ -294,6 +319,8 @@ public:
     [[nodiscard]] std::uint32_t remote_tag() const noexcept { return remote_tag_; }
 
 private:
+    [[nodiscard]] std::vector<std::uint8_t> make_ack();
+    std::uint64_t repeats_ = 0;
     struct Pending {
         std::uint32_t sequence = 0;
         int resends = 0;

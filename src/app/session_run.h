@@ -28,6 +28,10 @@ struct SessionPlan {
     // The controller is a DualSense: a PS5 is told so, and then sends what only that controller
     // can do (its haptics as a second sound, effects for its triggers).
     bool dualsense = false;
+    // The most loss the console is told of in one congestion report, in percent of its packets: a
+    // console answers loss by lowering the bitrate and the frame rate (proto/transport.h).
+    unsigned reported_loss_ceiling = proto::transport::kReportedLossCeiling;
+    unsigned ack_copies = 2;              // each acknowledgment of the console's messages sent again that often
     std::chrono::milliseconds hold{3000}; // how long the stream is held, unless `stop` ends it sooner
 
     // What the controller does at set times: for the commands' own button presses.

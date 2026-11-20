@@ -5,6 +5,7 @@
 // here: the caller passes datagrams and the time in and sends what comes out.
 #pragma once
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <deque>
@@ -51,6 +52,13 @@ struct StreamRequest {
     ProbeResult network;           // what the probe measured, or its defaults
     VideoProfile video;
     bool dualsense = false;        // the controller the console is told about
+    // The most loss a congestion report tells of, in percent of its packets (transport.h).
+    unsigned reported_loss_ceiling = kReportedLossCeiling;
+    // How many times each acknowledgment of the console's messages is sent again, 40 and 120 ms after
+    // it (ClientStream::kAckCopiesAfter): a console that does not get one sends its message again
+    // after 200 ms and takes those 200 ms as the round trip, and it lowers the picture's bitrate when
+    // the round trip grows.
+    unsigned ack_copies = 2;
 };
 
 // What the console's answer to the opening message showed.
@@ -78,6 +86,16 @@ struct StreamCounters {
     std::uint64_t loss_reports = 0;       // "these frames did not arrive whole", sent to the console
     std::uint64_t keyframe_requests = 0;
     std::uint64_t congestion_reports = 0;
+    // What those reports were made of: the packets counted as arrived and as lost, the loss the
+    // console was told of (less, where a report's loss was above the ceiling), and how many
+    // reports that was.
+    std::uint64_t congestion_received = 0;
+    std::uint64_t congestion_lost = 0;
+    std::uint64_t congestion_lost_told = 0;
+    std::uint64_t congestion_lowered = 0;
+    std::uint64_t acks = 0;               // acknowledgments of the console's messages, once the stream runs
+    std::uint64_t ack_copies = 0;         // the same sent again a little later
+    std::uint64_t console_repeats = 0;    // the console's messages that arrived again: an acknowledgment did not reach it
     std::uint64_t input_states = 0;       // input state packets sent
     std::uint64_t input_events = 0;       // button, trigger and touch changes told to the console
     std::uint64_t history_packets = 0;    // input history packets sent, repeats of the last one included
@@ -113,6 +131,7 @@ public:
     static constexpr std::chrono::milliseconds kCongestionEvery{200};
     static constexpr std::chrono::milliseconds kInputEvery{200};  // when nothing about the controller changes
     static constexpr std::chrono::milliseconds kInputAtMostEvery{8};  // when it changes all the time
+    static constexpr std::array<std::chrono::milliseconds, 2> kAckCopiesAfter{std::chrono::milliseconds{40}, std::chrono::milliseconds{120}};
     static constexpr std::uint16_t kReportChannel = 2;
     static constexpr std::size_t kMaxUnreported = 8;
     static constexpr std::size_t kMaxConsoleData = 256;  // kept until taken; further ones are only counted
@@ -178,6 +197,7 @@ private:
     void note_lost(const FrameOutput& frames);
     void send_reports(Datagrams& out, TimePoint now);
     void send_congestion(Datagrams& out);
+    void send_ack(Datagrams& out, TimePoint now);
     void send_input(Datagrams& out, TimePoint now);
     void send_history(Datagrams& out, const InputHistory::Packet& packet);
 
@@ -193,6 +213,8 @@ private:
     bool closed_by_console_ = false;
     bool goodbye_ = false;
     TimePoint next_congestion_{};
+    std::vector<TimePoint> ack_copies_due_;  // when the latest acknowledgment goes out again, soonest last
+    std::uint64_t repeats_seen_ = 0;         // the messenger's count of repeated chunks, as last looked at
     TimePoint next_input_{};
     InputState input_;
     std::uint16_t input_sequence_ = 0;

@@ -141,6 +141,15 @@
                             </StackPanel>
                             <Slider Grid.Column="1" Minimum="0" Maximum="50" TickFrequency="5" IsSnapToTickEnabled="True" Value="{Binding Cushion}" IsEnabled="{Binding Pacing}" />
                         </Grid>
+                        <Border Classes="rule" />
+                        <Grid ColumnDefinitions="*,Auto">
+                            <StackPanel VerticalAlignment="Center" Margin="0,0,20,0">
+                                <TextBlock Text="Loss told to the console" />
+                                <TextBlock Classes="secondary small" Text="The console answers lost packets with a lower bitrate and fewer pictures, also for a short burst on a wireless network. Telling it less keeps the picture sharp." />
+                                <TextBlock Classes="secondary small" Text="{Binding LossCeilingText}" Foreground="{DynamicResource Accent}" Margin="0,4,0,0" />
+                            </StackPanel>
+                            <Slider x:Name="LossCeilingSlider" Grid.Column="1" Minimum="0" Maximum="100" SmallChange="1" LargeChange="5" TickFrequency="1" IsSnapToTickEnabled="True" Value="{Binding LossCeiling}" />
+                        </Grid>
                     </StackPanel>
                 </Border>
 

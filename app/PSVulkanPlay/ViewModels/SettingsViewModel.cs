@@ -219,6 +219,24 @@ public sealed class SettingsViewModel : Observable
         }
     }
 
+    public double LossCeiling
+    {
+        get => _settings.LossCeiling;
+        set
+        {
+            Keep(() => _settings.LossCeiling = (int)Math.Round(value), nameof(LossCeiling));
+            Changed(nameof(LossCeilingText));
+        }
+    }
+
+    public string LossCeilingText => _settings.LossCeiling switch
+    {
+        100 => "All of it",
+        0 => "None",
+        AppSettings.DefaultLossCeiling => $"Up to {AppSettings.DefaultLossCeiling}% (the default)",
+        int percent => $"Up to {percent}%",
+    };
+
     public string CushionText => !_settings.Pacing ? "Off with even pacing" : _settings.CushionMs == 0 ? "None: the least delay" : $"{_settings.CushionMs} ms of added delay";
 
     public double HapticsVolume

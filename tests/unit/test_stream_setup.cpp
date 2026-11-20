@@ -647,11 +647,16 @@ PSVP_TEST(stream_setup_completes_on_a_clean_link) {
     link.run(3500ms);
     CHECK(link.client.counters().heartbeats_sent == 3);
     // Four acknowledgments, three messages and three heartbeats were sealed, and a congestion report and an
-    // input state every 200 ms from the set-up's end at 4 ms to here at 3514 ms: seventeen of each. Each of
-    // the 44 sits where the one before it ended. The input states are a resting controller's, in order.
+    // input state every 200 ms from the set-up's end at 4 ms to here at 3514 ms: seventeen of each. The last
+    // acknowledgment went out twice more, 40 and 120 ms behind it (the ones before it had their copies
+    // replaced before they were due). Each of the 46 sits where the one before it ended. The input states are a
+    // resting controller's, in order.
     CHECK(link.client.counters().congestion_reports == 17 && link.client.counters().input_states == 17);
+    // (The three acknowledgments of the stream information and the two chunks behind it count as the
+    // stream's: it is set up from the stream information on.)
+    CHECK(link.client.counters().acks == 3 && link.client.counters().ack_copies == 2 && link.client.counters().console_repeats == 0);
     CHECK(link.console.summary() == "heartbeats 3 control-rejected 0 before-keys 0 kind-5-authentic 17 kind-6-authentic 17 "
-                                    "key-positions 44 out-of-step 0 input-states 17 at-rest 17 unreadable 0 out-of-order 0 "
+                                    "key-positions 46 out-of-step 0 input-states 17 at-rest 17 unreadable 0 out-of-order 0 "
                                     "history-packets 0 events 0 unreadable 0 "
                                     "frames-sent 0 sound-sent 0 withheld 0 congestion-received 0 congestion-lost 0");
 
@@ -998,6 +1003,94 @@ PSVP_TEST(stream_asks_for_a_keyframe) {
     for (const AssembledFrame& frame : taken.media.video) keyframes += frame.data[4] == 0x65 ? 1 : 0;
     // The first frame of the stream, and the one after the request.
     CHECK(keyframes == 2 && taken.video_wrong == 0 && taken.media.video.size() >= 10);
+}
+
+// The number after "NAME " in the console's summary line.
+std::uint64_t summary_number(const std::string& summary, std::string_view name) {
+    const std::size_t at = summary.find(std::string(name) + " ");
+    if (at == std::string::npos) return ~std::uint64_t{0};
+    return std::stoull(summary.substr(at + name.size() + 1));
+}
+
+// A console answers the loss it is told of by lowering the bitrate and the frame rate, for a burst
+// as for a slow line: the reports tell of no more than the ceiling's share of their packets.
+PSVP_TEST(stream_tells_of_no_more_loss_than_the_ceiling) {
+    for (const unsigned ceiling : {5U, 100U}) {
+        auto options = media_options(ConsoleKind::ps5);
+        options.frames = 60;
+        options.media_every = 10ms;
+        options.lose_every = 2;   // every other frame loses three packets: far more than 5% of them
+        options.lose_units = 3;
+        auto request = StreamLink::request(ConsoleKind::ps5, kMtuCeiling);
+        request.reported_loss_ceiling = ceiling;
+        StreamLink link(std::move(request), options);
+        link.start();
+        link.run_until_settled();
+        link.run(1300ms);
+        const StreamCounters& counters = link.client.counters();
+        const std::string summary = link.console.summary();
+        const std::uint64_t told_received = summary_number(summary, "congestion-received");
+        const std::uint64_t told_lost = summary_number(summary, "congestion-lost");
+        // What was counted: every lost unit, and every packet that arrived.
+        CHECK(counters.congestion_reports >= 6 && counters.congestion_lost >= 60);
+        // The console heard of the same number of packets either way, and of the loss told.
+        CHECK(told_received + told_lost == counters.congestion_received + counters.congestion_lost);
+        CHECK(told_lost == counters.congestion_lost_told);
+        if (ceiling == 100) {
+            CHECK(told_lost == counters.congestion_lost && counters.congestion_lowered == 0);
+        } else {
+            // No report told of more than 5% of its own packets, so neither do all of them together.
+            CHECK(told_lost * 100 <= (told_received + told_lost) * 5 && told_lost > 0);
+            CHECK(told_lost < counters.congestion_lost && counters.congestion_lowered > 0);
+        }
+        // The frames themselves were reported as lost all the same: the ceiling is the congestion report's alone.
+        CHECK(counters.loss_reports > 0 && link.client.video().frames_lost > 0);
+    }
+}
+
+// An acknowledgment that is lost makes a console send its message again 200 ms later, and it counts
+// that wait as the round trip. Each acknowledgment goes out twice more, 40 and 120 ms behind it.
+PSVP_TEST(stream_sends_each_acknowledgment_again) {
+    for (const unsigned copies : {0U, 2U}) {
+        auto options = media_options(ConsoleKind::ps5);
+        options.frames = 0;
+        options.feedback_at = 300ms;  // three data chunks of the console's, after the set-up
+        auto request = StreamLink::request(ConsoleKind::ps5, kMtuCeiling);
+        request.ack_copies = copies;
+        StreamLink link(std::move(request), options);
+        link.start();
+        link.run_until_settled();
+        link.run(200ms);
+        const StreamCounters before = link.client.counters();
+        // From here on, every acknowledgment of the client's on its way to the console within 30 ms of the
+        // first one is lost: a burst, as a wireless network loses them.
+        bool lost_one = false;
+        TimePoint burst_began{};
+        link.lose = [&](bool to_console, const std::vector<std::uint8_t>& datagram) {
+            if (!to_console) return false;
+            const auto packet = parse_control(datagram);
+            if (!packet || packet->chunk_type != chunk::kDataAck) return false;
+            if (!lost_one) {
+                lost_one = true;
+                burst_began = link.now;
+            }
+            return link.now - burst_began < 30ms;
+        };
+        link.run(800ms);
+        const StreamCounters& counters = link.client.counters();
+        CHECK(lost_one);
+        CHECK(counters.acks > before.acks);
+        if (copies == 0) {
+            // The console did not hear of the chunk and sent it again; nothing was copied.
+            CHECK(counters.ack_copies == 0 && counters.console_repeats >= 1);
+        } else {
+            // A copy reached it in time: nothing came twice.
+            CHECK(counters.ack_copies >= 2 && counters.console_repeats == 0);
+            CHECK(counters.ack_copies - before.ack_copies <= 2 * (counters.acks - before.acks));
+        }
+        CHECK(link.client.state() == ClientStream::State::ready && link.count("REJECTED") == 0);
+        (void)link.client.take_console_data();
+    }
 }
 
 PSVP_TEST(stream_keeps_loss_reports_it_cannot_send_yet) {

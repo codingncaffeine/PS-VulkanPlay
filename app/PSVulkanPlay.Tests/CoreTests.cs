@@ -60,10 +60,10 @@ public class CoreTests
         var settings = new AppSettings
         {
             Resolution = 720, FramesPerSecond = 30, Codec = "hdr", BitrateKbps = 20000, CushionMs = 20, Controller = "dualsense",
-            HapticsVolume = 60, BackLeft = "cross", BackRight = "r3", WakeFirst = false, RestAfter = true,
+            HapticsVolume = 60, BackLeft = "cross", BackRight = "r3", WakeFirst = false, RestAfter = true, LossCeiling = 100,
         };
         Assert.Equal(["play", "Den", "--resolution", "720", "--fps", "30", "--codec", "hdr", "--bitrate", "20000", "--controller", "dualsense", "--cushion", "20",
-                      "--haptics-volume", "60", "--back-left", "cross", "--back-right", "r3", "--rest"],
+                      "--loss-ceiling", "100", "--haptics-volume", "60", "--back-left", "cross", "--back-right", "r3", "--rest"],
                      settings.PlayArguments("Den", ""));
     }
 
@@ -80,9 +80,10 @@ public class CoreTests
     [Fact]
     public void Values_the_program_would_refuse_never_reach_it()
     {
-        var settings = new AppSettings { Resolution = 1440, FramesPerSecond = 120, Codec = "av1", BitrateKbps = 5, CushionMs = 400, Controller = "wheel", HapticsVolume = -3, BackLeft = "lever", Theme = "pink" }.Valid();
-        Assert.Equal((1080, 60, "hevc", 500, 50, "auto", 0, "", "system"),
-                     (settings.Resolution, settings.FramesPerSecond, settings.Codec, settings.BitrateKbps, settings.CushionMs, settings.Controller, settings.HapticsVolume, settings.BackLeft, settings.Theme));
+        var settings = new AppSettings { Resolution = 1440, FramesPerSecond = 120, Codec = "av1", BitrateKbps = 5, CushionMs = 400, Controller = "wheel", HapticsVolume = -3, BackLeft = "lever", Theme = "pink", LossCeiling = 250 }.Valid();
+        Assert.Equal((1080, 60, "hevc", 500, 50, "auto", 0, "", "system", 100),
+                     (settings.Resolution, settings.FramesPerSecond, settings.Codec, settings.BitrateKbps, settings.CushionMs, settings.Controller, settings.HapticsVolume, settings.BackLeft, settings.Theme, settings.LossCeiling));
+        Assert.Equal(0, new AppSettings { LossCeiling = -1 }.Valid().LossCeiling);
     }
 
     [Fact]
@@ -100,6 +101,8 @@ public class CoreTests
             Assert.Equal(1080, store.Load().Resolution);
             File.WriteAllText(store.File, "{ \"resolution\": 99999, \"cushionMs\": 20 }");
             Assert.Equal((1080, 20), (store.Load().Resolution, store.Load().CushionMs));
+            // A file of an earlier version has no loss ceiling: it gets the default one.
+            Assert.Equal(AppSettings.DefaultLossCeiling, store.Load().LossCeiling);
         }
         finally
         {

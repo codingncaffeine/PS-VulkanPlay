@@ -345,7 +345,10 @@ public class ModelTests : IDisposable
         model.Settings.BackLeft = model.Settings.Buttons.First(choice => choice.Value == "cross");
         model.Settings.AutoBitrate = false;
         model.Settings.BitrateMbps = 22;
-        Until(() => File.Exists(file) && new SettingsStore(file).Load() is { CushionMs: 20, BackLeft: "cross", BitrateKbps: 22000 }, "the settings reached the file");
+        Assert.Equal("Up to 5% (the default)", model.Settings.LossCeilingText);
+        model.Settings.LossCeiling = 12;
+        Until(() => File.Exists(file) && new SettingsStore(file).Load() is { CushionMs: 20, BackLeft: "cross", BitrateKbps: 22000, LossCeiling: 12 }, "the settings reached the file");
+        Assert.Equal("Up to 12%", model.Settings.LossCeilingText);
         Assert.Equal("20 ms of added delay", model.Settings.CushionText);
         model.Settings.Pacing = false;
         Assert.Equal("Off with even pacing", model.Settings.CushionText);

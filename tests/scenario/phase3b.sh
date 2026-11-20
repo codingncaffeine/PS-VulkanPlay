@@ -103,6 +103,13 @@ check "the sound went to the driver that plays to nobody" has "$work/play.err" "
 check "the mock read the two presses and releases" [ "$(grep -a 'stream input ' "$log" | sed -E 's/^mock: stream //' | tr '\n' ';')" = "input 0: right pressed;input 1: right released;input 2: cross pressed;input 3: cross released;" ]
 check "nothing the program sent was refused" lacks "$log" "REJECTED"
 check "it said goodbye" has "$out" "Goodbye sent and acknowledged."
+# The report says what the congestion reports were made of. (The mock loses whole frames here: a frame of
+# which nothing arrived has no count of packets to miss, so it is reported by the frame-loss message alone.
+# The ceiling itself is checked in the unit tests, with frames that lost some of their packets.)
+grep -aqE "^Congestion reports: [1-9][0-9]* packets counted as arrived and [0-9]+ as lost \([0-9.]+%\); the console was told of [0-9]+ lost \([0-9]+ of [1-9][0-9]* reports lowered to the 5% ceiling\)\.$" "$out" \
+    && ok "the report says what the congestion reports counted and told" || fail "congestion reports: $(grep -a '^Congestion reports' "$out")"
+grep -aqE "^Acknowledgments of the console's messages: [1-9][0-9]*, and [1-9][0-9]* copies sent 40 and 120 ms behind them; the console sent 0 of its messages again" "$out" \
+    && ok "each acknowledgment went out again, and nothing came twice on a link that loses nothing of it" || fail "acknowledgments: $(grep -a '^Acknowledgments' "$out")"
 check "no controller of this machine was seen: the wall hides them" has "$out" "Controller: none was connected"
 check "no error was logged" lacks "$work/play.err" " ERROR "
 # With no DualSense connected (the wall hides every controller) the program announces a DualShock 4.
@@ -139,6 +146,7 @@ check "no error was logged" lacks "$work/feedback.err" " ERROR "
 check "what does not go with the option is refused" sh -c "! '$app' play 'Living Room' --controller wheel > /dev/null 2>&1"
 check "a cushion is 50 ms at most" sh -c "! '$app' play 'Living Room' --cushion 80 > /dev/null 2>&1"
 check "and is part of the pacing: not without it" sh -c "! '$app' play 'Living Room' --cushion 20 --pacing off > /dev/null 2>&1"
+check "the loss ceiling is a percent: 100 at most" sh -c "! '$app' play 'Living Room' --loss-ceiling 101 > /dev/null 2>&1"
 check "a back button takes a button's name and nothing else" sh -c "! '$app' play 'Living Room' --back-left lever > /dev/null 2>&1"
 
 echo "a session that does not start opens no window"

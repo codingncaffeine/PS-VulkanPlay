@@ -260,16 +260,39 @@ Datagrams ClientStream::set_controller(const Buttons& buttons, const InputState&
     return out;
 }
 
-// How many picture and sound packets arrived and how many did not, since the report before.
+// The acknowledgment that is due, and, once the stream runs, the same again a little later: a lost
+// one costs a message sent again after 200 ms, which the console counts as the round trip.
+void ClientStream::send_ack(Datagrams& out, TimePoint now) {
+    const std::uint64_t repeats = messenger_.repeats();
+    if (state_ == State::ready) counters_.console_repeats += repeats - repeats_seen_;
+    repeats_seen_ = repeats;
+    auto ack = messenger_.take_ack();
+    if (!ack) return;
+    out.push_back(std::move(*ack));
+    if (state_ != State::ready) return;
+    ++counters_.acks;
+    // The newest acknowledgment covers every older one: its copies replace theirs.
+    ack_copies_due_.clear();
+    for (std::size_t i = std::min<std::size_t>(request_.ack_copies, kAckCopiesAfter.size()); i > 0; --i) {
+        ack_copies_due_.push_back(now + kAckCopiesAfter[i - 1]);
+    }
+}
+
+// How many picture and sound packets arrived and how many did not, since the report before; the
+// loss no higher than the ceiling.
 void ClientStream::send_congestion(Datagrams& out) {
     const UnitStats units = video_.take_unit_stats();
-    const std::uint64_t received = units.received + std::exchange(interval_received_, 0);
-    const std::uint64_t lost = units.missing + std::exchange(interval_lost_, 0);
-    std::vector<std::uint8_t> report = encode_congestion(static_cast<std::uint16_t>(std::min<std::uint64_t>(received, 0xffff)),
-                                                         static_cast<std::uint16_t>(std::min<std::uint64_t>(lost, 0xffff)));
+    const PacketCounts measured{units.received + std::exchange(interval_received_, 0), units.missing + std::exchange(interval_lost_, 0)};
+    const PacketCounts told = with_loss_ceiling(measured, request_.reported_loss_ceiling);
+    std::vector<std::uint8_t> report = encode_congestion(static_cast<std::uint16_t>(std::min<std::uint64_t>(told.received, 0xffff)),
+                                                         static_cast<std::uint16_t>(std::min<std::uint64_t>(told.lost, 0xffff)));
     if (!seal_datagram(send_keys_->cipher, send_keys_->take(kCongestionSize), report)) return;
     out.push_back(std::move(report));
     ++counters_.congestion_reports;
+    counters_.congestion_received += measured.received;
+    counters_.congestion_lost += measured.lost;
+    counters_.congestion_lost_told += told.lost;
+    if (told != measured) ++counters_.congestion_lowered;
 }
 
 void ClientStream::on_message(Datagrams& out, const DataChunk& chunk, const StreamMessage& message, TimePoint now) {
@@ -334,7 +357,7 @@ Datagrams ClientStream::on_datagram(std::span<const std::uint8_t> datagram, Time
             handle(out, received, now);
         }
         // The acknowledgment goes last: sealed, if the message it answers brought the keys.
-        if (auto ack = messenger_.take_ack()) out.push_back(std::move(*ack));
+        send_ack(out, now);
     } else if (kind == packet_kind::kVideo || kind == packet_kind::kAudio) {
         if (!receive_keys_) {
             ++counters_.media_before_keys;
@@ -389,6 +412,13 @@ Datagrams ClientStream::on_timeout(TimePoint now) {
             next_congestion_ = now + kCongestionEvery;
         }
         if (now >= next_input_ || (input_changed_ && now - last_input_ >= kInputAtMostEvery)) send_input(out, now);
+        while (!ack_copies_due_.empty() && now >= ack_copies_due_.back()) {
+            ack_copies_due_.pop_back();
+            if (auto again = messenger_.ack_again()) {
+                out.push_back(std::move(*again));
+                ++counters_.ack_copies;
+            }
+        }
         // The last history packet again, while nothing new follows it.
         if (const auto again = history_.on_timeout(now)) send_history(out, *again);
     }
@@ -404,6 +434,7 @@ TimePoint ClientStream::deadline() const {
         if (input_changed_) when = std::min(when, last_input_ + kInputAtMostEvery);
         if (const auto again = history_.deadline()) when = std::min(when, *again);
         if (const auto frame = video_.deadline()) when = std::min(when, *frame);
+        if (!ack_copies_due_.empty()) when = std::min(when, ack_copies_due_.back());
     }
     return when;
 }
