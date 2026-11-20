@@ -46,7 +46,7 @@ if ! "$runtime" image inspect "$repo:$key" > /dev/null 2>&1; then
     done
 fi
 
-psvp_nice "$runtime" run --rm --network=none --cap-add NET_ADMIN -e PSVP_JOBS="$PSVP_JOBS" -e PSVP_TEST_ISOLATED_NET=1 \
+psvp_nice "$runtime" run --rm --network=none --cap-add NET_ADMIN -e PSVP_JOBS="$PSVP_JOBS" -e PSVP_FIRST_CORE="$PSVP_FIRST_CORE" -e PSVP_TEST_ISOLATED_NET=1 \
     -v "$PWD/$out/src:/src:Z" -w /src "$repo:$key" bash tools/ci/build-and-check.sh "$@" > "$out/log" 2>&1
 rc=$?
 cat "$out/log"

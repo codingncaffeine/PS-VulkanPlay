@@ -3,19 +3,23 @@
 # New inputs it finds stay in scratch/fuzz/; the saved inputs under
 # tests/fuzz/corpus/ are the starting set and are not changed.
 #
-#   tools/fuzz.sh [SECONDS, default 30] [TARGET, default: every target, SECONDS each]
+#   tools/fuzz.sh [SECONDS, default 30] [TARGET, default: every target, SECONDS each,
+#                                                 as many at once as the machine's share allows]
 set -euo pipefail
 cd "$(dirname "$0")/.."
 . tools/env.sh
 seconds="${1:-30}"
 
-tools/build.sh fuzz > /dev/null
+# Built once, also when every target is run: each of them is then started from here again.
+if [ -z "${PSVP_FUZZ_BUILT:-}" ]; then
+    tools/build.sh fuzz > /dev/null
+    export PSVP_FUZZ_BUILT=1
+fi
 if [ $# -lt 2 ]; then
-    for file in tests/fuzz/fuzz_*.cpp; do
-        name="${file##*/fuzz_}"
-        "$0" "$seconds" "${name%.cpp}"
-    done
-    exit 0
+    # Each target is one process on one core.
+    rc=0
+    printf '%s\n' tests/fuzz/fuzz_*.cpp | sed 's|.*/fuzz_||; s|\.cpp$||' | xargs -P "$PSVP_JOBS" -I{} "$0" "$seconds" {} || rc=1
+    exit $rc
 fi
 target="$2"
 work="scratch/fuzz/$target"

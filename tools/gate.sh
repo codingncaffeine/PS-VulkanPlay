@@ -6,13 +6,14 @@
 #   tools/gate.sh host     only the lanes that run on this machine (no containers)
 #
 # Each lane's output is kept in scratch/gate/<lane>.log. Exit 0 only if every lane passed.
+# The builds run one after another, each on the machine's whole share of cores. What
+# mostly waits (for a timer, a virtual screen, a console that is a mock) runs at once.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 . tools/env.sh
 scope="${1:-all}"
 out=scratch/gate
 rm -rf "$out"; mkdir -p "$out"
-failed=0
 
 lane() {
     local name="$1"; shift
@@ -21,42 +22,56 @@ lane() {
         printf '  ok    %-18s %4ss\n' "$name" "$((SECONDS - start))"
     else
         printf '  FAIL  %-18s %4ss   (%s)\n' "$name" "$((SECONDS - start))" "$out/$name.log"
-        failed=1
+        : > "$out/$name.failed"
     fi
 }
 
 # Build a preset and run its tests twice.
 preset() { tools/build.sh "$1" && ctest --preset "$1" && ctest --preset "$1"; }
 launch() { tools/wall.sh tools/launch-check.sh "build/$1/ps-vulkanplay"; }
+scenario() { tools/wall.sh "tests/scenario/$1.sh" "${@:2}"; }
 
 lane wall-control      tools/wall.sh --check
 lane release           preset release
-lane launch            launch release
 lane sanitizers        preset san
-# Memory errors only: the window system's libraries hold allocations until exit.
-lane launch-asan       env ASAN_OPTIONS=detect_leaks=0 tools/wall.sh tools/launch-check.sh build/san/ps-vulkanplay
 lane thread-sanitizer  preset tsan
 lane clang-libcxx      preset clang-libcxx
-lane launch-libcxx     launch clang-libcxx
-lane fuzz              tools/fuzz.sh 8
 lane oracle            tools/oracle/run.sh
-# The commands against the mock console, with the reference's own client as the control.
-lane scenario          tools/wall.sh tests/scenario/phase1.sh build/release build/oracle
-lane scenario-asan     tools/wall.sh tests/scenario/phase1.sh build/san
-lane session           tools/wall.sh tests/scenario/phase2a.sh build/release build/oracle
-lane session-asan      tools/wall.sh tests/scenario/phase2a.sh build/san
-lane probe             tools/wall.sh tests/scenario/phase2b.sh build/release build/oracle
-lane probe-asan        tools/wall.sh tests/scenario/phase2b.sh build/san
-lane stream            tools/wall.sh tests/scenario/phase2c.sh build/release build/oracle
-lane stream-asan       tools/wall.sh tests/scenario/phase2c.sh build/san
+lane fuzz              tools/fuzz.sh 8
+lane launch            launch release
+# Memory errors only: the window system's libraries hold allocations until exit.
+lane launch-asan       env ASAN_OPTIONS=detect_leaks=0 tools/wall.sh tools/launch-check.sh build/san/ps-vulkanplay
+lane launch-libcxx     launch clang-libcxx
 lane identity          tools/identity-audit.sh
+
+# The commands against the mock console, with the reference's own client as the control.
+# Here the wall gives every scenario a network of its own, so they can run at once
+# (inside a container they share its one network, and run one after another).
+lane scenario          scenario phase1 build/release build/oracle &
+lane scenario-asan     scenario phase1 build/san &
+lane session           scenario phase2a build/release build/oracle &
+lane session-asan      scenario phase2a build/san &
+lane probe             scenario phase2b build/release build/oracle &
+lane probe-asan        scenario phase2b build/san &
+lane stream            scenario phase2c build/release build/oracle &
+lane stream-asan       scenario phase2c build/san &
+lane receive           scenario phase2d build/release build/oracle &
+lane receive-asan      scenario phase2d build/san &
+wait
+
 if [ "$scope" = all ]; then
-    # The four CI jobs, in the same containers.
-    lane debian-13         tools/container-check.sh docker.io/library/debian:13
-    lane alpine-musl       tools/alpine-build.sh
-    lane debian-clang      tools/container-check.sh docker.io/library/debian:13 clang -- --compiler clang-libcxx
-    lane debian-asan       tools/container-check.sh docker.io/library/debian:13 -- --sanitize address
+    # The four CI jobs, in the same containers, at once: each on a quarter of this machine's share.
+    share=$(( PSVP_JOBS / 4 > 0 ? PSVP_JOBS / 4 : 1 ))
+    container() {
+        local first=$(( PSVP_FIRST_CORE + $1 * share % PSVP_JOBS )); shift
+        env PSVP_JOBS="$share" PSVP_FIRST_CORE="$first" "$@"
+    }
+    lane debian-13         container 0 tools/container-check.sh docker.io/library/debian:13 &
+    lane alpine-musl       container 1 tools/alpine-build.sh &
+    lane debian-clang      container 2 tools/container-check.sh docker.io/library/debian:13 clang -- --compiler clang-libcxx &
+    lane debian-asan       container 3 tools/container-check.sh docker.io/library/debian:13 -- --sanitize address &
+    wait
 fi
 
-if [ $failed -eq 0 ]; then echo "GATE PASSED"; else echo "GATE FAILED"; fi
-exit $failed
+if ls "$out"/*.failed > /dev/null 2>&1; then echo "GATE FAILED"; exit 1; fi
+echo "GATE PASSED"
