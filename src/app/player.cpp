@@ -169,6 +169,11 @@ public:
                 if (!info) continue;
                 ++feedback_.infos;
                 if (info->reset_motion) ++feedback_.motion_resets;
+                // The player lights under the touchpad: the console's number is the one SDL takes (0 = the first player).
+                if (feedback_.infos == 1 || feedback_.player != info->player) {
+                    log::debug("play: the console sets the player lights to player {}", info->player + 1);
+                    if (pad_ != nullptr) SDL_SetGamepadPlayerIndex(pad_, info->player);
+                }
                 feedback_.player = info->player;
                 feedback_.haptics_strength = info->haptics;
                 feedback_.triggers_strength = info->triggers;
@@ -638,6 +643,8 @@ void Player::on_event(const SDL_Event& event) {
                 pad_is_dualsense_ = SDL_GetGamepadType(pad_) == SDL_GAMEPAD_TYPE_PS5;
                 // The light bar's color, if the console named one before the controller was there.
                 if (feedback_.light && SDL_SetGamepadLED(pad_, (*feedback_.light)[0], (*feedback_.light)[1], (*feedback_.light)[2])) ++feedback_.lights_passed;
+                // And the player lights, if it named a player.
+                if (feedback_.infos != 0) SDL_SetGamepadPlayerIndex(pad_, feedback_.player);
                 pad_id_ = event.gdevice.which;
                 const char* name = SDL_GetGamepadName(pad_);
                 pad_name_ = name != nullptr ? name : "a controller";
