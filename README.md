@@ -10,14 +10,18 @@ interface as goals.
 
 ## Status
 
-Early development: there is no release and no interface yet, only the command line. What exists so far:
+Early development: there is no release yet. What exists so far:
 
+- an app (`ps-vulkanplay` with nothing after it): your consoles as cards with Play and Wake, adding a console
+  step by step, settings for everything a session can do, a choice of looks, and the connected controller
+  with its battery at the bottom of the window. Navigating it with a controller is not there yet
 - finding consoles on the network, waking them from rest mode and registering with them
   (`ps-vulkanplay --help` lists the commands)
 - taking over the consoles already registered in Chiaki or chiaki-ng (`ps-vulkanplay import`)
 - playing: `ps-vulkanplay play CONSOLE` shows the console's picture in a window, plays its sound and sends
   what a controller does (buttons, sticks, triggers, touchpad, motion). The picture keeps going over lost
-  frames and is shown evenly; the sound bridges short stalls of the network
+  frames and is shown evenly; the sound bridges short stalls of the network, and a cushion of delay can be
+  asked for that hides the short pauses of a wireless network. `--wake` wakes a resting console first
 - a DualSense on USB gets what a PS5 sends for it: haptics on the controller's own sound device, the effects
   of its adaptive triggers, the light bar's color; other controllers get rumble. Pictures are decoded in
   software for now; the microphone, the controller's speaker and HDR output are not there yet
@@ -30,7 +34,9 @@ Releases will appear on the Releases page when there is something to play.
 You need a C++23 compiler (GCC 13 or Clang 17, or later), CMake 3.25 or later, Ninja, pkg-config, SDL 3.2 or
 later, FFmpeg 7 or later (libavcodec), Opus, OpenSSL 3 or later, the Vulkan headers and loader, and glslang to
 compile the shaders. With the PulseAudio client library (which PipeWire serves as well) the program also sets
-the volume of a controller's haptics; without it, it builds the same less that.
+the volume of a controller's haptics; without it, it builds the same less that. The app is a .NET program
+of its own (`app/`) that runs the stream program: it needs the .NET 10 SDK, and the stream program builds
+and plays without it.
 
 | Distribution | Packages |
 |---|---|
@@ -41,8 +47,12 @@ the volume of a controller's haptics; without it, it builds the same less that.
 ```sh
 cmake -S . -B build -G Ninja
 cmake --build build
-./build/ps-vulkanplay
+./build/ps-vulkanplay play CONSOLE
+
+dotnet build app/PSVulkanPlay -c Release      # the app; put its output in a folder "app" beside ps-vulkanplay
 ```
+
+`tools/build.sh` followed by `tools/build-app.sh` does both and leaves the program and the app in `bin/`.
 
 The same build runs on glibc and on musl; both are built and started on every change.
 

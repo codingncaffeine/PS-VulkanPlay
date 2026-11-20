@@ -23,3 +23,8 @@
 .idea/
 *.swp
 compile_commands.json
+
+# The app (.NET): build output
+/app/*/bin/
+/app/*/obj/
+/app/artifacts/

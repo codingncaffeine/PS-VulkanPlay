@@ -3,17 +3,22 @@
 # tests twice, and starts what was built behind the test wall. The same steps
 # run in every CI job and in tools/container-check.sh.
 #
-#   tools/ci/build-and-check.sh [--compiler clang-libcxx] [--sanitize address|thread] [--no-launch]
+#   tools/ci/build-and-check.sh [--compiler clang-libcxx] [--sanitize address|thread] [--no-launch] [--app]
+#
+# --app: the app (app/, .NET) instead of the scenarios of the stream program, which the other
+# jobs run: the stream program is built, then the app and its tests, and the app is walked
+# through its window on the real program and started as a person starts it.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 . tools/env.sh
 
-compiler=default sanitize="" launch=1
+compiler=default sanitize="" launch=1 app=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --compiler) compiler="$2"; shift 2 ;;
         --sanitize) sanitize="$2"; shift 2 ;;
         --no-launch) launch=0; shift ;;
+        --app) app=1; shift ;;
         *) echo "build-and-check: unknown option $1" >&2; exit 2 ;;
     esac
 done
@@ -40,7 +45,16 @@ psvp_nice cmake --build "$dir" -j "$PSVP_JOBS"
 ctest --test-dir "$dir" --output-on-failure
 ctest --test-dir "$dir" --output-on-failure | tail -3
 
-if [ $launch = 1 ]; then
+if [ $app = 1 ]; then
+    export DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1
+    echo "── .NET SDK $(dotnet --version)"
+    psvp_nice dotnet build app/PSVulkanPlay.Tests -c Release -v q --nologo -m:"$PSVP_JOBS"
+    # Twice, as the others.
+    app/PSVulkanPlay.Tests/bin/Release/net10.0/PSVulkanPlay.Tests | tail -4
+    app/PSVulkanPlay.Tests/bin/Release/net10.0/PSVulkanPlay.Tests | tail -2
+    tools/wall.sh --check
+    tools/wall.sh tests/scenario/phase5a.sh "$dir"
+elif [ $launch = 1 ]; then
     tools/wall.sh --check
     # Under AddressSanitizer the window run looks for memory errors only: the window
     # system's libraries keep allocations until the process ends, which reads as leaks.

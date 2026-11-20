@@ -79,3 +79,34 @@ jobs:
         run: tools/ci/deps.sh
       - name: Build, test, start
         run: tools/ci/build-and-check.sh --sanitize address
+
+  # The app around the stream (app/, .NET): built with the stream program, its tests run, then
+  # walked through its window on the real program against the mock console, and started as a
+  # person starts it. On both C libraries: the app's text shaper is a library of its own.
+  linux-app:
+    name: Debian 13 (the app, .NET)
+    runs-on: ubuntu-latest
+    container: debian:13
+    timeout-minutes: 10
+    steps:
+      - name: Git, for the checkout
+        run: apt-get update -qq && apt-get install -y -qq --no-install-recommends git ca-certificates > /dev/null
+      - uses: actions/checkout@v4
+      - name: Packages
+        run: tools/ci/deps.sh app
+      - name: Build, test, start
+        run: tools/ci/build-and-check.sh --app
+
+  linux-musl-app:
+    name: Alpine (the app, .NET, musl)
+    runs-on: ubuntu-latest
+    container: alpine:latest
+    timeout-minutes: 10
+    steps:
+      - name: Bash and Git, for the checkout and the scripts
+        run: apk add --no-cache -q bash git
+      - uses: actions/checkout@v4
+      - name: Packages
+        run: tools/ci/deps.sh app
+      - name: Build, test, start
+        run: tools/ci/build-and-check.sh --app

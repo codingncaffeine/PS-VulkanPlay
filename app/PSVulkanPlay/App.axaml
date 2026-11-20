@@ -1,0 +1,17 @@
+<Application xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="PSVulkanPlay.App"
+             RequestedThemeVariant="Default">
+    <!-- The colors come from the look that is chosen (Theming/Themes.cs), put into the
+         resources when the app starts and whenever the choice changes. -->
+    <Application.Styles>
+        <FluentTheme>
+            <!-- The theme's own controls (sliders, switches, check boxes, focus) in the app's orange. -->
+            <FluentTheme.Palettes>
+                <ColorPaletteResources x:Key="Dark" Accent="#FFF0702D" />
+                <ColorPaletteResources x:Key="Light" Accent="#FFD95B1A" />
+            </FluentTheme.Palettes>
+        </FluentTheme>
+        <StyleInclude Source="avares://PSVulkanPlay/Themes/Couch.axaml" />
+    </Application.Styles>
+</Application>

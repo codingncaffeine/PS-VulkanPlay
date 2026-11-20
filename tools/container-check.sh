@@ -3,17 +3,18 @@
 # the way a user of that distribution would: its own compiler and libraries, a
 # clean copy of the files (tracked, and new ones that are not ignored).
 #
-#   tools/container-check.sh IMAGE [deps: clang] [-- build-and-check options]
+#   tools/container-check.sh IMAGE [deps: clang|app] [-- build-and-check options]
 #   tools/container-check.sh docker.io/library/debian:13
 #   tools/container-check.sh docker.io/library/debian:13 clang -- --compiler clang-libcxx
+#   tools/container-check.sh docker.io/library/alpine:latest app -- --app
 #
 # Uses a quarter of the cores at low priority unless PSVP_JOBS says otherwise.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 . tools/env.sh
-image="${1:?usage: tools/container-check.sh IMAGE [clang] [-- build-and-check options]}"; shift
+image="${1:?usage: tools/container-check.sh IMAGE [clang|app] [-- build-and-check options]}"; shift
 deps=""
-if [ "${1:-}" = clang ]; then deps=clang; shift; fi
+if [ "${1:-}" = clang ] || [ "${1:-}" = app ]; then deps=$1; shift; fi
 [ "${1:-}" = "--" ] && shift
 runtime=$(command -v podman || command -v docker || true)
 [ -n "$runtime" ] || { echo "container-check: no podman or docker" >&2; exit 2; }
@@ -29,7 +30,11 @@ rm -rf "$out/src"; mkdir -p "$out/src"
 # tools/ci/deps.sh changes. Then the build and its checks in a container that has
 # no network at all: the tests open the consoles' ports and send broadcasts, and
 # none of that may reach the network this machine is on.
-key="$(sha256sum tools/ci/deps.sh | cut -c1-12)"
+# The app's packages come from the network too: they are fetched into the image, for the project
+# files as they are now, and the build finds them there.
+projects=()
+[ "$deps" = app ] && projects=(app/PSVulkanPlay/PSVulkanPlay.csproj app/PSVulkanPlay.Tests/PSVulkanPlay.Tests.csproj)
+key="$(cat tools/ci/deps.sh "${projects[@]}" | sha256sum | cut -c1-12)"
 repo="localhost/psvp-check-$(printf '%s' "${image##*/}${deps:+-$deps}" | tr -c 'a-z0-9._\n' '-')"
 if ! "$runtime" image inspect "$repo:$key" > /dev/null 2>&1; then
     context="scratch/containers/image-$name"
@@ -37,6 +42,10 @@ if ! "$runtime" image inspect "$repo:$key" > /dev/null 2>&1; then
     cp tools/ci/deps.sh "$context/deps.sh"
     printf 'FROM %s\nCOPY deps.sh /deps.sh\nRUN command -v bash >/dev/null 2>&1 || apk add --no-cache -q bash\nRUN bash /deps.sh %s\n' \
         "$image" "$deps" > "$context/Containerfile"
+    if [ ${#projects[@]} -gt 0 ]; then
+        cp --parents -t "$context" "${projects[@]}"
+        printf 'COPY app /restore/app\nRUN DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1 dotnet restore /restore/app/PSVulkanPlay.Tests -v q && rm -rf /restore\n' >> "$context/Containerfile"
+    fi
     if ! psvp_nice "$runtime" build --network=host -q -t "$repo:$key" "$context" > "$out/image.log" 2>&1; then
         cat "$out/image.log"; echo "CONTAINER CHECK FAILED ($image: the image with the packages did not build)"; exit 1
     fi

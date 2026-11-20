@@ -38,6 +38,8 @@ lane thread-sanitizer  preset tsan
 lane clang-libcxx      preset clang-libcxx
 lane oracle            tools/oracle/run.sh
 lane fuzz              tools/fuzz.sh 8
+# The app (.NET): built, its tests run twice. No window is opened and nothing is asked of a console.
+lane app               sh -c 'tools/build-app.sh --test && app/PSVulkanPlay.Tests/bin/Release/net10.0/PSVulkanPlay.Tests > /dev/null'
 lane launch            launch release
 # Memory errors only: the window system's libraries hold allocations until exit.
 lane launch-asan       env ASAN_OPTIONS=detect_leaks=0 tools/wall.sh tools/launch-check.sh build/san/ps-vulkanplay
@@ -64,6 +66,8 @@ lane input-asan        scenario phase2e build/san &
 lane decode            scenario phase3a build/release &
 lane decode-asan       scenario phase3a build/san &
 lane play              scenario phase3b build/release &
+# The app's window on the real program against the mock, and the application started as a person starts it.
+lane app-play          scenario phase5a build/release &
 # Memory errors only, as for the other window runs.
 lane play-asan         env ASAN_OPTIONS=detect_leaks=0 tools/wall.sh tests/scenario/phase3b.sh build/san &
 wait
@@ -79,6 +83,8 @@ if [ "$scope" = all ]; then
     lane alpine-musl       container 1 tools/alpine-build.sh &
     lane debian-clang      container 2 tools/container-check.sh docker.io/library/debian:13 clang -- --compiler clang-libcxx &
     lane debian-asan       container 3 tools/container-check.sh docker.io/library/debian:13 -- --sanitize address &
+    lane debian-app        container 0 tools/container-check.sh docker.io/library/debian:13 app -- --app &
+    lane alpine-app        container 1 tools/container-check.sh docker.io/library/alpine:latest app -- --app &
     wait
 fi
 
