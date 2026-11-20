@@ -76,10 +76,12 @@ decoded=$(number "$out" 'Played [^:]*: ([0-9]+) pictures decoded from [0-9]+ fra
 between "$decoded" 280 320 && ok "$decoded pictures were decoded in five seconds" || fail "decoded: '$decoded': $(grep -a '^Played' "$out")"
 shown=$(number "$out" 'pictures decoded from [0-9]+ frames, ([0-9]+) shown')
 replaced=$(number "$out" 'shown, ([0-9]+) replaced by a newer one')
-# Every decoded picture that was not held back reaches the screen or is replaced by a newer one first.
+# Every decoded picture that was not held back reaches the screen or is replaced by a newer one first. When the
+# session ends, one picture can be on its way to the screen and one more waiting for its turn to be shown.
 held=$(number "$out" 'took them, ([0-9]+) held back as damaged')
-[ -n "$shown" ] && [ -n "$replaced" ] && [ -n "$held" ] && [ $((shown + replaced + held)) -ge $((decoded - 1)) ] && [ $((shown + replaced + held)) -le "$decoded" ] \
+[ -n "$shown" ] && [ -n "$replaced" ] && [ -n "$held" ] && [ $((shown + replaced + held)) -ge $((decoded - 2)) ] && [ $((shown + replaced + held)) -le "$decoded" ] \
     && ok "$shown reached the screen, $replaced were replaced by a newer one first, $held were held back" || fail "shown '$shown' replaced '$replaced' held '$held' of '$decoded'"
+check "pictures are shown evenly: the report says how long they were held back for it" grep -aqE "^Pacing: [0-9]+ of [0-9]+ pictures were held back to follow the one before by a frame's time, by [0-9.]+ ms on average" "$out"
 # How many the screen takes depends on how fast this machine draws; that most do is the point.
 between "$shown" $((decoded / 2)) "$decoded" && ok "more than half reached the screen" || fail "only '$shown' of '$decoded' pictures reached the screen"
 check "no frame was without a picture" grep -aqE ' 0 frames gave no picture; ' "$out"
@@ -98,6 +100,32 @@ check "nothing the program sent was refused" lacks "$log" "REJECTED"
 check "it said goodbye" has "$out" "Goodbye sent and acknowledged."
 check "no controller of this machine was seen: the wall hides them" has "$out" "Controller: none was connected"
 check "no error was logged" lacks "$work/play.err" " ERROR "
+# With no DualSense connected (the wall hides every controller) the program announces a DualShock 4.
+check "the console was told of a DualShock 4" has "$log" "message type 21 channel 1 flags 1 key-position 46 authentic: 0815b2010410011802"
+check "and of no DualSense features" lacks "$log" "control message type 0x13"
+
+echo "what the console sends for the controller is read; a DualSense is announced when asked for"
+start_mock feedback --kind ps5 --clip 416x240 --frame-ms 16 --media-ms 10 --feedback-ms 800 --haptics-every 1
+"$app" play "Living Room" --seconds 3 --controller dualsense > "$work/feedback.out" 2> "$work/feedback.err"; rc=$?
+sleep 0.3; stop_mock
+out="$work/feedback.out"; log="$work/feedback.log"
+[ $rc -eq 0 ] && ok "play --controller dualsense: exit 0" || fail "play --controller dualsense: exit $rc: $(tail -3 "$out")"
+check "the program says what it told the console" has "$out" "Told Living Room that the controller is a DualSense."
+# On the control channel, before the microphone and the displays: the features, then the controller.
+[ "$(grep -a 'control message type' "$log" | sed -E 's/^mock: //' | head -3 | tr '\n' ';')" = "control message type 0x13 with 3 bytes;control message type 0x11 with 16 bytes;control message type 0x36 with 4 bytes;" ] \
+    && ok "the console heard of the DualSense's features and of the controller first" || fail "control messages: $(grep -a 'control message type' "$log" | head -4 | tr '\n' ';')"
+check "and in the stream of a controller of type 6" has "$log" "message type 21 channel 1 flags 1 key-position 46 authentic: 0815b2010410011806"
+# The mock sends rumble, trigger effects and a light color 800 ms into the stream, and stops the rumble 400 ms later;
+# with every sound packet it sends a frame of haptics. Behind the wall there is no controller for any of it to reach,
+# and no sound device of one: the haptics would become rumble.
+grep -aqE "^For the controller the console sent: rumble 2 times \(0 reached the controller; the strongest 200 and 90 of 255\), a light bar color 2 times \(0 reached it; the last: 0, 64, 255\), trigger effects 1 times \(0 reached a DualSense\), and [0-9]+ frames of haptics \(0 played on the controller's own sound device, 0 times turned into rumble, 0 let go as too late, 0 unusable\)" "$out" \
+    && ok "rumble, the light bar's color, trigger effects and haptics were read as the mock sent them" || fail "controller data: $(grep -a '^For the controller' "$out")"
+haptics=$(number "$out" 'and ([0-9]+) frames of haptics')
+between "$haptics" 250 320 && ok "$haptics frames of haptics in three seconds, each of the size a console's are" || fail "haptics frames: '$haptics'"
+check "with no sound device of a DualSense the haptics are to become rumble" has "$work/feedback.err" "haptics become rumble"
+check "the controller information says player 2, and strengths 1 and 2" has "$out" "(player 2, haptics strength 1, trigger strength 2, 1 asked to take the controller's position as its rest)"
+check "no error was logged" lacks "$work/feedback.err" " ERROR "
+check "what does not go with the option is refused" sh -c "! '$app' play 'Living Room' --controller wheel > /dev/null 2>&1"
 
 echo "a session that does not start opens no window"
 start_mock in-use --kind ps5 --in-use yes

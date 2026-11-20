@@ -27,6 +27,8 @@
 //     --media-ms N            once a stream is set up, send a sound packet every N ms
 //     --haptics-every N       with every Nth sound packet one for the haptics (PS5)
 //     --lose-sound-every N    do not send the sound packets whose frame index N divides
+//     --feedback-ms N         N ms into the stream, send what a console sends for the controller: rumble,
+//                             trigger effects and controller information; 400 ms later, rumble that is still
 //     --frame-ms N            send a picture frame every N ms
 //     --frames N              stop after N picture frames (default: go on)
 //     --media-seed N          what the frames hold follows from this number and their index
@@ -47,6 +49,8 @@
 // It listens on the consoles' real ports, so it needs a network of its own
 // (tools/wall.sh, or a container) and the right to open port 987 for a PS4.
 // One line per event goes to standard output.
+#include <cmath>
+#include <numbers>
 #include <algorithm>
 #include <array>
 #include <charconv>
@@ -585,7 +589,7 @@ int main(int argc, char** argv) {
             }
         } else if (arg == "--frame-ms" || arg == "--frames" || arg == "--media-seed" || arg == "--frame-bytes" || arg == "--repair-units" ||
                    arg == "--lose-every" || arg == "--lose-units" || arg == "--late-every" || arg == "--lose-sound-every" ||
-                   arg == "--haptics-every") {
+                   arg == "--haptics-every" || arg == "--feedback-ms") {
             std::uint64_t number = 0;
             const auto [end, error] = std::from_chars(text->data(), text->data() + text->size(), number);
             if (error != std::errc{} || end != text->data() + text->size() || number > 1000000) return usage(std::format("{} is a number", arg));
@@ -599,6 +603,7 @@ int main(int argc, char** argv) {
             else if (arg == "--lose-units") options.media.lose_units = count;
             else if (arg == "--late-every") options.media.late_every = count;
             else if (arg == "--lose-sound-every") options.media.lose_sound_every = count;
+            else if (arg == "--feedback-ms") options.media.feedback_at = std::chrono::milliseconds(number);
             else options.media.haptics_every = count;
         } else {
             return usage(std::format("unknown option {}", arg));
@@ -711,6 +716,20 @@ int main(int argc, char** argv) {
                     stream_options.picture_source = [clip](std::uint16_t index, bool keyframe) { return clip->frame(index, keyframe); };
                     stream_options.picture_lost = [clip](std::uint16_t first, std::uint16_t last) { clip->decoder_lost(first, last); };
                     stream_options.sound_source = [tone](std::uint16_t) { return tone->frame(); };
+                    // Haptics as a console sends them: 30 samples for each of two actuators, 16 bits, at 3000 a
+                    // second. Here a swing of 8000 at 150 Hz on the left and of 4000 at 75 Hz on the right.
+                    stream_options.haptics_source = [](std::uint16_t index) {
+                        std::vector<std::uint8_t> frame;
+                        for (unsigned i = 0; i < 30; ++i) {
+                            const double at = (static_cast<double>(index) * 30.0 + i) / 3000.0;
+                            for (const double value : {8000.0 * std::sin(2.0 * std::numbers::pi * 150.0 * at), 4000.0 * std::sin(2.0 * std::numbers::pi * 75.0 * at)}) {
+                                const auto sample = static_cast<std::uint16_t>(static_cast<std::int16_t>(std::lround(value)));
+                                frame.push_back(static_cast<std::uint8_t>(sample & 0xff));
+                                frame.push_back(static_cast<std::uint8_t>(sample >> 8));
+                            }
+                        }
+                        return frame;
+                    };
                     stream_options.audio.frame_size = psvp::media::ToneWriter::kFrameSamples;
                 }
                 stream_options.max_datagram = std::min(options.path.mtu_in, options.path.mtu_out) - psvp::proto::transport::kSplitMargin;

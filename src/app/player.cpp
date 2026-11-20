@@ -18,10 +18,14 @@
 
 #include <SDL3/SDL.h>
 
+#include "app/haptics_volume.h"
 #include "app/log.h"
 #include "app/window_place.h"
 #include "media/sound_decoder.h"
+#include "media/frame_pacer.h"
+#include "media/haptics.h"
 #include "media/sound_buffer.h"
+#include "proto/controller_feedback.h"
 #include "media/video_decoder.h"
 #include "psvp/version.h"
 #include "render/vk_window.h"
@@ -42,6 +46,15 @@ constexpr double kArrivedLateMs = 25.0, kDecoderBehindMs = 12.0;
 constexpr double kRightBehindMs = 10.0;
 // A console that sends no frame that can be decoded is asked for a keyframe this often at most.
 constexpr auto kKeyframeAskEvery = std::chrono::milliseconds(500);
+// A rumble the console does not take back lasts this long at most: a lost "stop" must not leave a
+// controller shaking.
+constexpr std::uint32_t kRumbleLifeMs = 5000;
+// Haptics on a controller that can only rumble: its motors are set from every third frame's
+// time, to the largest swing in it, and stop by themselves when no more frames come.
+constexpr unsigned kHapticsFramesPerRumble = 3;
+constexpr std::uint32_t kHapticsRumbleLifeMs = 100;
+// Haptics that wait to be played on the controller's sound device, at most: more is old.
+constexpr int kMaxHapticsQueuedMs = 80;
 // The speed of the sound is set anew when it should differ by this much.
 constexpr double kSpeedStep = 0.002;
 // The touchpad as a console counts it (the reference's numbers).
@@ -67,7 +80,11 @@ struct Spacing {
 
 class Player {
 public:
-    Player() : decode_thread_([this] { decode_loop(); }) {}
+    // `frames_per_second` is what the console was asked for; with `pacing`, pictures are shown that evenly.
+    Player(double frames_per_second, bool pacing, int haptics_volume) : haptics_volume_(haptics_volume), decode_thread_([this] { decode_loop(); }) {
+        const std::lock_guard lock(jobs_mutex_);
+        if (pacing) pacer_.emplace(frames_per_second);
+    }
     // Ends the decoding: frames still waiting are not decoded any more. After it the counts stand still.
     void finish() {
         {
@@ -80,7 +97,12 @@ public:
     ~Player() {
         finish();
         if (audio_ != nullptr) SDL_DestroyAudioStream(audio_);
-        if (pad_ != nullptr) SDL_CloseGamepad(pad_);
+        if (haptics_audio_ != nullptr) SDL_DestroyAudioStream(haptics_audio_);
+        if (pad_ != nullptr) {
+            release_triggers();
+            SDL_RumbleGamepad(pad_, 0, 0, 0);  // whatever the console said last
+            SDL_CloseGamepad(pad_);
+        }
     }
 
     // ---- on the session's thread ----
@@ -116,10 +138,58 @@ public:
             const proto::AudioHeader format = proto::parse_audio_header(info->audio_header).value_or(proto::AudioHeader{});
             for (const auto& frame : media.sound) {
                 if (!frame.haptics) play_sound(format, frame);
+                else play_haptics(frame);
             }
         }
         started_.store(true);
         started_.notify_all();
+    }
+    // What the console sends for the controller: rumble and the light bar's color go to the
+    // controller at once; the rest is counted until this program passes it on.
+    void on_console_data(const std::vector<transport::ConsoleData>& data) {
+        for (const transport::ConsoleData& item : data) {
+            if (item.message) continue;
+            const std::lock_guard lock(pad_mutex_);
+            if (item.kind == transport::data_type::kRumble) {
+                const auto rumble = transport::parse_rumble(item.bytes);
+                if (!rumble) continue;
+                ++feedback_.rumbles;
+                feedback_.strongest_left = std::max(feedback_.strongest_left, rumble->left);
+                feedback_.strongest_right = std::max(feedback_.strongest_right, rumble->right);
+                log::debug("play: the console sets the rumble to {} and {} of 255", rumble->left, rumble->right);
+                if (pad_ != nullptr && SDL_RumbleGamepad(pad_, static_cast<Uint16>(rumble->left * 257), static_cast<Uint16>(rumble->right * 257),
+                                                         rumble->left != 0 || rumble->right != 0 ? kRumbleLifeMs : 0)) {
+                    ++feedback_.rumbles_passed;
+                }
+            } else if (item.kind == transport::data_type::kPadInfo) {
+                const auto info = transport::parse_controller_info(item.bytes);
+                if (!info) continue;
+                ++feedback_.infos;
+                if (info->reset_motion) ++feedback_.motion_resets;
+                feedback_.player = info->player;
+                feedback_.haptics_strength = info->haptics;
+                feedback_.triggers_strength = info->triggers;
+                if (feedback_.light != info->light) {
+                    feedback_.light = info->light;
+                    ++feedback_.lights;
+                    log::debug("play: the console sets the light bar to {}, {}, {} (player {})", info->light[0], info->light[1], info->light[2], info->player);
+                    if (pad_ != nullptr && SDL_SetGamepadLED(pad_, info->light[0], info->light[1], info->light[2])) ++feedback_.lights_passed;
+                }
+            } else if (item.kind == transport::data_type::kTriggerEffects) {
+                const auto effects = transport::parse_trigger_effects(item.bytes);
+                if (!effects) continue;
+                ++feedback_.trigger_effects;
+                log::debug("play: the console sets the triggers' effects: left type {:#04x}, right type {:#04x}", effects->left_type, effects->right_type);
+                // Only a DualSense has triggers that take them.
+                if (pad_ != nullptr && pad_is_dualsense_) {
+                    const auto report = media::dualsense_trigger_effects(effects->left_type, effects->left, effects->right_type, effects->right);
+                    if (SDL_SendGamepadEffect(pad_, report.data(), static_cast<int>(report.size()))) {
+                        ++feedback_.trigger_effects_passed;
+                        triggers_set_ = true;
+                    }
+                }
+            }
+        }
     }
     // True when the console is to be asked for a keyframe now.
     bool wants_keyframe() {
@@ -203,6 +273,9 @@ private:
         undecodable_ += counters.undecodable;
         unfollowed_ = decoder_->unfollowed_reason();
     }
+    // When to show each picture. Set before the first frame is there; the decode thread's from then on.
+    std::optional<media::FramePacer> pacer_;
+    std::uint64_t paced_ = 0, paced_late_ = 0, paced_microseconds_ = 0, paced_most_microseconds_ = 0;
     // When the picture stood, and what was seen to go with it.
     std::optional<Clock::time_point> first_handed_, last_handed_;
     std::uint64_t stood_ = 0, stood_lost_ = 0, stood_arrival_ = 0, stood_decoder_ = 0, stood_other_ = 0;
@@ -228,6 +301,39 @@ private:
     std::vector<std::int16_t> silence_;
     static void SDLCALL sound_wanted(void* self, SDL_AudioStream* stream, int additional, int total);
     void fill_sound(SDL_AudioStream* stream, int additional);
+
+    // What the console sent for the controller. With `pad_`, under the pad's lock: the session's
+    // thread uses the controller for this while the window's thread opens and closes it.
+    struct Feedback {
+        std::uint64_t rumbles = 0, rumbles_passed = 0, lights = 0, lights_passed = 0, infos = 0, motion_resets = 0, trigger_effects = 0;
+        std::uint64_t trigger_effects_passed = 0;
+        std::uint8_t strongest_left = 0, strongest_right = 0;
+        std::optional<std::array<std::uint8_t, 3>> light;
+        std::uint8_t player = 0, haptics_strength = 0, triggers_strength = 0;
+    };
+    std::mutex pad_mutex_;
+    Feedback feedback_;
+    bool pad_is_dualsense_ = false;
+    bool triggers_set_ = false;
+    // To be called with the pad's lock held, before the controller is closed: its triggers as they were.
+    void release_triggers() {
+        if (pad_ == nullptr || !std::exchange(triggers_set_, false)) return;
+        const auto off = media::dualsense_triggers_off();
+        SDL_SendGamepadEffect(pad_, off.data(), static_cast<int>(off.size()));
+    }
+
+    // Haptics, on the session's thread: to the controller's own sound device where it has one
+    // (a DualSense on USB), and as rumble otherwise.
+    void play_haptics(const transport::SoundFrame& frame);
+    void open_haptics_device();
+    int haptics_volume_ = 100;  // percent, for the controller's actuator channels
+    bool haptics_looked_ = false;
+    SDL_AudioStream* haptics_audio_ = nullptr;
+    std::string haptics_device_;
+    media::HapticsUpsampler haptics_upsampler_;
+    media::HapticsLevel haptics_peak_, haptics_rumble_;
+    unsigned haptics_since_rumble_ = 0;
+    std::uint64_t haptics_frames_ = 0, haptics_played_ = 0, haptics_rumbled_ = 0, haptics_unusable_ = 0, haptics_let_go_ = 0;
 
     // The controller.
     std::mutex input_mutex_;
@@ -294,8 +400,32 @@ void Player::decode_loop() {
             ++not_shown_since_;
             continue;
         }
+        const auto ready = Clock::now();
+        longest_behind_since_ms_ = std::max(longest_behind_since_ms_, std::chrono::duration<double, std::milli>(ready - job.arrived).count());
+        if (pacer_) {
+            const media::FramePacer::Slot slot = pacer_->schedule(ready);
+            std::unique_lock lock(jobs_mutex_);
+            if (slot.late) {
+                // Frames have piled up behind a pause. With a newer one already waiting this picture is not
+                // shown: the picture catches up instead of playing the pause back.
+                ++paced_late_;
+                if (!jobs_.empty()) {
+                    lock.unlock();
+                    pacer_->skipped();
+                    const std::lock_guard picture_lock(picture_mutex_);
+                    ++replaced_;
+                    continue;
+                }
+            }
+            if (slot.at > ready) {
+                ++paced_;
+                const auto wait = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(slot.at - ready).count());
+                paced_microseconds_ += wait;
+                paced_most_microseconds_ = std::max(paced_most_microseconds_, wait);
+                if (jobs_wake_.wait_until(lock, slot.at, [&] { return closing_; })) return;
+            }
+        }
         const auto now = Clock::now();
-        longest_behind_since_ms_ = std::max(longest_behind_since_ms_, std::chrono::duration<double, std::milli>(now - job.arrived).count());
         note_handed(now);
         {
             const std::lock_guard lock(picture_mutex_);
@@ -401,13 +531,89 @@ void Player::fill_sound(SDL_AudioStream* stream, int additional) {
     }
 }
 
+void Player::open_haptics_device() {
+    int count = 0;
+    SDL_AudioDeviceID* devices = SDL_GetAudioPlaybackDevices(&count);
+    for (int i = 0; devices != nullptr && i < count && haptics_audio_ == nullptr; ++i) {
+        const char* name = SDL_GetAudioDeviceName(devices[i]);
+        if (name == nullptr || SDL_strcasestr(name, "DualSense") == nullptr) continue;
+        // Its four channels: the speaker's two, then the two actuators.
+        const SDL_AudioSpec spec{SDL_AUDIO_S16, static_cast<int>(media::HapticsUpsampler::kChannels), static_cast<int>(media::HapticsUpsampler::kRate)};
+        haptics_audio_ = SDL_OpenAudioDeviceStream(devices[i], &spec, nullptr, nullptr);
+        if (haptics_audio_ != nullptr && !SDL_ResumeAudioStreamDevice(haptics_audio_)) {
+            SDL_DestroyAudioStream(haptics_audio_);
+            haptics_audio_ = nullptr;
+        }
+        if (haptics_audio_ != nullptr) haptics_device_ = name;
+    }
+    SDL_free(devices);
+    if (haptics_audio_ != nullptr) {
+        log::info("play: haptics go to the controller's own sound device ({})", haptics_device_);
+        // A desktop gives a new sound device a fraction of its volume (40% is a sixteenth of the swing); the
+        // strength of the haptics is this program's setting, and the actuators' two channels are set to it.
+        const HapticsVolume volume = set_haptics_volume("DualSense", haptics_volume_);
+        if (volume.changed) {
+            log::info("play: the volume of the controller's two haptics channels was {}%; it is set to {}% (--haptics-volume; its speaker's volume is "
+                      "left as it is)",
+                      volume.before, haptics_volume_);
+        } else if (volume.found && volume.problem.empty()) {
+            log::info("play: the controller's haptics channels are at {}% of their volume, as set", volume.before);
+        } else {
+            log::warn("play: the volume of the controller's haptics channels could not be {}: {}; if haptics are weak, set the volume of \"{}\" "
+                      "in the desktop's sound settings",
+                      volume.found ? "set" : "looked at", volume.problem.empty() ? "no such device was listed" : volume.problem, haptics_device_);
+        }
+    }
+    else log::info("play: no sound device of a DualSense is there (it has one on USB only): haptics become rumble");
+}
+
+void Player::play_haptics(const transport::SoundFrame& frame) {
+    ++haptics_frames_;
+    if (!std::exchange(haptics_looked_, true)) open_haptics_device();
+    if (haptics_audio_ != nullptr) {
+        const auto samples = haptics_upsampler_.frame(frame.data);
+        if (samples.empty()) {
+            ++haptics_unusable_;
+            return;
+        }
+        const int bytes_per_ms = static_cast<int>(media::HapticsUpsampler::kRate * media::HapticsUpsampler::kChannels * sizeof(std::int16_t) / 1000);
+        if (SDL_GetAudioStreamQueued(haptics_audio_) > kMaxHapticsQueuedMs * bytes_per_ms) {
+            // A bunch after a pause on the network: a shake that comes late is worse than none.
+            SDL_ClearAudioStream(haptics_audio_);
+            ++haptics_let_go_;
+        }
+        SDL_PutAudioStreamData(haptics_audio_, samples.data(), static_cast<int>(samples.size_bytes()));
+        ++haptics_played_;
+        return;
+    }
+    const auto level = media::haptics_level(frame.data);
+    if (!level) {
+        ++haptics_unusable_;
+        return;
+    }
+    haptics_peak_.left = std::max(haptics_peak_.left, level->left);
+    haptics_peak_.right = std::max(haptics_peak_.right, level->right);
+    if (++haptics_since_rumble_ < kHapticsFramesPerRumble) return;
+    const media::HapticsLevel peak = std::exchange(haptics_peak_, {});
+    haptics_since_rumble_ = 0;
+    // Nothing to say while the controller rests and is to go on resting.
+    if (peak == media::HapticsLevel{} && haptics_rumble_ == media::HapticsLevel{}) return;
+    haptics_rumble_ = peak;
+    const std::lock_guard lock(pad_mutex_);
+    if (pad_ != nullptr && SDL_RumbleGamepad(pad_, static_cast<Uint16>(peak.left * 257), static_cast<Uint16>(peak.right * 257), kHapticsRumbleLifeMs)) ++haptics_rumbled_;
+}
+
 void Player::on_event(const SDL_Event& event) {
     using transport::Button;
     switch (event.type) {
     case SDL_EVENT_GAMEPAD_ADDED:
         if (pad_ == nullptr) {
+            const std::lock_guard pad_lock(pad_mutex_);
             pad_ = SDL_OpenGamepad(event.gdevice.which);
             if (pad_ != nullptr) {
+                pad_is_dualsense_ = SDL_GetGamepadType(pad_) == SDL_GAMEPAD_TYPE_PS5;
+                // The light bar's color, if the console named one before the controller was there.
+                if (feedback_.light && SDL_SetGamepadLED(pad_, (*feedback_.light)[0], (*feedback_.light)[1], (*feedback_.light)[2])) ++feedback_.lights_passed;
                 pad_id_ = event.gdevice.which;
                 const char* name = SDL_GetGamepadName(pad_);
                 pad_name_ = name != nullptr ? name : "a controller";
@@ -421,8 +627,12 @@ void Player::on_event(const SDL_Event& event) {
         break;
     case SDL_EVENT_GAMEPAD_REMOVED:
         if (pad_ != nullptr && event.gdevice.which == pad_id_) {
-            SDL_CloseGamepad(pad_);
-            pad_ = nullptr;
+            {
+                const std::lock_guard pad_lock(pad_mutex_);
+                release_triggers();
+                SDL_CloseGamepad(pad_);
+                pad_ = nullptr;
+            }
             log::info("play: the controller is gone");
             // Nothing stays pressed.
             const std::lock_guard lock(input_mutex_);
@@ -556,6 +766,14 @@ std::vector<std::string> Player::report() {
                                     "sent late (the next one kept its distance: the game's own pace).",
                                     late_on_the_way_, late_sent_));
         lines.push_back(std::format("Pictures went to the screen this far apart: {}.", handed_spacing_.text()));
+        if (pacer_) {
+            lines.push_back(std::format("Pacing: {} of {} pictures were held back to follow the one before by a frame's time, by {:.1f} ms on average "
+                                        "and {:.1f} ms at most; {} came in a bunch behind a pause and were not waited behind.",
+                                        paced_, pictures_, static_cast<double>(paced_microseconds_) / 1000.0 / static_cast<double>(std::max<std::uint64_t>(paced_, 1)),
+                                        static_cast<double>(paced_most_microseconds_) / 1000.0, paced_late_));
+        } else {
+            lines.emplace_back("Pacing: off; every picture was shown the moment it was there.");
+        }
         lines.push_back(std::format("Smoothness: the picture stood for over {:.0f} ms {} times (the longest: {:.0f} ms): {} with frames lost or not "
                                     "shown, {} after a pause in arriving, {} with the decoder behind, {} unexplained.",
                                     kStoodMs, stood_, longest_stood_ms_, stood_lost_, stood_arrival_, stood_decoder_, stood_other_));
@@ -578,6 +796,20 @@ std::vector<std::string> Player::report() {
     }
     lines.push_back(pad_name_.empty() ? std::string("Controller: none was connected (the keyboard's arrow keys, Enter and Backspace stood in).")
                                       : std::format("Controller: {}.", pad_name_));
+    {
+        const std::lock_guard lock(pad_mutex_);
+        const Feedback& f = feedback_;
+        lines.push_back(std::format("For the controller the console sent: rumble {} times ({} reached the controller; the strongest {} and {} of 255), a "
+                                    "light bar color {} times ({} reached it{}), trigger effects {} times ({} reached a DualSense), and {} frames of "
+                                    "haptics ({} played on the controller's own sound device{}, {} times turned into rumble, {} let go as too late, {} "
+                                    "unusable); controller information {} times (player {}, haptics strength {}, trigger strength {}, {} asked to take "
+                                    "the controller's position as its rest).",
+                                    f.rumbles, f.rumbles_passed, f.strongest_left, f.strongest_right, f.lights, f.lights_passed,
+                                    f.light ? std::format("; the last: {}, {}, {}", (*f.light)[0], (*f.light)[1], (*f.light)[2]) : std::string(),
+                                    f.trigger_effects, f.trigger_effects_passed, haptics_frames_, haptics_played_,
+                                    haptics_device_.empty() ? std::string() : std::format(" \"{}\"", haptics_device_), haptics_rumbled_, haptics_let_go_,
+                                    haptics_unusable_, f.infos, f.player, f.haptics_strength, f.triggers_strength, f.motion_resets));
+    }
     return lines;
 }
 
@@ -591,15 +823,29 @@ int run_player(SessionPlan plan, const PlayOptions& options) {
     if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) log::warn("play: no sound: {}", SDL_GetError());
     if (!SDL_InitSubSystem(SDL_INIT_GAMEPAD)) log::warn("play: no controllers: {}", SDL_GetError());
 
+    // What a PS5 is told the controller is, when the session starts: a DualSense when one is
+    // connected then. To it the console sends that controller's haptics and its triggers' effects.
+    // A DualSense that is plugged in later is used as any controller.
+    plan.dualsense = options.controller == PlayOptions::Controller::dualsense;
+    if (options.controller == PlayOptions::Controller::by_what_is_connected) {
+        SDL_UpdateGamepads();
+        int count = 0;
+        if (SDL_JoystickID* pads = SDL_GetGamepads(&count)) {
+            for (int i = 0; i < count; ++i) plan.dualsense = plan.dualsense || SDL_GetGamepadTypeForID(pads[i]) == SDL_GAMEPAD_TYPE_PS5;
+            SDL_free(pads);
+        }
+    }
+
     int window_code = 0;
     int session_code = 0;
     {
-        Player player;
+        Player player(static_cast<double>(plan.video.max_fps), options.pacing, options.haptics_volume);
         std::atomic<bool> stop{false};
         std::atomic<bool> done{false};
         plan.on_media = [&](transport::MediaOutput& media, const std::optional<proto::StreamInfo>& info) { player.on_media(media, info); };
         plan.controller = [&](transport::Buttons& buttons, transport::InputState& state) { return player.controller(buttons, state); };
         plan.wants_keyframe = [&] { return player.wants_keyframe(); };
+        plan.on_console_data = [&](const std::vector<transport::ConsoleData>& data, std::chrono::microseconds) { player.on_console_data(data); };
         plan.stop = [&] { return stop.load(); };
         std::thread session([&] {
             session_code = run_session(plan);

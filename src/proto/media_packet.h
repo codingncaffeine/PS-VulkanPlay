@@ -30,6 +30,7 @@ struct StreamMediaPacket {
     std::uint8_t source_frames = 0;    // frames first sent in this packet
     std::uint8_t repeated_frames = 0;  // earlier frames sent again
     bool haptics = false;              // PS5 only: the payload drives a controller's haptics
+    std::uint8_t sound_stream = 0;     // PS5 only: the byte that says so (0 the sound, 2 the haptics)
     std::size_t header_size = 0;
     std::span<const std::uint8_t> payload;  // a view into the datagram, still encrypted
 };

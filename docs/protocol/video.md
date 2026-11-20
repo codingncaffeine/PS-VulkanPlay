@@ -25,7 +25,9 @@ bits are the *adaptive stream index*: which of the stream information's picture 
 header is 21 bytes.
 
 A **sound** packet goes on with one byte that is not understood: 19 bytes. A PS5's has one byte more, 20 in
-all; the value 2 in it marks a packet for the controller's **haptics** instead of the sound.
+all, which names the packet's stream: 0 the sound, 2 the controller's **haptics**. **[read]** The reference
+takes every other value for the sound. This client counts sound packets by that byte and the codec byte, and
+keeps a packet whose byte is neither 0 nor 2 out of the sound: a stream of its own, should a console send one.
 
 With bit 4 of the first byte set, three more bytes follow the header; they are not read. **[seen]** A PS5
 sets it on all packets of a frame or on none. In its HEVC streams those are the frames with more than one

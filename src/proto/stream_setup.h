@@ -68,6 +68,10 @@ struct BangFacts {
 struct StreamCounters {
     std::uint64_t video_packets = 0;      // with the right authentication code
     std::uint64_t audio_packets = 0;
+    // Sound packets by the byte that names their stream (a PS5: 0 the sound, 2 the haptics) and their codec byte,
+    // as stream * 256 + codec; and the packets of a stream that is neither, which are counted and not played.
+    std::map<std::uint32_t, std::uint64_t> sound_streams;
+    std::uint64_t other_sound_packets = 0;
     std::uint64_t media_rejected = 0;     // with a wrong one
     std::uint64_t media_before_keys = 0;  // arrived before there was a key to check them with
     std::uint64_t media_unreadable = 0;   // with the right code and a header that makes no sense
@@ -241,10 +245,15 @@ public:
         std::function<std::vector<std::uint8_t>(std::uint16_t index, bool keyframe)> picture_source;
         std::function<void(std::uint16_t first, std::uint16_t last)> picture_lost;
         std::function<std::vector<std::uint8_t>(std::uint16_t index)> sound_source;
+        // The haptics frames, when they are not the fixed pattern: asked by index, also for a frame again.
+        std::function<std::vector<std::uint8_t>(std::uint16_t index)> haptics_source;
         std::uint8_t picture_codec = 0;            // the codec byte of picture packets (a PS5: 3 for H.264, 6 for HEVC)
         // What a PS5 was seen to send on its own once a stream is set up; 0: not sent.
         std::chrono::milliseconds heartbeat_every{0};  // its heartbeats (a PS5: about three a second)
         std::chrono::milliseconds quality_every{0};    // its view of the connection (a PS5: every 1.2 s or so)
+        // What a console sends for the controller, this long after the stream is set up: rumble, trigger
+        // effects and controller information with a light color; 400 ms later, rumble that is still. 0: none.
+        std::chrono::milliseconds feedback_at{0};
     };
     // The channel a PS5 was seen to send its own messages and data on.
     static constexpr std::uint16_t kOwnChannel = 0;
@@ -284,6 +293,8 @@ private:
     std::optional<TimePoint> next_frame_;
     std::optional<TimePoint> next_heartbeat_;
     std::optional<TimePoint> next_quality_;
+    std::optional<TimePoint> next_feedback_;
+    unsigned feedback_step_ = 0;
     std::optional<MediaSender> media_;
     std::uint16_t frame_index_ = 0;
     std::uint16_t sound_index_ = 0;

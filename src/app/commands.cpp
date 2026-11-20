@@ -964,6 +964,17 @@ int run_session_here(const SessionPlan& plan) {
         if (!service_until(std::min(give_up, Clock::now() + 200ms))) return fail("{}", control_failure);
     }
     if (!have_session_id) return fail("{} never named the session.", registration.nickname);
+    // A client with a DualSense first asks for that controller's features and names a controller.
+    // Both payloads are the reference's, byte for byte: what the sixteen bytes mean is not known.
+    const bool dualsense = plan.dualsense && registration.kind == ConsoleKind::ps5;
+    if (dualsense) {
+        constexpr std::array<std::uint8_t, 3> kFeatures{0x00, 0x40, 0x00};
+        constexpr std::array<std::uint8_t, 16> kController{0xa0, 0xab, 0x51, 0xbd, 0xd1, 0x7e, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00};
+        if (!send(proto::ctrl_type::kDualSenseFeatures, kFeatures) || !send(proto::ctrl_type::kControllerConnected, kController)) {
+            return fail("session: the connection to the console broke");
+        }
+        say("Told {} that the controller is a DualSense.", registration.nickname);
+    }
     // What other clients send once the session has its name: the microphone muted, twice, and no display devices.
     {
         constexpr std::array<std::uint8_t, 4> kMuted{0, 1, 1, 89};
@@ -1002,6 +1013,7 @@ int run_session_here(const SessionPlan& plan) {
     stream_request.session_cipher = cipher;
     stream_request.network = measured;
     stream_request.video = video;
+    stream_request.dualsense = dualsense;
     transport::ClientStream stream(link->tag, link->endpoint, std::move(stream_request), proto::KeyExchange::generate(), proto::random_key());
     using State = transport::ClientStream::State;
     // A keyframe arrives as one burst of packets: room for them while the control channel is looked after.
@@ -1073,6 +1085,15 @@ int run_session_here(const SessionPlan& plan) {
         const proto::AudioHeader audio = proto::parse_audio_header(info->audio_header).value_or(proto::AudioHeader{});
         say("Stream information: picture {}; sound {} channels, {} bits, {} Hz, frames of {}.", sizes.empty() ? "none" : sizes, audio.channels,
             audio.bits, audio.rate, audio.frame_size);
+        // What else the console says it sends as sound: every channel with its type and its format, as it came.
+        for (const proto::SoundChannel& listed : info->sound_channels) {
+            const auto format = proto::parse_audio_header(listed.header);
+            say("Sound channel of type {}: {}{}; its header: {}.", listed.type,
+                format ? std::format("{} channels, {} bits, {} Hz, frames of {}", format->channels, format->bits, format->rate, format->frame_size)
+                       : std::string("a format that is not read"),
+                listed.raw ? (*listed.raw ? ", samples as they are" : ", coded") : "", proto::hex_encode(listed.header));
+        }
+        if (info->sound_channels.empty()) say("The console listed no sound channels of their own.");
     }
     say("Stream set up in {} ms.", std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - setup_started).count());
 
@@ -1143,6 +1164,15 @@ int run_session_here(const SessionPlan& plan) {
             quality->target_bitrate.value_or(0) / 1000, quality->rtt.value_or(0.0), quality->loss.value_or(0));
     }
     if (!counters.other_data.empty()) say("Other data from the console: {}.", counts_text(counters.other_data, "kind"));
+    if (!counters.sound_streams.empty()) {
+        // A PS5 names the stream of every sound packet: 0 the sound, 2 a controller's haptics. Another number would be a stream of its own.
+        std::string streams;
+        for (const auto& [key, count] : counters.sound_streams) {
+            streams += std::format("{}stream {} with codec {} x{}", streams.empty() ? "" : ", ", key >> 8, key & 0xffU, count);
+        }
+        say("Sound packets by the stream they name: {}{}.", streams,
+            counters.other_sound_packets != 0 ? std::format("; {} of a stream this version does not know were counted and not played", counters.other_sound_packets) : "");
+    }
     if (counters.split_messages != 0) say("Messages that came in more than one chunk: {}.", counters.split_messages);
     if (counters.other_datagrams != 0) say("Datagrams of kinds this version does not read: {}.", counters.other_datagrams);
     if (stream.state() == State::failed) return fail("{}: the stream: {}.", registration.nickname, stream.reason());
@@ -1237,7 +1267,8 @@ PlayRunner play_runner = nullptr;
 
 // The stream in a window, with its sound and a controller: what the program is for.
 int command_play(std::span<const std::string_view> args) {
-    const Parsed parsed = parse(args, {"--host", "--seconds", "--passcode", "--resolution", "--fps", "--bitrate", "--codec", "--tap", "--frames"}, {"--rest"}, 1);
+    const Parsed parsed = parse(args, {"--host", "--seconds", "--passcode", "--resolution", "--fps", "--bitrate", "--codec", "--tap", "--frames", "--controller", "--pacing", "--haptics-volume"},
+                                {"--rest"}, 1);
     if (!parsed.error.empty()) return usage("play: {}", parsed.error);
     SessionPlan plan;
     // What a console sends when nothing else is asked for: 1080p, 60 pictures a second, HEVC from a PS5.
@@ -1257,6 +1288,20 @@ int command_play(std::span<const std::string_view> args) {
         const auto frames = parse_number(*text, 1, 100000000);
         if (!frames) return usage("play: --frames takes a whole number above zero");
         options.frames = *frames;
+    }
+    if (const auto text = parsed.option("--controller")) {
+        if (*text == "dualsense") options.controller = PlayOptions::Controller::dualsense;
+        else if (*text == "dualshock4") options.controller = PlayOptions::Controller::dualshock4;
+        else if (*text != "auto") return usage("play: --controller is auto, dualsense or dualshock4");
+    }
+    if (const auto text = parsed.option("--haptics-volume")) {
+        const auto percent = parse_number(*text, 0, 100);
+        if (!percent && *text != "0") return usage("play: --haptics-volume takes a number from 0 to 100");
+        options.haptics_volume = percent ? static_cast<int>(*percent) : 0;
+    }
+    if (const auto text = parsed.option("--pacing")) {
+        if (*text != "on" && *text != "off") return usage("play: --pacing is on or off");
+        options.pacing = *text == "on";
     }
     // A PS4 streams H.264 only: for one, the codec nobody chose is that.
     if (!parsed.option("--codec")) {
@@ -1516,11 +1561,18 @@ std::string commands_help() {
         "      out; --tap presses buttons for a moment while the stream is held; --rest then sends the\n"
         "      console to rest mode\n"
         "  {0} play CONSOLE [--host ADDRESS] [--passcode DIGITS] [--resolution 360|540|720|1080] [--fps 30|60]\n"
-        "          [--bitrate KBPS] [--codec h264|hevc|hdr] [--rest]\n"
+        "          [--bitrate KBPS] [--codec h264|hevc|hdr] [--controller auto|dualsense|dualshock4]\n"
+        "          [--pacing on|off] [--haptics-volume 0-100] [--rest]\n"
         "      play: the console's picture in a window, its sound, and a controller that is plugged in\n"
-        "      or paired; closing the window ends the session (--rest then sends the console to rest mode)\n"
-        "  {0} decode FOLDER\n"
-        "      decode the picture and the sound that 'session --dump FOLDER' kept, and say what came out\n"
+        "      or paired; closing the window ends the session (--rest then sends the console to rest mode).\n"
+        "      --controller says what the console is told the controller is (auto: a DualSense when one\n"
+        "      is connected at the start, which gets its haptics and trigger effects); --pacing off shows\n"
+        "      every picture the moment it is there instead of evenly, a frame's time apart;\n"
+        "      --haptics-volume says how strong a DualSense's haptics are (100 unless said otherwise)\n"
+        "  {0} decode FOLDER [--lose FRAMES]\n"
+        "      decode the picture and the sound that 'session --dump FOLDER' kept, and say what came out;\n"
+        "      --lose 100,250-255 leaves those frames out, as if they had not arrived, and compares the\n"
+        "      pictures behind them with the whole stream's\n"
         "  {0} consoles [--json]\n"
         "      list the registered consoles\n"
         "  {0} forget CONSOLE\n"

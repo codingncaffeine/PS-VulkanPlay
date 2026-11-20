@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "check.h"
+#include "proto/controller_feedback.h"
 #include "proto/hex.h"
 #include "proto/key_exchange.h"
 #include "proto/launch_spec.h"
@@ -1194,4 +1195,29 @@ PSVP_TEST(stream_messages_of_the_setup_read_back) {
     CHECK((parse_audio_header(encode_audio_header(AudioHeader{1, 16, 48000, 480, 1})) == AudioHeader{1, 16, 48000, 480, 1}));
     CHECK(!parse_audio_header(std::vector<std::uint8_t>(13, 0)));
     CHECK(!parse_audio_header(std::vector<std::uint8_t>(15, 0)));
+}
+
+// What a console sends for the controller arrives as data of its own kinds, in the order sent.
+PSVP_TEST(stream_hands_on_what_the_console_sends_for_the_controller) {
+    ConsoleStream::Options options = StreamLink::options(ConsoleKind::ps5);
+    options.feedback_at = 300ms;
+    StreamRequest request = StreamLink::request(ConsoleKind::ps5, kMtuCeiling);
+    request.dualsense = true;
+    StreamLink link(std::move(request), std::move(options));
+    link.start();
+    link.run_until_settled();
+    link.run(200ms);
+    (void)link.client.take_console_data();  // the controller information and the answer of the set-up
+    link.run(200ms);
+    std::vector<ConsoleData> data = link.client.take_console_data();
+    CHECK(data.size() == 3);
+    if (data.size() != 3) return;
+    CHECK(!data[0].message && data[0].kind == data_type::kRumble && parse_rumble(data[0].bytes) == kMockRumble);
+    CHECK(!data[1].message && data[1].kind == data_type::kTriggerEffects && parse_trigger_effects(data[1].bytes) == kMockTriggerEffects);
+    CHECK(!data[2].message && data[2].kind == data_type::kPadInfo && parse_controller_info(data[2].bytes) == kMockControllerInfo);
+    // 400 ms later the rumble is told to stop.
+    link.run(500ms);
+    data = link.client.take_console_data();
+    CHECK(data.size() == 1 && data[0].kind == data_type::kRumble && parse_rumble(data[0].bytes) == Rumble{});
+    CHECK(link.client.counters().other_data.at(data_type::kRumble) == 2 && link.client.counters().other_data.at(data_type::kTriggerEffects) == 1);
 }

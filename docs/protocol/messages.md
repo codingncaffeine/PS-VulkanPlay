@@ -67,8 +67,11 @@ See [video.md](video.md).
 
 **Stream information**: 1 a picture size, once per size: a message of 1 width, 2 height, 3 the decoder's
 header (bytes; all three required); 2 the sound format (bytes, required); 3 start timeout, 4 idle timeout, 5
-idle timeout before disconnecting, 6 congestion control interval (numbers). A further field 7 (sound channels)
-is not read.
+idle timeout before disconnecting, 6 congestion control interval (numbers); 7 a sound channel, once per
+channel: a message of 1 its type (a number), 2 its format in the form of the sound format (bytes), 3 whether
+its frames are samples as they are (a number, 0 or 1; optional). **[read]** The reference does not read
+field 7. This client keeps the list and prints it; what types a console lists, and for what, has not been
+seen yet.
 
 **The console's view of the connection** (console): 1 the picture's target bitrate in bits per second, 2 an
 upstream bitrate (numbers); 3 an upstream loss (four bytes, a floating-point number); 4 upstream sound off

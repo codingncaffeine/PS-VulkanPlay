@@ -124,8 +124,9 @@ Keyboard (`0x0d`, `0x20` to `0x25`), controller features (`0x13`, `0x11`), home 
 `0x16`) and microphone connection (`0x30`) messages exist and are described where they are implemented.
 
 **[read]** Once it has the session ID a client sends "microphone muted" twice and then the display devices
-message. A client with a DualSense first sends `0x13` with `00 40 00` and a sixteen-byte `0x11`; this client
-does not send those two yet (they belong to the controller's features).
+message. A client with a DualSense first sends `0x13` with `00 40 00` and a sixteen-byte `0x11`
+(`a0 ab 51 bd d1 7e 00 00 ff ff ff ff ff 00 00 00`; what the bytes mean is not known). This client sends the
+two, with the reference's bytes, when it announces a DualSense ([input.md](input.md#what-the-console-sends-for-the-controller)).
 
 *Chosen difference.* This client's control connection sends each message at once (`TCP_NODELAY`). Left to the
 system, a small message waits until the one before it has been acknowledged, which can hold a control message

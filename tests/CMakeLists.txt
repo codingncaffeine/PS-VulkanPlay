@@ -3,10 +3,13 @@ add_executable(psvp_tests
     unit/test_args.cpp
     unit/test_base64.cpp
     unit/test_color.cpp
+    unit/test_controller_feedback.cpp
     unit/test_decoder.cpp
     unit/test_discovery.cpp
     unit/test_erasure.cpp
+    unit/test_frame_pacer.cpp
     unit/test_frame_refs.cpp
+    unit/test_haptics.cpp
     unit/test_hex.cpp
     unit/test_import.cpp
     unit/test_input.cpp

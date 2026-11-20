@@ -103,8 +103,18 @@ struct StreamResolution {
 
 // What a stream will carry. The console sends it once the keys exist; the
 // client sends one too, with only the sound format of its microphone.
+// One of the sound channels a console lists in its stream information: a type, the format in
+// the form of the sound header, and whether its frames are samples as they are (not coded).
+struct SoundChannel {
+    std::uint32_t type = 0;
+    std::vector<std::uint8_t> header;
+    std::optional<bool> raw;
+    friend bool operator==(const SoundChannel&, const SoundChannel&) = default;
+};
+
 struct StreamInfo {
     static constexpr std::size_t kMaxResolutions = 8;  // further ones are not kept
+    static constexpr std::size_t kMaxSoundChannels = 8;
 
     std::vector<StreamResolution> resolutions;
     std::vector<std::uint8_t> audio_header;  // an AudioHeader in its fourteen-byte form
@@ -112,6 +122,7 @@ struct StreamInfo {
     std::optional<std::uint32_t> afk_timeout;
     std::optional<std::uint32_t> afk_timeout_disconnect;
     std::optional<std::uint32_t> congestion_control_interval;
+    std::vector<SoundChannel> sound_channels;  // what the console says it sends besides, or as, the sound
     friend bool operator==(const StreamInfo&, const StreamInfo&) = default;
 };
 

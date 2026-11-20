@@ -25,6 +25,9 @@ struct SessionPlan {
     bool rest = false;                    // send the console to rest mode at the end
     proto::transport::VideoProfile video;
     bool invented_id = false;             // name the stream with an invented session ID, not the console's
+    // The controller is a DualSense: a PS5 is told so, and then sends what only that controller
+    // can do (its haptics as a second sound, effects for its triggers).
+    bool dualsense = false;
     std::chrono::milliseconds hold{3000}; // how long the stream is held, unless `stop` ends it sooner
 
     // What the controller does at set times: for the commands' own button presses.
@@ -59,6 +62,16 @@ struct SessionPlan {
 // What 'play' needs besides the plan.
 struct PlayOptions {
     std::optional<std::uint64_t> frames;  // close the window after this many frames (for automated checks)
+    // What the console is told the controller is: a DualSense when one is connected as the
+    // session starts, unless the command line says which.
+    enum class Controller { by_what_is_connected, dualsense, dualshock4 };
+    Controller controller = Controller::by_what_is_connected;
+    // Show pictures evenly, a frame's time apart, by holding one back for as long as frames were
+    // lately seen to arrive unevenly (media/frame_pacer.h). Off: every picture the moment it is there.
+    bool pacing = true;
+    // How strong a DualSense's haptics are: the volume of the two channels of its sound device
+    // that move its actuators, in percent.
+    int haptics_volume = 100;
 };
 // The part of 'play' that has a window: the program that has one sets it before it runs a command.
 using PlayRunner = int (*)(SessionPlan plan, const PlayOptions& options);

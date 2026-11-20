@@ -124,4 +124,69 @@ event's, and each following event's is one less.
   (information for the controller, seventeen bytes) three times in the stream's first second. Triggers, the
   touchpad, sticks and motion have not been seen to arrive on a real console yet.
 
-`src/proto/input.h`
+## What the console sends for the controller
+
+On a stream that is set up the console sends data chunks of three kinds of their own
+([transport.md](transport.md#messages-that-must-arrive)), on channel 0. **[read]** for all three; the mock
+console sends them and the client reads them (`tests/scenario/phase3b.sh`).
+
+**Rumble** (kind 7), three bytes or more:
+
+| Offset | Size | Content |
+|---|---|---|
+| 0 | 1 | not known |
+| 1 | 1 | the left motor, 0 (still) to 255 |
+| 2 | 1 | the right motor |
+
+**Trigger effects** (kind 11), 25 bytes or more: what the two adaptive triggers of a DualSense do, each as
+the controller itself takes it, a type and ten bytes of parameters.
+
+| Offset | Size | Content |
+|---|---|---|
+| 1 | 1 | the left trigger's type of effect |
+| 2 | 1 | the right trigger's |
+| 5 | 10 | the left trigger's parameters |
+| 15 | 10 | the right trigger's |
+
+**Controller information** (kind 9), 17 bytes, or 25 with eight more in front:
+
+| Offset (17) | Offset (25) | Size | Content |
+|---|---|---|---|
+| | 0 | 2 | the number of the input state this answers, big-endian |
+| | 4 | 4 | a time |
+| 0 | 8 | 1 | the player whose lights the controller shows |
+| 1 | 9 | 3 | the light bar's color: red, green, blue |
+| 4 | 12 | 1 | not 0: take the controller's position now as the one it rests in |
+| 12 | 20 | 1 | how strong the haptics are to be: 0 off, 1 strong, 2 medium, 3 weak |
+| 13 | 21 | 1 | the same for the trigger effects |
+
+**[seen]** A PS5 that was told of a DualShock 4 sent the 17-byte form three times in a stream's first second:
+`00 00 00 00 01 00 00 01 00 00 00 01 01 01 00 00 00` (no player, a dark light bar, "take this position",
+both strengths 1).
+
+**[read]** What the console is told the controller is: the controller connection message
+([stream-setup.md](stream-setup.md)) carries type 2 for a DualShock 4 or 6 for a DualSense, and a client with
+a DualSense also sends two messages on the control channel first ([session.md](session.md)). The reference
+plays a DualSense's haptics from a second sound stream ([video.md](video.md)) and sets its triggers from the
+trigger effects; **[seen]** a PS5 that is told of a DualShock 4 sends no haptics. Whether a PS5 still sends
+rumble to a client that announced a DualSense has not been seen.
+
+**[read]** A haptics frame is 120 bytes: 10 ms for the controller's two actuators, 30 samples each, 16 bits
+little-endian, left first, at 3000 samples a second. The reference plays them, brought to 48000 a second, on
+the last two of the four channels of the sound device a DualSense is on USB (the first two are its speaker),
+and turns them into rumble where there is no such device.
+
+This client announces a DualSense when one is connected as the session starts (`play --controller` says
+otherwise), and passes on what the console then sends:
+
+- rumble and the light bar's color to the controller as they come; a rumble that the console does not take
+  back ends by itself after five seconds;
+- trigger effects to a DualSense, in the controller's own effect report (bytes 10 to 20 the right trigger's
+  type and parameters, 21 to 31 the left one's, the first byte 0x0c: both triggers change), and the triggers
+  are set free again when the session ends;
+- haptics to the DualSense's own sound device when there is one, a line drawn between every two samples; and
+  otherwise as rumble, set every 30 ms to the largest swing of that time.
+
+The player's lights, the two strengths and the "take this position" request are read and not acted on yet.
+
+`src/proto/controller_feedback.h`, `src/proto/input.h`

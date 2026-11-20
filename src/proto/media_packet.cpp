@@ -34,7 +34,10 @@ std::optional<StreamMediaPacket> parse_stream_media(ConsoleKind kind, std::span<
         packet.unit_size = static_cast<std::uint8_t>((units >> 8) & 0xffU);
         packet.repeated_frames = static_cast<std::uint8_t>((units >> 4) & 0x0fU);
         packet.source_frames = static_cast<std::uint8_t>(units & 0x0fU);
-        if (ps5) packet.haptics = datagram[packet.header_size - 1] == 0x02;
+        if (ps5) {
+            packet.sound_stream = datagram[packet.header_size - 1];
+            packet.haptics = packet.sound_stream == 0x02;
+        }
     }
     packet.codec = datagram[9];
     packet.key_position = get32(14);

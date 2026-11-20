@@ -237,6 +237,24 @@ std::optional<StreamResolution> parse_resolution(std::span<const std::uint8_t> b
     return ok ? std::optional(std::move(m)) : std::nullopt;
 }
 
+std::optional<SoundChannel> parse_sound_channel(std::span<const std::uint8_t> bytes) {
+    SoundChannel m;
+    const bool ok = read_fields(bytes, bits({1, 2}), [&](const Field& f) {
+        switch (f.number) {
+        case 1: return number(f, m.type);
+        case 2: if (f.kind != Kind::bytes) return false; m.header = copy_of(f.bytes); return true;
+        case 3: {
+            std::uint32_t raw = 0;
+            if (!number(f, raw)) return false;
+            m.raw = raw != 0;
+            return true;
+        }
+        default: return true;
+        }
+    });
+    return ok ? std::optional(std::move(m)) : std::nullopt;
+}
+
 std::optional<StreamInfo> parse_stream_info(std::span<const std::uint8_t> bytes) {
     StreamInfo m;
     const bool ok = read_fields(bytes, bits({2}), [&](const Field& f) {
@@ -253,6 +271,13 @@ std::optional<StreamInfo> parse_stream_info(std::span<const std::uint8_t> bytes)
         case 4: return number(f, m.afk_timeout);
         case 5: return number(f, m.afk_timeout_disconnect);
         case 6: return number(f, m.congestion_control_interval);
+        case 7: {
+            // A channel that cannot be read does not make the stream information unreadable.
+            if (f.kind != Kind::bytes) return true;
+            auto channel = parse_sound_channel(f.bytes);
+            if (channel && m.sound_channels.size() < StreamInfo::kMaxSoundChannels) m.sound_channels.push_back(std::move(*channel));
+            return true;
+        }
         default: return true;
         }
     });
@@ -405,6 +430,13 @@ struct BodyWriter {
         put_optional(w, 4, m.afk_timeout);
         put_optional(w, 5, m.afk_timeout_disconnect);
         put_optional(w, 6, m.congestion_control_interval);
+        for (const SoundChannel& channel : m.sound_channels) {
+            Writer inner;
+            inner.varint(1, channel.type);
+            inner.bytes(2, channel.header);
+            if (channel.raw) inner.varint(3, *channel.raw ? 1U : 0U);
+            w.message(7, inner);
+        }
         out.message(kFieldStreamInfo, w);
     }
     void operator()(const ConnectionQuality& m) const {

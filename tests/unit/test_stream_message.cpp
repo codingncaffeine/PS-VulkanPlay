@@ -156,3 +156,27 @@ PSVP_TEST(message_with_a_probe_command_but_no_body_has_none) {
     CHECK(read.has_value());
     if (read) CHECK(read->type == message_type::kProbe && std::holds_alternative<std::monostate>(read->body));
 }
+
+// The stream information's list of sound channels: what a console says it sends as sound, each
+// with a type, a format in the form of the sound header, and whether its frames are samples as
+// they are.
+PSVP_TEST(stream_information_lists_sound_channels) {
+    StreamInfo info;
+    info.audio_header = {0x02, 0x10, 0x00, 0x00, 0xbb, 0x80, 0x00, 0x00, 0x01, 0xe0, 0x00, 0x00, 0x00, 0x01};
+    info.sound_channels.push_back(SoundChannel{1, info.audio_header, false});
+    info.sound_channels.push_back(SoundChannel{2, {0x02, 0x10, 0x00, 0x00, 0x0b, 0xb8, 0x00, 0x00, 0x00, 0x1e, 0x00, 0x00, 0x00, 0x01}, true});
+    info.sound_channels.push_back(SoundChannel{7, {0x01}, std::nullopt});
+    const auto bytes = encode_message(make_message(info));
+    const auto parsed = parse_message(bytes);
+    CHECK(parsed.has_value());
+    const StreamInfo* read = parsed ? parsed->as<StreamInfo>() : nullptr;
+    CHECK(read != nullptr);
+    if (read == nullptr) return;
+    CHECK(read->sound_channels.size() == 3);
+    CHECK(*read == info);
+    // Without the list the message is what it was.
+    StreamInfo plain;
+    plain.audio_header = info.audio_header;
+    const auto plain_parsed = parse_message(encode_message(make_message(plain)));
+    CHECK(plain_parsed && plain_parsed->as<StreamInfo>() != nullptr && plain_parsed->as<StreamInfo>()->sound_channels.empty());
+}

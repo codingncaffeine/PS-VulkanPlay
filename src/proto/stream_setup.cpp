@@ -6,6 +6,7 @@
 #include <string_view>
 #include <utility>
 
+#include "proto/controller_feedback.h"
 #include "proto/hex.h"
 #include "proto/launch_spec.h"
 
@@ -171,6 +172,12 @@ void ClientStream::on_media(std::span<const std::uint8_t> datagram, TimePoint no
         video_.on_packet(*packet, scratch_, now, frames);
         note_lost(frames);
         for (auto& frame : frames.frames) media_.video.push_back(std::move(frame));
+        return;
+    }
+    ++counters_.sound_streams[(std::uint32_t{packet->sound_stream} << 8) | packet->codec];
+    if (packet->sound_stream != 0 && !packet->haptics) {
+        // A stream this client does not know: its frames are not the sound's, and are kept out of it.
+        ++counters_.other_sound_packets;
         return;
     }
     SoundReceiver& receiver = packet->haptics ? haptics_ : sound_;
@@ -516,6 +523,7 @@ void ConsoleStream::on_message(Datagrams& out, const DataChunk& chunk, TimePoint
         send(out, make_plain_message(message_type::kStreamInfoAck), kOwnChannel, now);
         if (options_.heartbeat_every.count() > 0) next_heartbeat_ = now + options_.heartbeat_every;
         if (options_.quality_every.count() > 0) next_quality_ = now + options_.quality_every;
+        if (options_.feedback_at.count() > 0) next_feedback_ = now + options_.feedback_at;
     }
     if (const auto* goodbye = message->as<DisconnectMessage>()) {
         disconnected_ = true;
@@ -523,6 +531,7 @@ void ConsoleStream::on_message(Datagrams& out, const DataChunk& chunk, TimePoint
         next_frame_.reset();
     next_heartbeat_.reset();
     next_quality_.reset();
+    next_feedback_.reset();
         events_.push_back(std::format("goodbye: {}", goodbye->reason));
     }
 }
@@ -639,6 +648,20 @@ Datagrams ConsoleStream::on_timer(TimePoint now) {
         send(out, make_message(quality), kOwnChannel, now);
         *next_quality_ += options_.quality_every;
     }
+    while (next_feedback_ && now >= *next_feedback_) {
+        const auto data = [&](std::uint8_t kind, const std::vector<std::uint8_t>& content) {
+            if (auto sent = messenger_.send(chunk_flag::kLast, kOwnChannel, content, now, kind)) out.push_back(std::move(sent->datagram));
+        };
+        if (feedback_step_++ == 0) {
+            data(data_type::kRumble, encode_rumble(kMockRumble));
+            data(data_type::kTriggerEffects, encode_trigger_effects(kMockTriggerEffects));
+            data(data_type::kPadInfo, encode_controller_info(kMockControllerInfo));
+            *next_feedback_ += std::chrono::milliseconds(400);
+        } else {
+            data(data_type::kRumble, encode_rumble(Rumble{}));
+            next_feedback_.reset();
+        }
+    }
     while (next_frame_ && media_ && now >= *next_frame_) {
         send_frame(out);
         *next_frame_ += options_.frame_every;
@@ -698,6 +721,12 @@ void ConsoleStream::send_sound(Datagrams& out) {
             if (recent_sound_.size() > options_.sound_repeats) recent_sound_.pop_front();
             return media_->sound_packet(index, fresh, repeated, haptics);
         }
+        if (options_.haptics_source && haptics) {
+            const std::vector<std::vector<std::uint8_t>> fresh{options_.haptics_source(index)};
+            std::vector<std::vector<std::uint8_t>> repeated;
+            for (unsigned back = options_.sound_repeats; back >= 1; --back) repeated.push_back(options_.haptics_source(static_cast<std::uint16_t>(index - back)));
+            return media_->sound_packet(index, fresh, repeated, haptics);
+        }
         const std::vector<std::vector<std::uint8_t>> fresh{pattern_sound_frame(options_.seed, index, options_.sound_bytes, haptics)};
         std::vector<std::vector<std::uint8_t>> repeated;
         for (unsigned back = options_.sound_repeats; back >= 1; --back) {
@@ -725,6 +754,7 @@ std::optional<TimePoint> ConsoleStream::deadline() const {
     if (next_frame_ && (!when || *next_frame_ < *when)) when = next_frame_;
     if (next_heartbeat_ && (!when || *next_heartbeat_ < *when)) when = next_heartbeat_;
     if (next_quality_ && (!when || *next_quality_ < *when)) when = next_quality_;
+    if (next_feedback_ && (!when || *next_feedback_ < *when)) when = next_feedback_;
     return when;
 }
 

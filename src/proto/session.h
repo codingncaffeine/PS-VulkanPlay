@@ -93,6 +93,8 @@ inline constexpr std::uint16_t kLoginResult = 0x05;
 inline constexpr std::uint16_t kGoToRest = 0x50;
 inline constexpr std::uint16_t kSwitchToStream = 0x34;
 inline constexpr std::uint16_t kMicrophoneMute = 0x36;
+inline constexpr std::uint16_t kDualSenseFeatures = 0x13;    // a client with a DualSense asks for what it can do
+inline constexpr std::uint16_t kControllerConnected = 0x11;  // and names the controller, right behind it
 inline constexpr std::uint16_t kDisplayDevices = 0x910;
 }  // namespace ctrl_type
 

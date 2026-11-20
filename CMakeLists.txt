@@ -37,6 +37,7 @@ find_package(OpenSSL 3.0 REQUIRED COMPONENTS Crypto)
 # The protocol: no sockets, no threads, no clock of its own.
 add_library(psvp_proto STATIC
     src/proto/base64.cpp
+    src/proto/controller_feedback.cpp
     src/proto/discovery.cpp
     src/proto/erasure.cpp
     src/proto/frame_assembler.cpp
@@ -73,7 +74,9 @@ pkg_check_modules(PSVP_FFMPEG REQUIRED IMPORTED_TARGET libavcodec libavutil)
 pkg_check_modules(PSVP_OPUS REQUIRED IMPORTED_TARGET opus)
 add_library(psvp_media STATIC
     src/media/color.cpp
+    src/media/frame_pacer.cpp
     src/media/frame_refs.cpp
+    src/media/haptics.cpp
     src/media/sound_decoder.cpp
     src/media/sound_buffer.cpp
     src/media/test_clip.cpp
@@ -128,9 +131,17 @@ if(PSVP_BUILD_APP)
     psvp_setup_target(psvp_render)
 
     add_executable(ps-vulkanplay
+        src/app/haptics_volume.cpp
         src/app/main.cpp
         src/app/player.cpp)
     target_link_libraries(ps-vulkanplay PRIVATE psvp_core psvp_proto psvp_render SDL3::SDL3)
+    # Asking the desktop's sound service for a controller's haptics volume: where its client
+    # library is there. Without it the program is the same, less that one step.
+    pkg_check_modules(PSVP_PULSE IMPORTED_TARGET libpulse)
+    if(PSVP_PULSE_FOUND)
+        target_compile_definitions(ps-vulkanplay PRIVATE PSVP_HAVE_PULSE)
+        target_link_libraries(ps-vulkanplay PRIVATE PkgConfig::PSVP_PULSE)
+    endif()
     psvp_setup_target(ps-vulkanplay)
 
     include(GNUInstallDirs)
