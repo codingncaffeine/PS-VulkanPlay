@@ -1281,7 +1281,7 @@ PlayRunner play_runner = nullptr;
 
 // The stream in a window, with its sound and a controller: what the program is for.
 int command_play(std::span<const std::string_view> args) {
-    const Parsed parsed = parse(args, {"--host", "--seconds", "--passcode", "--resolution", "--fps", "--bitrate", "--codec", "--tap", "--frames", "--controller", "--pacing", "--haptics-volume"},
+    const Parsed parsed = parse(args, {"--host", "--seconds", "--passcode", "--resolution", "--fps", "--bitrate", "--codec", "--tap", "--frames", "--controller", "--pacing", "--haptics-volume", "--back-left", "--back-right"},
                                 {"--rest"}, 1);
     if (!parsed.error.empty()) return usage("play: {}", parsed.error);
     SessionPlan plan;
@@ -1312,6 +1312,12 @@ int command_play(std::span<const std::string_view> args) {
         const auto percent = parse_number(*text, 0, 100);
         if (!percent && *text != "0") return usage("play: --haptics-volume takes a number from 0 to 100");
         options.haptics_volume = percent ? static_cast<int>(*percent) : 0;
+    }
+    for (const auto& [name, target] : {std::pair{"--back-left", &options.back_left}, std::pair{"--back-right", &options.back_right}}) {
+        const auto text = parsed.option(name);
+        if (!text) continue;
+        *target = proto::transport::button_named(*text);
+        if (!*target) return usage("play: {} takes a button's name, as --tap does (cross, circle, l1, r3, options ...)", name);
     }
     if (const auto text = parsed.option("--pacing")) {
         if (*text != "on" && *text != "off") return usage("play: --pacing is on or off");
@@ -1576,13 +1582,15 @@ std::string commands_help() {
         "      console to rest mode\n"
         "  {0} play CONSOLE [--host ADDRESS] [--passcode DIGITS] [--resolution 360|540|720|1080] [--fps 30|60]\n"
         "          [--bitrate KBPS] [--codec h264|hevc|hdr] [--controller auto|dualsense|dualshock4]\n"
-        "          [--pacing on|off] [--haptics-volume 0-100] [--rest]\n"
+        "          [--pacing on|off] [--haptics-volume 0-100] [--back-left BUTTON] [--back-right BUTTON] [--rest]\n"
         "      play: the console's picture in a window, its sound, and a controller that is plugged in\n"
         "      or paired; closing the window ends the session (--rest then sends the console to rest mode).\n"
         "      --controller says what the console is told the controller is (auto: a DualSense when one\n"
         "      is connected at the start, which gets its haptics and trigger effects); --pacing off shows\n"
         "      every picture the moment it is there instead of evenly, a frame's time apart;\n"
-        "      --haptics-volume says how strong a DualSense's haptics are (100 unless said otherwise)\n"
+        "      --haptics-volume says how strong a DualSense's haptics are (100 unless said otherwise);\n"
+        "      --back-left and --back-right say which of the console's buttons a DualSense Edge's back\n"
+        "      buttons are (cross, l3, options ...; nothing unless said)\n"
         "  {0} decode FOLDER [--lose FRAMES]\n"
         "      decode the picture and the sound that 'session --dump FOLDER' kept, and say what came out;\n"
         "      --lose 100,250-255 leaves those frames out, as if they had not arrived, and compares the\n"

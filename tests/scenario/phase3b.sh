@@ -106,7 +106,7 @@ check "and of no DualSense features" lacks "$log" "control message type 0x13"
 
 echo "what the console sends for the controller is read; a DualSense is announced when asked for"
 start_mock feedback --kind ps5 --clip 416x240 --frame-ms 16 --media-ms 10 --feedback-ms 800 --haptics-every 1
-"$app" play "Living Room" --seconds 3 --controller dualsense > "$work/feedback.out" 2> "$work/feedback.err"; rc=$?
+"$app" play "Living Room" --seconds 3 --controller dualsense --back-left cross --back-right r3 > "$work/feedback.out" 2> "$work/feedback.err"; rc=$?
 sleep 0.3; stop_mock
 out="$work/feedback.out"; log="$work/feedback.log"
 [ $rc -eq 0 ] && ok "play --controller dualsense: exit 0" || fail "play --controller dualsense: exit $rc: $(tail -3 "$out")"
@@ -123,9 +123,11 @@ grep -aqE "^For the controller the console sent: rumble 2 times \(0 reached the 
 haptics=$(number "$out" 'and ([0-9]+) frames of haptics')
 between "$haptics" 250 320 && ok "$haptics frames of haptics in three seconds, each of the size a console's are" || fail "haptics frames: '$haptics'"
 check "with no sound device of a DualSense the haptics are to become rumble" has "$work/feedback.err" "haptics become rumble"
+check "the back buttons are what was asked for" has "$out" "Back buttons: the left one is cross, the right one is r3; they were pressed 0 times."
 check "the controller information says player 2, and strengths 1 and 2" has "$out" "(player 2, haptics strength 1, trigger strength 2, 1 asked to take the controller's position as its rest)"
 check "no error was logged" lacks "$work/feedback.err" " ERROR "
 check "what does not go with the option is refused" sh -c "! '$app' play 'Living Room' --controller wheel > /dev/null 2>&1"
+check "a back button takes a button's name and nothing else" sh -c "! '$app' play 'Living Room' --back-left lever > /dev/null 2>&1"
 
 echo "a session that does not start opens no window"
 start_mock in-use --kind ps5 --in-use yes

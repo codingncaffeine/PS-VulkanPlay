@@ -72,6 +72,9 @@ struct PlayOptions {
     // How strong a DualSense's haptics are: the volume of the two channels of its sound device
     // that move its actuators, in percent.
     int haptics_volume = 100;
+    // What the two back buttons of a controller that has them (a DualSense Edge) are to the
+    // console: one of its buttons each, or nothing.
+    std::optional<proto::transport::Button> back_left, back_right;
 };
 // The part of 'play' that has a window: the program that has one sets it before it runs a command.
 using PlayRunner = int (*)(SessionPlan plan, const PlayOptions& options);

@@ -81,7 +81,9 @@ struct Spacing {
 class Player {
 public:
     // `frames_per_second` is what the console was asked for; with `pacing`, pictures are shown that evenly.
-    Player(double frames_per_second, bool pacing, int haptics_volume) : haptics_volume_(haptics_volume), decode_thread_([this] { decode_loop(); }) {
+    Player(double frames_per_second, bool pacing, int haptics_volume, std::optional<transport::Button> back_left,
+           std::optional<transport::Button> back_right)
+        : haptics_volume_(haptics_volume), back_left_(back_left), back_right_(back_right), decode_thread_([this] { decode_loop(); }) {
         const std::lock_guard lock(jobs_mutex_);
         if (pacing) pacer_.emplace(frames_per_second);
     }
@@ -327,6 +329,13 @@ private:
     void play_haptics(const transport::SoundFrame& frame);
     void open_haptics_device();
     int haptics_volume_ = 100;  // percent, for the controller's actuator channels
+    // What a controller's two back buttons are to the console; set before the window runs.
+    std::optional<transport::Button> back_left_, back_right_;
+    std::uint64_t back_presses_ = 0;
+    // The controller's battery, as it was last heard of; on the window's thread.
+    std::string battery_text_;
+    bool battery_warned_ = false;
+    void note_battery();
     bool haptics_looked_ = false;
     SDL_AudioStream* haptics_audio_ = nullptr;
     std::string haptics_device_;
@@ -522,6 +531,23 @@ void Player::fill_sound(SDL_AudioStream* stream, int additional) {
     }
 }
 
+// On the window's thread, with the controller open: how full its battery is and whether it charges.
+void Player::note_battery() {
+    int percent = -1;
+    const SDL_PowerState state = SDL_GetGamepadPowerInfo(pad_, &percent);
+    const char* how = state == SDL_POWERSTATE_CHARGING ? "charging" : state == SDL_POWERSTATE_CHARGED ? "full, on the cable"
+                      : state == SDL_POWERSTATE_ON_BATTERY ? "on the battery" : state == SDL_POWERSTATE_NO_BATTERY ? "on the cable, no battery" : "";
+    if (percent < 0 && *how == '\0') {
+        battery_text_.clear();
+        return;
+    }
+    battery_text_ = percent >= 0 ? std::format("{}%{}{}", percent, *how != '\0' ? ", " : "", how) : std::string(how);
+    // Once per session: a controller that runs out in the middle of a game.
+    if (state == SDL_POWERSTATE_ON_BATTERY && percent >= 0 && percent <= 15 && !std::exchange(battery_warned_, true)) {
+        log::warn("play: the controller's battery is at {}%", percent);
+    }
+}
+
 void Player::open_haptics_device() {
     int count = 0;
     SDL_AudioDeviceID* devices = SDL_GetAudioPlaybackDevices(&count);
@@ -613,6 +639,8 @@ void Player::on_event(const SDL_Event& event) {
                 const bool accel = SDL_SetGamepadSensorEnabled(pad_, SDL_SENSOR_ACCEL, true);
                 log::info("play: controller: {}{}{}", pad_name_, SDL_GetNumGamepadTouchpads(pad_) > 0 ? ", with a touchpad" : "",
                           gyro && accel ? ", with motion sensors" : "");
+                note_battery();
+                if (!battery_text_.empty()) log::info("play: the controller's battery: {}", battery_text_);
             }
         }
         break;
@@ -631,6 +659,9 @@ void Player::on_event(const SDL_Event& event) {
             state_ = transport::InputState{};
             input_changed_ = true;
         }
+        break;
+    case SDL_EVENT_JOYSTICK_BATTERY_UPDATED:
+        if (pad_ != nullptr && event.jbattery.which == pad_id_) note_battery();
         break;
     case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
     case SDL_EVENT_GAMEPAD_BUTTON_UP: {
@@ -653,6 +684,15 @@ void Player::on_event(const SDL_Event& event) {
         case SDL_GAMEPAD_BUTTON_BACK: button = Button::share; break;
         case SDL_GAMEPAD_BUTTON_GUIDE: button = Button::ps; break;
         case SDL_GAMEPAD_BUTTON_TOUCHPAD: button = Button::touchpad; break;
+        // A DualSense Edge's back buttons: what the user said they are.
+        case SDL_GAMEPAD_BUTTON_LEFT_PADDLE1:
+            button = back_left_;
+            if (event.gbutton.down) ++back_presses_;
+            break;
+        case SDL_GAMEPAD_BUTTON_RIGHT_PADDLE1:
+            button = back_right_;
+            if (event.gbutton.down) ++back_presses_;
+            break;
         default: break;
         }
         if (button) set_button(*button, event.gbutton.down);
@@ -786,7 +826,12 @@ std::vector<std::string> Player::report() {
                                     static_cast<double>(line.depth_sum) / static_cast<double>(std::max<std::uint64_t>(line.periods, 1)), aim));
     }
     lines.push_back(pad_name_.empty() ? std::string("Controller: none was connected (the keyboard's arrow keys, Enter and Backspace stood in).")
-                                      : std::format("Controller: {}.", pad_name_));
+                                      : std::format("Controller: {}{}{}.", pad_name_, battery_text_.empty() ? "" : "; battery: ", battery_text_));
+    if (back_left_ || back_right_ || back_presses_ != 0) {
+        lines.push_back(std::format("Back buttons: the left one is {}, the right one is {}; they were pressed {} times.",
+                                    back_left_ ? transport::button_name(*back_left_) : std::string_view("nothing"),
+                                    back_right_ ? transport::button_name(*back_right_) : std::string_view("nothing"), back_presses_));
+    }
     {
         const std::lock_guard lock(pad_mutex_);
         const Feedback& f = feedback_;
@@ -830,7 +875,7 @@ int run_player(SessionPlan plan, const PlayOptions& options) {
     int window_code = 0;
     int session_code = 0;
     {
-        Player player(static_cast<double>(plan.video.max_fps), options.pacing, options.haptics_volume);
+        Player player(static_cast<double>(plan.video.max_fps), options.pacing, options.haptics_volume, options.back_left, options.back_right);
         std::atomic<bool> stop{false};
         std::atomic<bool> done{false};
         plan.on_media = [&](transport::MediaOutput& media, const std::optional<proto::StreamInfo>& info) { player.on_media(media, info); };
