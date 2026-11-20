@@ -19,6 +19,7 @@
 #include "media/sound_decoder.h"
 #include "media/video_decoder.h"
 #include "psvp/version.h"
+#include "app/window_place.h"
 #include "render/vk_window.h"
 
 namespace psvp::app {
@@ -450,3 +451,9 @@ int run_player(SessionPlan plan, const PlayOptions& options) {
 }
 
 }  // namespace psvp::app
+            if (const auto file = window_place_file()) {
+                window.place = load_window_place(*file);
+                window.on_place = [file = *file](const WindowPlace& place) {
+                    if (!save_window_place(file, place)) log::warn("window: its size could not be kept in {}", file.string());
+                };
+            }

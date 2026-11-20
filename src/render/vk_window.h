@@ -8,6 +8,7 @@
 #include <functional>
 #include <optional>
 
+#include "app/window_place.h"
 #include "media/video_decoder.h"
 
 union SDL_Event;
@@ -29,6 +30,10 @@ struct WindowOptions {
     std::function<void(const SDL_Event&)> on_event;
     // Asked as often: true closes the window.
     std::function<bool()> finished;
+    // The size the window opens at, and whether maximized or on the whole screen.
+    app::WindowPlace place;
+    // Told once, when the window closes: how it was left, to open the next one the same way.
+    std::function<void(const app::WindowPlace&)> on_place;
     // With a picture source the window draws when there is a new picture or the window
     // changed, and otherwise waits this long at most before it asks again.
     std::chrono::milliseconds ask_every{100};

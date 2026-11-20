@@ -106,6 +106,8 @@ private:
     // Returns false on a failed call; `presented` says whether a frame reached the swapchain.
     // `fresh` is a picture to show from this frame on.
     bool draw_frame(bool& presented, const media::Picture* fresh);
+    void note_size();
+    app::WindowPlace place_;
 
     SDL_Window* window_ = nullptr;
     bool sdl_started_ = false;
@@ -633,8 +635,12 @@ int Window::open(const WindowOptions& options) {
     log::info("window: SDL {}.{}.{}, video driver {}", SDL_VERSIONNUM_MAJOR(sdl), SDL_VERSIONNUM_MINOR(sdl),
               SDL_VERSIONNUM_MICRO(sdl), SDL_GetCurrentVideoDriver());
 
-    window_ = SDL_CreateWindow(PSVP_NAME, 1280, 720,
-                               SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
+    // As it was left the last time: its size, and maximized or on the whole screen.
+    place_ = options.place;
+    SDL_WindowFlags flags = SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
+    if (place_.maximized) flags |= SDL_WINDOW_MAXIMIZED;
+    if (place_.fullscreen) flags |= SDL_WINDOW_FULLSCREEN;
+    window_ = SDL_CreateWindow(PSVP_NAME, place_.width, place_.height, flags);
     if (window_ == nullptr) {
         return fail(kExitNoWindowSystem, PSVP_NAME " cannot start",
                     std::format("The window could not be opened. Vulkan may not be installed on this system.\n\n{}",
@@ -681,6 +687,7 @@ int Window::run(const WindowOptions& options) {
             if (event.type == SDL_EVENT_QUIT || event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) running = false;
             if (event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) swapchain_stale_ = true;
             if (event.type == SDL_EVENT_WINDOW_EXPOSED || event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) stale = true;
+            if (event.type == SDL_EVENT_WINDOW_RESIZED) note_size();
             // F11, as everywhere: the whole screen, and back.
             if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_F11 && !event.key.repeat) {
                 SDL_SetWindowFullscreen(window_, (SDL_GetWindowFlags(window_) & SDL_WINDOW_FULLSCREEN) == 0);
@@ -718,7 +725,24 @@ int Window::run(const WindowOptions& options) {
         if (options.frame_limit && frames >= *options.frame_limit) running = false;
     }
     log::info("render: stopped after {} frames, {} pictures", frames, pictures);
+    const SDL_WindowFlags flags = SDL_GetWindowFlags(window_);
+    place_.maximized = (flags & SDL_WINDOW_MAXIMIZED) != 0;
+    place_.fullscreen = (flags & SDL_WINDOW_FULLSCREEN) != 0;
+    if (options.on_place) options.on_place(place_);
     return 0;
+}
+
+// The size to come back to: the window's own, not the screen's while it is maximized or fills it.
+void Window::note_size() {
+    if ((SDL_GetWindowFlags(window_) & (SDL_WINDOW_MAXIMIZED | SDL_WINDOW_FULLSCREEN | SDL_WINDOW_MINIMIZED)) != 0) return;
+    int width = 0, height = 0;
+    if (!SDL_GetWindowSize(window_, &width, &height)) return;
+    if (width < app::WindowPlace::kLeastWidth || height < app::WindowPlace::kLeastHeight || width > app::WindowPlace::kMost ||
+        height > app::WindowPlace::kMost) {
+        return;
+    }
+    place_.width = width;
+    place_.height = height;
 }
 
 }  // namespace

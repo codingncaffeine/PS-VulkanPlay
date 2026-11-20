@@ -91,7 +91,8 @@ add_library(psvp_core STATIC
     src/app/decoding.cpp
     src/app/json.cpp
     src/app/log.cpp
-    src/app/paths.cpp)
+    src/app/paths.cpp
+    src/app/window_place.cpp)
 target_include_directories(psvp_core PUBLIC src "${CMAKE_CURRENT_BINARY_DIR}/generated")
 target_link_libraries(psvp_core PUBLIC psvp_proto psvp_net psvp_media)
 psvp_setup_target(psvp_core)

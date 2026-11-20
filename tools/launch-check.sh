@@ -148,5 +148,25 @@ if grep -q ' ERROR ' "$log" 2>/dev/null; then
     fail "the application logged an error:"; grep ' ERROR ' "$log" | sed 's/^/           | /' | head -5
 fi
 
+# The window opens the way it was left. The runs above left it at the size of a first run; a
+# window left smaller comes back smaller, and says so again when it closes. (Nothing here can
+# drag a window's edge: that a resize is noted is not covered.)
+place="$XDG_STATE_HOME/ps-vulkanplay/window.json"
+if grep -q '"width": 1280' "$place" 2>/dev/null && grep -q '"height": 720' "$place" 2>/dev/null; then ok "the window's size was kept when it closed: 1280x720"
+else fail "no kept window size: $(tr -d '\n' < "$place" 2>/dev/null)"; fi
+printf '{"width": 960, "height": 540}\n' > "$place"
+: > "$log"
+"$app" --frames 5 > "$PSVP_TEST_TMP/place.out" 2>&1; rc=$?
+l=$(line 'render: first frame presented, 960x540')
+[ $rc -eq 0 ] && [ -n "$l" ] && ok "a window left at 960x540 opens at that size" || fail "left at 960x540, it opened as: $(line 'render: first frame presented, [0-9x]*') (exit $rc)"
+if grep -q '"width": 960' "$place" && grep -q '"height": 540' "$place" && grep -q '"maximized": false' "$place"; then ok "and is kept at it"
+else fail "the kept size after that run: $(tr -d '\n' < "$place")"; fi
+# What makes no sense in the file counts for nothing.
+printf '{"width": 3, "height": -1}\n' > "$place"
+: > "$log"
+"$app" --frames 5 > "$PSVP_TEST_TMP/place.out" 2>&1
+l=$(line 'render: first frame presented, 1280x720'); [ -n "$l" ] && ok "a kept size that makes no sense is not used" || fail "a senseless kept size gave: $(line 'render: first frame presented, [0-9x]*')"
+rm -f "$place"
+
 [ $failed = 0 ] && echo "LAUNCH CHECK PASSED" || echo "LAUNCH CHECK FAILED"
 exit $failed

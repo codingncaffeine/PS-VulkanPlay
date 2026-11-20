@@ -16,6 +16,7 @@
 #include "app/log.h"
 #include "app/paths.h"
 #include "app/player.h"
+#include "app/window_place.h"
 #include "media/test_clip.h"
 #include "media/video_decoder.h"
 #include "psvp/version.h"
@@ -97,6 +98,12 @@ int run(int argc, char** argv) {
     if (options->test_clip) {
         // The generated clip through the decoder, a new frame sixty times a second.
         struct Clip {
+    if (const auto file = psvp::app::window_place_file()) {
+        window.place = psvp::app::load_window_place(*file);
+        window.on_place = [file = *file](const psvp::app::WindowPlace& place) {
+            if (!psvp::app::save_window_place(file, place)) psvp::log::warn("window: its size could not be kept in {}", file.string());
+        };
+    }
             psvp::media::ClipWriter writer{416, 240};
             std::optional<psvp::media::VideoDecoder> decoder;
             std::uint32_t counter = 0;
