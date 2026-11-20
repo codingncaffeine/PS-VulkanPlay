@@ -273,12 +273,33 @@
                     <Border Classes="card" IsVisible="{Binding IsStep2}">
                         <StackPanel>
                             <TextBlock Classes="secondary small" Text="STEP 2 OF 3" />
-                            <TextBlock Classes="section" Text="Your PSN account ID" Margin="0,4,0,0" />
+                            <TextBlock Classes="section" Text="Your PSN account" Margin="0,4,0,0" />
                             <TextBlock Classes="secondary" Margin="0,6,0,16"
-                                       Text="A console registers a computer for one PSN account. Type that account's ID: a long number, or the twelve characters the same number is also written as. It is asked once and kept on this computer." />
+                                       Text="A console registers a computer for one PSN account. Sign in, and the account is taken from the sign-in: you type your password on Sony's own page, and this app keeps nothing but the account's ID." />
+                            <StackPanel Orientation="Horizontal" Spacing="12">
+                                <Button x:Name="SignInButton" Classes="primary big" Content="Sign in with PSN" Command="{Binding SignIn}" />
+                                <TextBlock Classes="secondary" Text="Waiting for the sign-in…" IsVisible="{Binding SigningIn}" VerticalAlignment="Center" />
+                            </StackPanel>
+                            <Button Classes="quiet" Content="Sign in with my own browser instead" Command="{Binding OpenInBrowser}" HorizontalAlignment="Left" Margin="-10,8,0,0"
+                                    IsVisible="{Binding !ShowPaste}" />
+
+                            <!-- The other road: the user's own browser, and the address it ends on. -->
+                            <StackPanel IsVisible="{Binding ShowPaste}" Margin="0,16,0,0">
+                                <TextBlock Text="In your browser" />
+                                <TextBlock Classes="secondary small" Margin="0,2,0,8"
+                                           Text="Sign in on the page that opened. It ends on a nearly empty page that says &quot;redirect&quot;: copy that page's address and come back here. It is taken from the clipboard by itself; or paste it below." />
+                                <Grid ColumnDefinitions="*,Auto">
+                                    <TextBox x:Name="PastedBox" Text="{Binding Pasted}" PlaceholderText="https://remoteplay.dl.playstation.net/remoteplay/redirect?code=…" />
+                                    <Button x:Name="UsePastedButton" Grid.Column="1" Content="Use it" Command="{Binding UsePasted}" Margin="10,0,0,0" />
+                                </Grid>
+                            </StackPanel>
+
+                            <Border Classes="rule" />
+                            <TextBlock Text="Or type the account ID" />
+                            <TextBlock Classes="secondary small" Margin="0,2,0,8" Text="A long number, or the twelve characters the same number is also written as. It is asked once and kept on this computer." />
                             <TextBox x:Name="AccountBox" Text="{Binding AccountId}" PlaceholderText="Account ID" MaxWidth="340" HorizontalAlignment="Left" Width="340" />
                             <StackPanel Orientation="Horizontal" Spacing="10" Margin="0,22,0,0">
-                                <Button x:Name="NextButton" Classes="primary big" Content="Next" Command="{Binding Next}" />
+                                <Button x:Name="NextButton" Content="Next" Command="{Binding Next}" Padding="26,11" />
                                 <Button Classes="quiet" Content="Back" Command="{Binding Back}" />
                             </StackPanel>
                         </StackPanel>
@@ -291,6 +312,7 @@
                             <TextBlock Classes="section" Margin="0,4,0,0">
                                 <Run Text="The PIN that " /><Run Text="{Binding ChosenName}" /><Run Text=" shows" />
                             </TextBlock>
+                            <TextBlock Classes="small" Text="Signed in: the account was taken from your sign-in." Foreground="{DynamicResource Good}" IsVisible="{Binding SignedIn}" Margin="0,6,0,0" />
                             <TextBlock Classes="secondary" Margin="0,6,0,16"
                                        Text="On the console, open Settings, System, Remote Play, Link Device. It shows eight digits for five minutes: type them here." />
                             <TextBox x:Name="PinBox" Classes="pin" Text="{Binding Pin}" MaxLength="9" PlaceholderText="0000 0000" />

@@ -49,9 +49,17 @@ if [ $app = 1 ]; then
     export DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1
     echo "── .NET SDK $(dotnet --version)"
     psvp_nice dotnet build app/PSVulkanPlay.Tests -c Release -v q --nologo -m:"$PSVP_JOBS"
-    # Twice, as the others.
-    app/PSVulkanPlay.Tests/bin/Release/net10.0/PSVulkanPlay.Tests | tail -4
-    app/PSVulkanPlay.Tests/bin/Release/net10.0/PSVulkanPlay.Tests | tail -2
+    # Twice, as the others. A run that fails shows all it said: which test, and why.
+    app_tests() {
+        if app/PSVulkanPlay.Tests/bin/Release/net10.0/PSVulkanPlay.Tests > "$dir/app-tests.log" 2>&1; then
+            tail -2 "$dir/app-tests.log"
+        else
+            cat "$dir/app-tests.log"
+            return 1
+        fi
+    }
+    app_tests
+    app_tests
     tools/wall.sh --check
     tools/wall.sh tests/scenario/phase5a.sh "$dir"
 elif [ $launch = 1 ]; then

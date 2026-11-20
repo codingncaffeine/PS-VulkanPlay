@@ -5,6 +5,7 @@ using Avalonia.Input;
 using Avalonia.Media.Imaging;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
+using PSVulkanPlay.Core;
 using PSVulkanPlay.ViewModels;
 using PSVulkanPlay.Views;
 using Xunit;
@@ -22,6 +23,9 @@ public static class TestEntry
 public static class Ui
 {
     private static readonly HeadlessUnitTestSession Session = Start();
+
+    /// <summary>The stand-in sign-in service the app's windows in tests ask.</summary>
+    public static FakeService Service { get; } = new();
 
     // As the app's own start does, and for the same reason: the text shaper the app brings must be
     // opened before the system's font library can open the system's (Platform/NativeLibs.cs).
@@ -65,6 +69,8 @@ public static class Ui
     public static (MainWindow Window, MainViewModel Model) Open(FakeRunner fake, string settingsFolder, bool dark = true)
     {
         App.RunnerOverride = fake;
+        // No test ever asks the real sign-in service: the app's sign-in goes to a stand-in.
+        App.SignInOverride = new PsnSignIn(Service, "https://service.test/oauth");
         App.SettingsFileOverride = Path.Combine(settingsFolder, "app.json");
         var app = (App)Application.Current!;
         MainViewModel model = app.CreateModel();

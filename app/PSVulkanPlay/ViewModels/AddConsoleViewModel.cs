@@ -12,13 +12,15 @@ public sealed class AddConsoleViewModel : Observable
     private readonly ConsoleDirectory _directory;
     private readonly Action<Action> _post;
     private readonly Action<string> _registered;
+    private readonly PsnSignIn _signIn;
     private int _step = 1;
-    private bool _searching, _working;
-    private string _address = "", _accountId = "", _pin = "", _error = "", _chosenName = "";
+    private bool _searching, _working, _signingIn, _showPaste, _signedIn;
+    private string _address = "", _accountId = "", _pin = "", _error = "", _chosenName = "", _pasted = "";
     private FoundConsole? _chosen;
 
-    public AddConsoleViewModel(IProgramRunner runner, ConsoleDirectory directory, Action<Action> post, Action<string> registered)
+    public AddConsoleViewModel(IProgramRunner runner, ConsoleDirectory directory, Action<Action> post, Action<string> registered, PsnSignIn? signIn = null)
     {
+        _signIn = signIn ?? new PsnSignIn();
         _runner = runner;
         _directory = directory;
         _post = post;
@@ -29,6 +31,111 @@ public sealed class AddConsoleViewModel : Observable
         Back = new Command(() => { Error = ""; Step = Math.Max(1, Step - 1); });
         Next = new Command(() => { Error = ""; Step = 3; }, () => AccountIdLooksRight);
         Register = new Command(() => _ = RegisterAsync(), () => PinLooksRight && !Working);
+        SignIn = new Command(() => _ = SignInAsync(), () => !SigningIn);
+        UsePasted = new Command(() => _ = TakeAddressAsync(Pasted), () => !SigningIn && PsnSignIn.CodeFrom(Pasted) is not null);
+        OpenInBrowser = new Command(() => { ShowPaste = true; OpenBrowser?.Invoke(_signIn.LoginPage); });
+    }
+
+    /// <summary>The window that shows the login page; the app's window gives it. Without one, the browser is the road.</summary>
+    public ISignInWindow? SignInWindow { get; set; }
+
+    /// <summary>Opens an address in the user's own browser; the app's window gives it.</summary>
+    public Action<Uri>? OpenBrowser { get; set; }
+
+    public Command SignIn { get; }
+    public Command UsePasted { get; }
+    public Command OpenInBrowser { get; }
+
+    public bool SigningIn
+    {
+        get => _signingIn;
+        private set
+        {
+            if (!Set(ref _signingIn, value)) return;
+            SignIn.Refresh();
+            UsePasted.Refresh();
+        }
+    }
+
+    /// <summary>The account ID in the field came from a sign-in just now.</summary>
+    public bool SignedIn { get => _signedIn; private set => Set(ref _signedIn, value); }
+
+    /// <summary>The other road is shown: the login page in the user's browser, and its last address pasted here.</summary>
+    public bool ShowPaste { get => _showPaste; set => Set(ref _showPaste, value); }
+
+    public string Pasted { get => _pasted; set { if (Set(ref _pasted, value)) UsePasted.Refresh(); } }
+
+    /// <summary>
+    /// What the clipboard holds when the app's window is looked at again: taken when it is the
+    /// address the login page leads to, so that nobody has to paste it.
+    /// </summary>
+    public void LookAt(string clipboard)
+    {
+        if (!IsStep2 || !ShowPaste || SigningIn || PsnSignIn.CodeFrom(clipboard) is null || clipboard.Trim() == Pasted.Trim()) return;
+        Pasted = clipboard.Trim();
+        _ = TakeAddressAsync(Pasted);
+    }
+
+    private async Task SignInAsync()
+    {
+        if (SigningIn) return;
+        Error = "";
+        if (SignInWindow is null)
+        {
+            OpenInBrowser.Execute(null);
+            return;
+        }
+        SigningIn = true;
+        SignInAnswer answer = await SignInWindow.ShowAsync(_signIn.LoginPage, PsnSignIn.RedirectAddress).ConfigureAwait(false);
+        if (answer.Unavailable.Length > 0)
+        {
+            // No window for the page here: the browser, and the address pasted.
+            _post(() =>
+            {
+                SigningIn = false;
+                OpenInBrowser.Execute(null);
+            });
+            return;
+        }
+        if (answer.Address.Length == 0)
+        {
+            _post(() => SigningIn = false);   // closed without signing in: nothing to say
+            return;
+        }
+        await ExchangeAsync(answer.Address).ConfigureAwait(false);
+    }
+
+    private Task TakeAddressAsync(string address)
+    {
+        if (SigningIn) return Task.CompletedTask;
+        Error = "";
+        SigningIn = true;
+        return ExchangeAsync(address);
+    }
+
+    // SigningIn is set. The address is where the login page led; what comes of it is put on the page.
+    private async Task ExchangeAsync(string address)
+    {
+        string? code = PsnSignIn.CodeFrom(address);
+        (string id, string error) = code is null
+            ? ("", "The sign-in did not end on the page it should end on. Sign in again, or type the account ID.")
+            : await _signIn.AccountIdForAsync(code).ConfigureAwait(false);
+        // Kept by the program too, so that the next console does not ask again.
+        if (id.Length > 0) await _runner.RunAsync(["account", id]).ConfigureAwait(false);
+        _post(() =>
+        {
+            SigningIn = false;
+            if (id.Length == 0)
+            {
+                Error = error;
+                return;
+            }
+            AccountId = id;
+            SignedIn = true;
+            ShowPaste = false;
+            Pasted = "";
+            Step = 3;
+        });
     }
 
     public ObservableCollection<FoundConsole> Found { get; } = [];
@@ -117,6 +224,9 @@ public sealed class AddConsoleViewModel : Observable
         Step = 1;
         Error = "";
         Pin = "";
+        Pasted = "";
+        ShowPaste = false;
+        SignedIn = false;
         _chosen = null;
         _ = SearchAsync();
         _ = LoadAccountAsync();

@@ -14,6 +14,7 @@ public sealed class App : Application
     /// <summary>For tests: the runner and the settings file the app starts with instead of the real ones.</summary>
     public static IProgramRunner? RunnerOverride { get; set; }
     public static string? SettingsFileOverride { get; set; }
+    public static PsnSignIn? SignInOverride { get; set; }
 
     private string _theme = Themes.FollowDesktop;
 
@@ -42,7 +43,7 @@ public sealed class App : Application
     public MainViewModel CreateModel()
     {
         var model = new MainViewModel(RunnerOverride ?? new ProgramRunner(), new SettingsStore(SettingsFileOverride ?? SettingsStore.DefaultFile()),
-                                      action => Dispatcher.UIThread.Post(action));
+                                      action => Dispatcher.UIThread.Post(action), SignInOverride);
         ApplyTheme(model.Settings.Current.Theme);
         model.Settings.ThemeChanged += ApplyTheme;
         return model;

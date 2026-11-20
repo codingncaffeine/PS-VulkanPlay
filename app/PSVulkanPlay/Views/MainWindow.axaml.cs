@@ -23,6 +23,7 @@ public partial class MainWindow : Window
             if (_model is { IsHome: true, Busy: false } && IsActive) _ = _model.RefreshAsync();
         };
         Opened += OnOpened;
+        Activated += (_, _) => _ = LookAtClipboardAsync();
         Closing += (_, _) => _model?.Shutdown();
         DataContextChanged += (_, _) => Attach(DataContext as MainViewModel);
     }
@@ -33,7 +34,23 @@ public partial class MainWindow : Window
         _model = model;
         if (model is null) return;
         model.PropertyChanged += ModelChanged;
+        // The sign-in's two roads: the login page in a window of its own, or in the user's browser.
+        model.AddConsole.SignInWindow ??= new SignInWindow(this);
+        model.AddConsole.OpenBrowser ??= address => _ = Launcher.LaunchUriAsync(address);
         AboutLine.Text = $"PS VulkanPlay {model.Version}   ·   stream program: {(model.ProgramLocation.Length > 0 ? model.ProgramLocation : "not found")}   ·   settings: {model.Settings.File}";
+    }
+
+    // Back from the browser with the sign-in's last address copied: it is taken without a paste.
+    // Asked for only while the page that wants it is showing; the clipboard is nobody else's business.
+    private async Task LookAtClipboardAsync()
+    {
+        if (_model is not { IsAddConsole: true } model || !model.AddConsole.IsStep2 || !model.AddConsole.ShowPaste || Clipboard is null) return;
+        try
+        {
+            string? text = await Avalonia.Input.Platform.ClipboardExtensions.TryGetTextAsync(Clipboard);
+            if (!string.IsNullOrEmpty(text)) model.AddConsole.LookAt(text);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or TimeoutException or NotSupportedException) { }
     }
 
     // Opened is raised every time the window is shown; the first refresh and the timer start once.

@@ -113,6 +113,57 @@ public class WindowTests : IDisposable
         window.Close();
     });
 
+    private sealed class SignInWindowThatSignsIn : ISignInWindow
+    {
+        public Task<SignInAnswer> ShowAsync(Uri loginPage, string redirectAddress) =>
+            Task.Run(() => new SignInAnswer(redirectAddress + "?code=from-the-window&cid=1"));
+    }
+
+    private sealed class NoSignInWindow : ISignInWindow
+    {
+        public Task<SignInAnswer> ShowAsync(Uri loginPage, string redirectAddress) => Task.Run(() => new SignInAnswer("", "no web engine here"));
+    }
+
+    [Fact]
+    public void Signing_in_with_psn_fills_in_the_account_and_leads_to_the_pin() => Ui.Run(() =>
+    {
+        var fake = new FakeRunner();
+        fake.Answers["consoles"] = _ => new RunResult(0, "[]", "");
+        fake.Answers["discover"] = _ => new RunResult(0, """[{"name":"Living Room","kind":"PS5","state":"ready","address":"192.0.2.10","host_id":"02005E102030","system_version":"1","running_app":"","registered":false,"supported":true}]""", "");
+        fake.Answers["register"] = _ => new RunResult(0, "Registered with Living Room (PS5).\n", "");
+        (MainWindow window, MainViewModel model) = Ui.Open(fake, _folder);
+        Ui.Until(() => Ui.Shows(window, "No console yet"), "an empty home page says what to do");
+        Ui.Click(window, window.FindControl<Button>("AddFirst")!);
+        Ui.Until(() => Ui.Shows(window, "192.0.2.10"), "the console that answered is listed");
+        Ui.Click(window, window.FindControl<ItemsControl>("FoundList")!.GetVisualDescendantButtons().First());
+        Assert.True(model.AddConsole.IsStep2);
+        Ui.Capture(window, "add-2-sign-in-dark");
+
+        // The road without a window for the page: the browser is opened, and the page says what to do.
+        Uri? opened = null;
+        model.AddConsole.OpenBrowser = address => opened = address;
+        model.AddConsole.SignInWindow = new NoSignInWindow();
+        Ui.Click(window, window.FindControl<Button>("SignInButton")!);
+        Ui.Until(() => opened is not null && Ui.Shows(window, "In your browser"), "the sign-in went to the browser and the page says so");
+        Ui.Capture(window, "add-2-browser-dark");
+        Assert.False(window.FindControl<Button>("UsePastedButton")!.IsEffectivelyEnabled);
+
+        // The main road: the login page in its own window.
+        model.AddConsole.SignInWindow = new SignInWindowThatSignsIn();
+        Ui.Click(window, window.FindControl<Button>("SignInButton")!);
+        Ui.Until(() => model.AddConsole.IsStep3 && Ui.Shows(window, "Signed in: the account was taken from your sign-in."), "the sign-in led on to the PIN");
+        Assert.Equal("ywT7cR8BAAA=", model.AddConsole.AccountId);
+        Assert.Contains(Ui.Service.Asked, asked => asked.Body.Contains("code=from-the-window"));
+        Ui.Capture(window, "add-3-signed-in-dark");
+
+        Ui.Type(window, window.FindControl<TextBox>("PinBox")!, "12345678");
+        fake.Answers["consoles"] = _ => new RunResult(0, """[{"name":"Living Room","kind":"PS5","mac":"02:00:5e:10:20:30","last_address":"192.0.2.10"}]""", "");
+        Ui.Click(window, window.FindControl<Button>("RegisterButton")!);
+        Ui.Until(() => model.IsHome, "the page went home after registering");
+        Assert.Equal(["register", "--host", "192.0.2.10", "--pin", "12345678", "--account-id", "ywT7cR8BAAA="], fake.Last("register"));
+        window.Close();
+    });
+
     [Fact]
     public void Settings_are_one_page_and_the_look_changes_at_once() => Ui.Run(() =>
     {

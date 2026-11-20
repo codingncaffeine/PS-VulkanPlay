@@ -27,6 +27,7 @@ The reference implementation is [chiaki-ng](https://github.com/chiaki-ng/chiaki-
 - [Encodings](encodings.md): how values are written as text
 - [Discovery and wake-up](discovery.md): finding consoles, their state, waking them from rest mode
 - [Registration](registration.md): the PIN exchange that makes a console accept this client
+- [Signing in](sign-in.md): how the account ID a registration needs is learned from a PSN login
 - [Starting a session](session.md): the session request, the session cipher and the control channel
 - [The stream transport](transport.md): the UDP packets, the opening handshake and the messages that must arrive
 - [The stream's messages](messages.md): the field coding and the messages carried in the transport

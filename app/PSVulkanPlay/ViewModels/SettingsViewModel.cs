@@ -101,6 +101,25 @@ public sealed class SettingsViewModel : Observable
     private readonly object _saveLock = new();
     private AppSettings? _toSave;
     private bool _saving;
+    private Task _saver = Task.CompletedTask;
+
+    /// <summary>
+    /// Waits until every change made so far is in the file (a moment at most). For the app's
+    /// end: a choice made right before closing the window is kept too.
+    /// </summary>
+    public void Flush()
+    {
+        for (int i = 0; i < 100; ++i)
+        {
+            Task saver;
+            lock (_saveLock)
+            {
+                if (!_saving) return;
+                saver = _saver;
+            }
+            saver.Wait(TimeSpan.FromMilliseconds(50));
+        }
+    }
 
     // A few hundred bytes to the user's own configuration folder; done off the UI thread all the
     // same, and by one writer at a time: two changes in a row are two saves, and the later one
@@ -113,7 +132,7 @@ public sealed class SettingsViewModel : Observable
             if (_saving) return;
             _saving = true;
         }
-        _ = Task.Run(() =>
+        Task started = Task.Run(() =>
         {
             for (;;)
             {
@@ -132,6 +151,7 @@ public sealed class SettingsViewModel : Observable
                 if (error.Length > 0) _failed(error);
             }
         });
+        lock (_saveLock) _saver = started;
     }
 
     public Choice Resolution { get => Pick(Resolutions, _settings.Resolution.ToString()); set { if (value is not null) Keep(() => _settings.Resolution = int.Parse(value.Value), nameof(Resolution)); } }

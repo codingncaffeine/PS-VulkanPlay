@@ -9,10 +9,32 @@ public class ModelTests : IDisposable
 {
     private readonly string _folder = Path.Combine(Path.GetTempPath(), "psvp-model-" + Guid.NewGuid().ToString("N"));
 
-    private MainViewModel Model(FakeRunner fake) => new(fake, new SettingsStore(Path.Combine(_folder, "app.json")), action => action());
+    private readonly FakeService _service = new();
+
+    private readonly List<MainViewModel> _models = [];
+
+    private MainViewModel Model(FakeRunner fake)
+    {
+        var model = new MainViewModel(fake, new SettingsStore(Path.Combine(_folder, "app.json")), action => action(), new PsnSignIn(_service, "https://service.test/oauth"));
+        _models.Add(model);
+        return model;
+    }
+
+    /// <summary>Stands in for the window with the login page: answers with where the page led.</summary>
+    private sealed class FakeSignInWindow(SignInAnswer answer) : ISignInWindow
+    {
+        public Uri? Shown { get; private set; }
+        public Task<SignInAnswer> ShowAsync(Uri loginPage, string redirectAddress)
+        {
+            Shown = loginPage;
+            return Task.Run(() => answer);
+        }
+    }
 
     public void Dispose()
     {
+        // As the app's end does: what is still being saved is saved before the folder goes.
+        foreach (MainViewModel model in _models) model.Shutdown();
         if (Directory.Exists(_folder)) Directory.Delete(_folder, true);
     }
 
@@ -207,6 +229,82 @@ public class ModelTests : IDisposable
         Assert.Equal(["register", "--host", "192.0.2.10", "--pin", "12345678", "--account-id", "1234567890123"], fake.Last("register"));
         Assert.Equal("Living Room is registered. Press Play to start.", model.Notice);
         Until(() => model.Consoles.Count == 1, "the new console is on the home page");
+    }
+
+    private static readonly FoundConsole LivingRoom = new("Living Room", "PS5", "ready", "192.0.2.10", "02005e102030", "", false, true);
+
+    [Fact]
+    public void Signing_in_takes_the_account_from_the_sign_in_and_goes_on_to_the_pin()
+    {
+        var fake = new FakeRunner();
+        MainViewModel model = Model(fake);
+        AddConsoleViewModel add = model.AddConsole;
+        var window = new FakeSignInWindow(new SignInAnswer("https://remoteplay.dl.playstation.net/remoteplay/redirect?code=one-time&cid=1"));
+        add.SignInWindow = window;
+        add.Choose.Execute(LivingRoom);
+        Assert.True(add.IsStep2);
+        add.SignIn.Execute(null);
+        Until(() => add.IsStep3, "the sign-in led on to the PIN");
+        Assert.Contains("/authorize?", window.Shown!.AbsoluteUri);
+        Assert.Equal("ywT7cR8BAAA=", add.AccountId);
+        Assert.True(add.SignedIn);
+        Assert.False(add.SigningIn);
+        Assert.Contains("code=one-time", _service.Asked[0].Body);
+        // The program keeps the account too: the next console does not ask again.
+        Assert.Equal(["account", "ywT7cR8BAAA="], fake.Last("account"));
+    }
+
+    [Fact]
+    public void A_sign_in_window_that_is_closed_changes_nothing_and_one_that_fails_says_why()
+    {
+        var fake = new FakeRunner();
+        MainViewModel model = Model(fake);
+        AddConsoleViewModel add = model.AddConsole;
+        add.Choose.Execute(LivingRoom);
+        add.SignInWindow = new FakeSignInWindow(new SignInAnswer(""));
+        add.SignIn.Execute(null);
+        Until(() => !add.SigningIn, "the closed window was noticed");
+        Assert.True(add.IsStep2 && !add.HasError && add.AccountId.Length == 0);
+        Assert.Empty(_service.Asked);
+
+        _service.Answer = (_, _) => FakeService.Json("""{"error":"invalid_grant"}""", System.Net.HttpStatusCode.BadRequest);
+        add.SignInWindow = new FakeSignInWindow(new SignInAnswer("https://remoteplay.dl.playstation.net/remoteplay/redirect?code=used"));
+        add.SignIn.Execute(null);
+        Until(() => add.HasError, "the service's refusal was shown");
+        Assert.True(add.IsStep2);
+        Assert.Contains("answered 400", add.Error);
+        Assert.Null(fake.Last("account"));
+
+        // A page that ended somewhere else is not taken for a sign-in.
+        add.SignInWindow = new FakeSignInWindow(new SignInAnswer("https://example.com/remoteplay/redirect?code=stolen"));
+        add.SignIn.Execute(null);
+        Until(() => !add.SigningIn && add.Error.StartsWith("The sign-in did not end", StringComparison.Ordinal), "the wrong page was refused");
+        Assert.Single(_service.Asked);   // nothing was sent for it
+    }
+
+    [Fact]
+    public void Without_a_window_for_the_page_the_browser_is_opened_and_the_address_is_taken_from_the_clipboard()
+    {
+        var fake = new FakeRunner();
+        MainViewModel model = Model(fake);
+        AddConsoleViewModel add = model.AddConsole;
+        Uri? opened = null;
+        add.OpenBrowser = address => opened = address;
+        add.SignInWindow = new FakeSignInWindow(new SignInAnswer("", "no web engine here"));
+        add.Choose.Execute(LivingRoom);
+        add.SignIn.Execute(null);
+        Until(() => add.ShowPaste && opened is not null, "the sign-in went to the browser");
+        Assert.Contains("/authorize?", opened!.AbsoluteUri);
+        Assert.False(add.UsePasted.CanExecute(null));
+        // What is on the clipboard is taken only when it is the address a sign-in ends on.
+        add.LookAt("some text that was copied for something else");
+        Assert.Equal("", add.Pasted);
+        Assert.Empty(_service.Asked);
+        add.LookAt(" https://remoteplay.dl.playstation.net/remoteplay/redirect?code=from-the-browser ");
+        Until(() => add.IsStep3, "the copied address led on to the PIN");
+        Assert.Contains("code=from-the-browser", _service.Asked[0].Body);
+        Assert.Equal("ywT7cR8BAAA=", add.AccountId);
+        Assert.False(add.ShowPaste);
     }
 
     [Fact]

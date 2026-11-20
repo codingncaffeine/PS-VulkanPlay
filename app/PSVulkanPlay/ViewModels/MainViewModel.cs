@@ -26,14 +26,15 @@ public sealed class MainViewModel : Observable
     private bool _controllersKnown;
 
     /// <param name="post">Runs an action on the UI thread.</param>
-    public MainViewModel(IProgramRunner runner, SettingsStore store, Action<Action> post)
+    /// <param name="signIn">The PSN sign-in; tests give one that asks a stand-in service.</param>
+    public MainViewModel(IProgramRunner runner, SettingsStore store, Action<Action> post, PsnSignIn? signIn = null)
     {
         _runner = runner;
         _directory = new ConsoleDirectory(runner);
         _store = store;
         _post = post;
         Settings = new SettingsViewModel(store, text => Notify(text, true));
-        AddConsole = new AddConsoleViewModel(runner, _directory, post, Registered);
+        AddConsole = new AddConsoleViewModel(runner, _directory, post, Registered, signIn);
         GoHome = new Command(() => Show(Page.Home));
         GoSettings = new Command(() => Show(Page.Settings));
         GoAddConsole = new Command(() => { AddConsole.Begin(); Show(Page.AddConsole); }, () => !Busy);
@@ -159,6 +160,7 @@ public sealed class MainViewModel : Observable
         _session?.Stop();
         _watch?.Stop();
         _watch = null;
+        Settings.Flush();
     }
 
     /// <summary>The stream's own window is up: this one can get out of the way.</summary>
@@ -226,8 +228,9 @@ public sealed class MainViewModel : Observable
 
     private void Registered(string name)
     {
-        Show(Page.Home);
+        // What there is to say first, the page last: whoever sees the page change finds the sentence there.
         Notify($"{name} is registered. Press Play to start.", false);
+        Show(Page.Home);
     }
 
     public void Play(ConsoleCard card)
