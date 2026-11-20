@@ -96,10 +96,10 @@ byte and sixteen letters ([session.md](session.md)).
 its clock in decimal followed by 48 random bytes in base64, about 70 characters. Against such a PS5 it
 therefore always sends an invented ID, and streams.
 
-**[seen]** A PS5 accepts an invented ID of that form.
+**[seen]** A PS5 accepts an invented ID of that form, and it accepts its own.
 
-*Chosen difference.* This client sends the console's own ID. `--session-id invented` sends one of the
-reference's form instead. Whether a PS5 accepts its own ID there has not been seen yet.
+*Chosen difference.* This client sends the console's own ID, which lets the opening message go out in one
+packet. `--session-id invented` sends one of the reference's form instead.
 
 ## The stream keys
 
@@ -194,9 +194,10 @@ can send, each with the header its decoder needs first, and the sound format.
 A client gives up when the sound format is not fourteen bytes long. **[read]** It keeps at most eight picture
 sizes.
 
-**[seen]** Asked for 1920x1080 in HEVC, a PS5 named one picture size, 1920x1080, with a header of 92 bytes: the
-three parameter sets a HEVC decoder needs first, each behind a start code. Its sound format: 2 channels, 16
-bits, 48000 Hz, 480 samples per frame.
+**[seen]** A PS5 names one picture size, the one asked for, with the parameter sets a decoder needs first, each
+behind a start code: for 1280x720 in H.264 a header of 40 bytes (Main profile), for 1920x1080 in HEVC 92 bytes
+(Main), for the same with HDR asked for 103 bytes (Main 10, ten bits). Its sound format each time: 2 channels,
+16 bits, 48000 Hz, 480 samples per frame.
 
 **[checked]** The client then sends, in this order and each as one data chunk with flags 1:
 
@@ -214,9 +215,14 @@ and then acknowledges the console's stream information.
 To end the stream it sends a goodbye with the reason `Client Disconnecting` on channel 1. A console that ends
 it sends a goodbye with its own reason (`Server shutting down` when it is switched off).
 
-**[seen]** A PS5 sends heartbeats of its own, about three a second, a "stream information received" (type 14)
-once, and a message of type 16 (connection quality) a little less than once a second. It acknowledged the
-goodbye. A stream held for five seconds with a resting controller's input states was not closed by it.
+**[seen]** A PS5 sends, all on channel 0: heartbeats of its own, about three a second; at the start one data
+chunk of kind 9 (information for the controller) and one "stream information received" (type 14); and its view
+of the connection (type 16, [messages.md](messages.md)) every 1.2 seconds or so. It acknowledged the goodbye.
+Streams held for up to twenty seconds with a resting controller's input states were not closed by it.
+
+**[seen]** After a goodbye a PS5 answers a new session request with "already in use" for some five to ten
+seconds. Once, a PS5 that discovery had just shown as ready refused the connection to its session port and
+then answered "already in use" for thirty seconds; what state it was in is not known.
 
 ## Messages too large for one packet
 
@@ -250,8 +256,8 @@ dropped.
   connected; the mock finds the right code on every packet it sends and each at the position the rule gives.
 - **[checked]** by the mock console on the reference's own client (`tests/scenario/phase2d.sh`): the payload
   of an input packet is encrypted from sixteen bytes behind its key position on ([input.md](input.md)).
-- **[seen]** in a session with a PS5 on system software 14.23 (2026-11-19, `session --session-id invented
-  --resolution 1080 --codec hevc`): the set-up from the opening message to the goodbye, as marked above.
-  Still to be seen: a session that sends the console's own session ID, H.264, and a PS4.
+- **[seen]** in four sessions with a PS5 on system software 14.23 (2026-11-19): the set-up from the opening
+  message to the goodbye, as marked above, with the console's own session ID and with an invented one, for
+  720p H.264, 1080p HEVC and 1080p HEVC with HDR. Still to be seen: a PS4.
 
 `src/proto/key_exchange.h`, `src/proto/stream_cipher.h`, `src/proto/launch_spec.h`, `src/proto/stream_setup.h`

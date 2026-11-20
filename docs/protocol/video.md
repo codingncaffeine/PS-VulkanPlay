@@ -28,10 +28,15 @@ A **sound** packet goes on with one byte that is not understood: 19 bytes. A PS5
 all; the value 2 in it marks a packet for the controller's **haptics** instead of the sound.
 
 With bit 4 of the first byte set, three more bytes follow the header; they are not read. **[seen]** A PS5
-sets it on every packet of a frame that has more than one source unit, and on none of a frame that has one.
+sets it on all packets of a frame or on none. In its HEVC streams those are the frames with more than one
+source unit; in an H.264 stream they were three frames of 591. What the three bytes say is not known; with
+them skipped every frame decodes.
 
-**[seen]** In a PS5's HEVC stream the codec byte is 6, the 16-bit word `01fe` on source units and 0 on repair
-units, and the adaptive stream index 0 with one picture size on offer.
+**[seen]** The codec byte of a PS5's picture packets is 3 in an H.264 stream and 6 in a HEVC stream, with HDR
+or without. The 16-bit word is 0 on repair units. On source units of a HEVC stream it is 510, the number of
+64x64 blocks in a 1920x1080 picture; in a 720p H.264 stream it is 3600, the number of 16x16 blocks in the
+picture, on a frame's only source unit, and smaller numbers on the units of a frame that has several. The
+adaptive stream index is 0 with one picture size on offer.
 
 A packet is its header and at least one byte of payload; shorter ones are dropped.
 
@@ -59,9 +64,9 @@ A packet is its header and at least one byte of payload; shorter ones are droppe
 plus 16. (The reference's own client decrypts what the mock console encrypts this way, and finds the frames.)
 
 **[seen]** A PS5 moves its key position on, for a picture or sound packet, by the payload's size rounded up
-to a whole number of sixteen bytes, and sixteen more: 1344 of the 1363 steps from one packet to the next were
-exactly that. Eighteen were larger by 16 or 32, where a message of the console's lay between, and one by a whole
-packet, which never arrived. A client never needs this, because every packet names its position; the mock
+to a whole number of sixteen bytes, and sixteen more: in four sessions all but 140 of 9,744 steps from one
+packet to the next were exactly that. Those were larger by 16, 32 or 48, where messages of the console's lay
+between, and one by a whole packet, which never arrived. A client never needs this, because every packet names its position; the mock
 console counts the same way.
 
 ## A picture frame
@@ -73,9 +78,10 @@ One packet carries one unit. The number of source units is the frame's units min
 source unit's payload begins with a 16-bit count of padding; the payload is that much shorter than the unit
 size. The frame is the source units in order, each without its first two bytes.
 
-**[seen]** 289 frames of a PS5's 1080p HEVC stream, put together this way behind the picture size's header,
-are a stream a decoder takes without one error (`ffprobe`: HEVC Main, 1920x1080, 289 frames): one keyframe of
-49 source units, then frames of one to fourteen. Every frame came with exactly one repair unit.
+**[seen]** The frames of a PS5's streams, put together this way behind the picture size's header, are
+streams a decoder takes without one error (`ffprobe`): 591 frames of 720p H.264, 1188 and 289 frames of 1080p
+HEVC, 291 frames of 1080p HEVC in ten bits. Each stream begins with one keyframe of 25 to 49 source units;
+the frames after it have one to fourteen. Every frame came with exactly one repair unit.
 
 So a frame's first packet tells the unit size, whichever unit it is: a repair unit by its payload size, a
 source unit by its payload size plus its padding count.
@@ -160,7 +166,7 @@ of another codec are dropped.
 
 **[seen]** A PS5 sends a sound packet every 10 ms with one new frame and two repeated ones, each 80 bytes, the
 first packet carrying frame 1. The frames are Opus (full band, 10 ms, stereo): wrapped in an Ogg container
-they decode without an error, to sound that is not silence. Without a DualSense announced it sends no
+they decode without an error (3,992 frames in four sessions). Without a DualSense announced it sends no
 haptics packets.
 
 A sound packet carries whole frames, all of one size: first its *new* frames, whose indices are the packet's
@@ -187,10 +193,10 @@ in a small buffer first.
 - **[checked]** by the reference's own client against the mock console (`tests/scenario/phase2d.sh`): it takes
   the mock's picture and sound packets, with and without lost and overtaken packets, and hands to its decoder
   exactly the bytes this client keeps with `session --dump`.
-- **[seen]** in a session with a PS5 on system software 14.23 (2026-11-19, 1080p HEVC, five seconds): 865
-  picture and 499 sound packets, every one with the right code; the picture decodes and the sound decodes, as
-  marked above. No packet was lost that a frame needed, so restoring a lost unit of a real stream, the loss
-  report's effect and H.264 are still to be seen.
+- **[seen]** in four sessions with a PS5 on system software 14.23 (2026-11-19; 720p H.264, 1080p HEVC twice,
+  1080p HEVC with HDR; forty seconds in all): 5,756 picture and 3,992 sound packets, every one with the right
+  code; the pictures decode and the sound decodes, as marked above. No packet was lost that a frame needed, so
+  restoring a lost unit of a real stream and the loss report's effect are still to be seen.
 
 `src/proto/media_packet.h`, `src/proto/erasure.h`, `src/proto/frame_assembler.h`, `src/proto/sound.h`,
 `src/proto/media_sender.h` (the mock console's side)
