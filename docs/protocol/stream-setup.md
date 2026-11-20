@@ -6,7 +6,7 @@ on UDP port 9296. On it the two sides exchange keys, the console says what the s
 on every packet is authenticated.
 
 **[read]** The connection speaks version 12 of the stream protocol to a PS5 and version 9 to a PS4. Its opening
-handshake is the one of the probe connection.
+handshake is the one of the probe connection. **[seen]** A PS5 on system software 14.23 answers with version 12.
 
 ## The order of things
 
@@ -33,9 +33,12 @@ The client makes sixteen random bytes, the *handshake key*, and a key pair on th
 The handshake key reaches the console inside the launch specification, which only the console can open. A
 signature therefore shows that a public key comes from the other side of this session.
 
+**[seen]** A PS5 signs its public key the same way: the signature in its answer is the one this rule gives.
+
 *Chosen difference.* The reference takes the console's signature and never looks at it. This client computes
-what the signature must be and reports whether it matches. It does not yet refuse a stream over a mismatch:
-what a console signs with has not been seen, and a wrong guess here would refuse every stream.
+what the signature must be and reports whether it matches. A PS5 whose signature does not match gets no
+stream. For a PS4 a mismatch is only reported: what a PS4 signs with has not been seen, and a wrong guess
+there would refuse every stream.
 
 ## The launch specification
 
@@ -81,6 +84,8 @@ sealed launch specification; an *encrypted key* of four zero bytes; its public k
 
 **[read]** The console's answer says whether it accepted the version and the encrypted key, and carries the
 console's public key and signature. A client gives up when either is not accepted or the key is missing.
+**[seen]** A PS5 accepted an opening message built this way, asking for 1920x1080 at 60 in HEVC, and repeated
+the opening message's session key in its answer.
 
 ### Which session ID
 
@@ -91,8 +96,10 @@ byte and sixteen letters ([session.md](session.md)).
 its clock in decimal followed by 48 random bytes in base64, about 70 characters. Against such a PS5 it
 therefore always sends an invented ID, and streams.
 
+**[seen]** A PS5 accepts an invented ID of that form.
+
 *Chosen difference.* This client sends the console's own ID. `--session-id invented` sends one of the
-reference's form instead; which of the two a console requires is to be seen on a real one.
+reference's form instead. Whether a PS5 accepts its own ID there has not been seen yet.
 
 ## The stream keys
 
@@ -158,8 +165,9 @@ numerically larger is a late packet from before it. A position counts as accepte
 authentic.
 
 Before a side has its keys it sends position 0 and a code of four zero bytes. So the opening message and the
-console's acknowledgment of it are unsealed. **[read]** Whether a console seals its answer is not known: the
-reference does not check that packet. This client reports what it finds.
+console's acknowledgment of it are unsealed. **[seen]** A PS5 does not seal its answer either: it carries a
+code of four zero bytes. Everything a PS5 sent after it carried the right code (some 1400 packets in one
+session, none refused).
 
 **[checked]** The client's acknowledgment of the answer is already sealed, at position 0: the keys exist by the
 time it is written (the reference's own client sends it so).
@@ -186,6 +194,10 @@ can send, each with the header its decoder needs first, and the sound format.
 A client gives up when the sound format is not fourteen bytes long. **[read]** It keeps at most eight picture
 sizes.
 
+**[seen]** Asked for 1920x1080 in HEVC, a PS5 named one picture size, 1920x1080, with a header of 92 bytes: the
+three parameter sets a HEVC decoder needs first, each behind a start code. Its sound format: 2 channels, 16
+bits, 48000 Hz, 480 samples per frame.
+
 **[checked]** The client then sends, in this order and each as one data chunk with flags 1:
 
 | Message | Channel | Bytes |
@@ -202,6 +214,10 @@ and then acknowledges the console's stream information.
 To end the stream it sends a goodbye with the reason `Client Disconnecting` on channel 1. A console that ends
 it sends a goodbye with its own reason (`Server shutting down` when it is switched off).
 
+**[seen]** A PS5 sends heartbeats of its own, about three a second, a "stream information received" (type 14)
+once, and a message of type 16 (connection quality) a little less than once a second. It acknowledged the
+goodbye. A stream held for five seconds with a resting controller's input states was not closed by it.
+
 ## Messages too large for one packet
 
 **[read]** A message that does not fit a datagram of (the smaller of the path's two largest packets) - 50 bytes
@@ -216,7 +232,8 @@ So flag 1 says "the message ends here", and a message in one chunk has it. Each 
 number and is acknowledged like any other.
 
 With a session ID of about 70 characters the opening message is some 1430 bytes and never fits one datagram
-of 1404; with the console's own sixteen letters it is 1377 bytes and does.
+of 1404; with the console's own sixteen letters it is 1377 bytes and does. **[seen]** A PS5 took an opening
+message that came in two chunks.
 
 *Chosen difference.* The reference splits what it sends and never joins what it receives. This client joins:
 chunks without flag 1 are collected, in order, until the one with it. A message that grows past 64 KiB is
@@ -233,8 +250,8 @@ dropped.
   connected; the mock finds the right code on every packet it sends and each at the position the rule gives.
 - **[checked]** by the mock console on the reference's own client (`tests/scenario/phase2d.sh`): the payload
   of an input packet is encrypted from sixteen bytes behind its key position on ([input.md](input.md)).
-- Nothing on this page has been seen on a real console yet. First to be seen there: whether the console
-  accepts its own session ID, what its answer carries (version, token, session key, a code or none), whether
-  its signature matches, and its stream information.
+- **[seen]** in a session with a PS5 on system software 14.23 (2026-11-19, `session --session-id invented
+  --resolution 1080 --codec hevc`): the set-up from the opening message to the goodbye, as marked above.
+  Still to be seen: a session that sends the console's own session ID, H.264, and a PS4.
 
 `src/proto/key_exchange.h`, `src/proto/stream_cipher.h`, `src/proto/launch_spec.h`, `src/proto/stream_setup.h`

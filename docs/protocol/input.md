@@ -57,6 +57,7 @@ Until controllers are implemented this client sends that state every 200 ms.
   families, byte for byte, on 6,000 random controllers.
 - **[checked]** by the reference's own client against the mock console (`tests/scenario/phase2d.sh`): the mock
   decrypts every input state it sends and reads a resting controller's, the same bytes this client sends.
-- Nothing on this page has been seen on a real console yet.
+- **[seen]** A PS5 that was sent a resting controller's state every 200 ms kept its stream up, and sent one
+  data chunk of kind 9 (information for the controller). That it read the states is not shown by this.
 
 `src/proto/input.h`
