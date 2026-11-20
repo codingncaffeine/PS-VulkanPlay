@@ -61,6 +61,9 @@ std::string compiler() {
 int run(int argc, char** argv) {
     std::vector<std::string_view> args;
     for (int i = 1; i < argc; ++i) args.emplace_back(argv[i]);
+    // What is printed shows up line by line also when it goes into a file or another program,
+    // in step with the log lines beside it.
+    std::setvbuf(stdout, nullptr, _IOLBF, 0);
 
     // A command does its work in the terminal and opens neither the log nor a window.
     psvp::app::set_play_runner(&psvp::app::run_player);
@@ -95,15 +98,15 @@ int run(int argc, char** argv) {
     psvp::render::WindowOptions window;
     window.frame_limit = options->frames;
     window.dialogs = !options->frames.has_value();
-    if (options->test_clip) {
-        // The generated clip through the decoder, a new frame sixty times a second.
-        struct Clip {
     if (const auto file = psvp::app::window_place_file()) {
         window.place = psvp::app::load_window_place(*file);
         window.on_place = [file = *file](const psvp::app::WindowPlace& place) {
             if (!psvp::app::save_window_place(file, place)) psvp::log::warn("window: its size could not be kept in {}", file.string());
         };
     }
+    if (options->test_clip) {
+        // The generated clip through the decoder, a new frame sixty times a second.
+        struct Clip {
             psvp::media::ClipWriter writer{416, 240};
             std::optional<psvp::media::VideoDecoder> decoder;
             std::uint32_t counter = 0;

@@ -6,6 +6,7 @@ add_executable(psvp_tests
     unit/test_decoder.cpp
     unit/test_discovery.cpp
     unit/test_erasure.cpp
+    unit/test_frame_refs.cpp
     unit/test_hex.cpp
     unit/test_import.cpp
     unit/test_input.cpp
@@ -16,6 +17,7 @@ add_executable(psvp_tests
     unit/test_regist.cpp
     unit/test_rp_cipher.cpp
     unit/test_session.cpp
+    unit/test_sound_buffer.cpp
     unit/test_store.cpp
     unit/test_stream_message.cpp
     unit/test_stream_setup.cpp
@@ -48,6 +50,7 @@ psvp_add_fuzz_target(base64)
 psvp_add_fuzz_target(import)
 psvp_add_fuzz_target(json)
 psvp_add_fuzz_target(media)
+psvp_add_fuzz_target(refs)
 psvp_add_fuzz_target(message)
 psvp_add_fuzz_target(regist)
 psvp_add_fuzz_target(session)

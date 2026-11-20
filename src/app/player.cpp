@@ -1,14 +1,17 @@
 #include "app/player.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdio>
 #include <deque>
 #include <format>
 #include <mutex>
 #include <optional>
+#include <string>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -16,10 +19,11 @@
 #include <SDL3/SDL.h>
 
 #include "app/log.h"
+#include "app/window_place.h"
 #include "media/sound_decoder.h"
+#include "media/sound_buffer.h"
 #include "media/video_decoder.h"
 #include "psvp/version.h"
-#include "app/window_place.h"
 #include "render/vk_window.h"
 
 namespace psvp::app {
@@ -28,13 +32,38 @@ namespace {
 
 namespace transport = proto::transport;
 
-// Sound waiting to be played at most: what arrives beyond it is left out, so that the
-// sound never falls behind the picture. A frame is 10 ms.
-constexpr int kMaxSoundQueuedMs = 60;
-// Frames filled in for lost ones at most, per gap: a long gap is silence, not a held note.
-constexpr std::uint32_t kMaxConcealed = 5;
+using Clock = std::chrono::steady_clock;
+// A picture that follows the one before it by more than this came late enough to be seen: the
+// picture stood. Frames are 16.7 ms apart.
+constexpr double kStoodMs = 30.0;
+// What counts as a cause of that: a pause in arriving, and a frame that waited for the decoder.
+constexpr double kArrivedLateMs = 25.0, kDecoderBehindMs = 12.0;
+// A frame this close behind a late one was held up with it.
+constexpr double kRightBehindMs = 10.0;
+// A console that sends no frame that can be decoded is asked for a keyframe this often at most.
+constexpr auto kKeyframeAskEvery = std::chrono::milliseconds(500);
+// The speed of the sound is set anew when it should differ by this much.
+constexpr double kSpeedStep = 0.002;
 // The touchpad as a console counts it (the reference's numbers).
 constexpr float kTouchWidth = 1919.0F, kTouchHeight = 1079.0F;
+
+// How far apart things came that should come every 16.7 ms, counted in bands.
+struct Spacing {
+    static constexpr std::array<double, 7> kUpTo{8.0, 13.0, 21.0, 30.0, 50.0, 100.0, 1e12};
+    std::array<std::uint64_t, 7> counts{};
+    void add(double ms) {
+        for (std::size_t i = 0; i < kUpTo.size(); ++i) {
+            if (ms < kUpTo[i]) {
+                ++counts[i];
+                return;
+            }
+        }
+    }
+    [[nodiscard]] std::string text() const {
+        return std::format("under 8 ms: {}, 8 to 13: {}, 13 to 21: {}, 21 to 30: {}, 30 to 50: {}, 50 to 100: {}, over 100: {}", counts[0], counts[1],
+                           counts[2], counts[3], counts[4], counts[5], counts[6]);
+    }
+};
 
 class Player {
 public:
@@ -58,12 +87,25 @@ public:
     void on_media(transport::MediaOutput& media, const std::optional<proto::StreamInfo>& info) {
         if (!info) return;
         {
+            const auto now = Clock::now();
             const std::lock_guard lock(jobs_mutex_);
             for (auto& frame : media.video) {
                 Job job;
                 if (frame.adaptive_stream < info->resolutions.size()) job.header = info->resolutions[frame.adaptive_stream].video_header;
                 job.size_index = frame.adaptive_stream;
+                job.index = frame.index;
                 job.lost_before = frame.lost_before;
+                job.arrived = now;
+                if (last_arrival_) {
+                    job.since_arrival_ms = std::chrono::duration<double, std::milli>(now - *last_arrival_).count();
+                    arrival_spacing_.add(job.since_arrival_ms);
+                    // A frame that came late, with none lost before it: held up on the way when the next one
+                    // comes right behind it, sent late by the console when the next one keeps its distance
+                    // (a game that does not make sixty pictures a second at that moment).
+                    if (std::exchange(late_before_, false)) ++(job.since_arrival_ms < kRightBehindMs ? late_on_the_way_ : late_sent_);
+                    late_before_ = job.since_arrival_ms > kArrivedLateMs && frame.lost_before == 0;
+                }
+                last_arrival_ = now;
                 job.data = std::move(frame.data);  // nobody else is handed these frames
                 jobs_.push_back(std::move(job));
             }
@@ -78,6 +120,14 @@ public:
         }
         started_.store(true);
         started_.notify_all();
+    }
+    // True when the console is to be asked for a keyframe now.
+    bool wants_keyframe() {
+        if (!keyframe_needed_.exchange(false)) return false;
+        const auto now = Clock::now();
+        if (last_keyframe_ask_ && now - *last_keyframe_ask_ < kKeyframeAskEvery) return false;
+        last_keyframe_ask_ = now;
+        return true;
     }
     bool controller(transport::Buttons& buttons, transport::InputState& state) {
         const std::lock_guard lock(input_mutex_);
@@ -107,10 +157,14 @@ private:
     struct Job {
         std::vector<std::uint8_t> header;
         unsigned size_index = 0;
+        std::uint16_t index = 0;
         std::uint32_t lost_before = 0;
+        Clock::time_point arrived{};
+        double since_arrival_ms = 0.0;  // since the frame before it arrived
         std::vector<std::uint8_t> data;
     };
     void decode_loop();
+    void note_handed(Clock::time_point now);
     void play_sound(const proto::AudioHeader& format, const transport::SoundFrame& frame);
     void set_button(transport::Button button, bool down) {
         const std::lock_guard lock(input_mutex_);
@@ -125,12 +179,36 @@ private:
     std::deque<Job> jobs_;
     bool closing_ = false;
     std::size_t longest_queue_ = 0;
+    std::optional<Clock::time_point> last_arrival_;  // on the session's thread
+    Spacing arrival_spacing_;                        // on the session's thread, until it has ended
+    bool late_before_ = false;
+    std::uint64_t late_on_the_way_ = 0, late_sent_ = 0;
+    Spacing handed_spacing_;                         // on the decode thread, until it has ended
+    std::optional<Clock::time_point> last_keyframe_ask_;
+    std::atomic<bool> keyframe_needed_{false};
 
     // The decoder's side: only the decode thread touches these until it has ended.
     std::optional<media::VideoDecoder> decoder_;
     std::optional<unsigned> size_index_;
     std::string decoder_text_, decoder_error_;
     std::uint64_t frames_ = 0, pictures_ = 0, held_back_ = 0, refused_ = 0, microseconds_ = 0, slowest_ = 0;
+    std::uint64_t changed_ = 0, approximate_ = 0, undecodable_ = 0;
+    std::string unfollowed_;
+    void take_counters() {
+        const media::VideoDecoderCounters& counters = decoder_->counters();
+        microseconds_ += counters.microseconds;
+        slowest_ = std::max(slowest_, counters.slowest_microseconds);
+        changed_ += counters.changed;
+        approximate_ += counters.approximate;
+        undecodable_ += counters.undecodable;
+        unfollowed_ = decoder_->unfollowed_reason();
+    }
+    // When the picture stood, and what was seen to go with it.
+    std::optional<Clock::time_point> first_handed_, last_handed_;
+    std::uint64_t stood_ = 0, stood_lost_ = 0, stood_arrival_ = 0, stood_decoder_ = 0, stood_other_ = 0;
+    double longest_stood_ms_ = 0.0;
+    std::uint64_t not_shown_since_ = 0, lost_since_ = 0;
+    double longest_arrival_since_ms_ = 0.0, longest_behind_since_ms_ = 0.0;
 
     // The newest picture, for the window.
     std::mutex picture_mutex_;
@@ -140,9 +218,16 @@ private:
 
     // Sound: only the session's thread touches these.
     std::optional<media::SoundDecoder> sound_;
+    // The device's own thread takes the sound from the line as it needs it and decodes it there;
+    // the session's thread puts the frames in. The lock is for the line; the decoder is the device thread's.
     SDL_AudioStream* audio_ = nullptr;
     bool sound_failed_ = false;
-    std::uint64_t sound_played_ = 0, sound_left_out_ = 0, sound_filled_ = 0;
+    std::mutex sound_mutex_;
+    media::SoundBuffer sound_line_;
+    double sound_speed_ = 1.0;        // on the device's thread
+    std::vector<std::int16_t> silence_;
+    static void SDLCALL sound_wanted(void* self, SDL_AudioStream* stream, int additional, int total);
+    void fill_sound(SDL_AudioStream* stream, int additional);
 
     // The controller.
     std::mutex input_mutex_;
@@ -172,10 +257,7 @@ void Player::decode_loop() {
         if (size_index_ != job.size_index) {
             // A new picture size is a new stream to the decoder: its header first, then a keyframe.
             size_index_ = job.size_index;
-            if (decoder_) {
-                microseconds_ += decoder_->counters().microseconds;
-                slowest_ = std::max(slowest_, decoder_->counters().slowest_microseconds);
-            }
+            if (decoder_) take_counters();
             decoder_.reset();
             const auto codec = media::codec_of_header(job.header);
             if (!codec) {
@@ -193,18 +275,28 @@ void Player::decode_loop() {
             ++refused_;
             continue;
         }
-        auto picture = decoder_->decode(job.data);
+        lost_since_ += job.lost_before;
+        longest_arrival_since_ms_ = std::max(longest_arrival_since_ms_, job.since_arrival_ms);
+        auto decoded = decoder_->decode(job.index, job.data);
+        // No frame the decoder holds leads to this one: only a keyframe gets the picture going again.
+        if (decoded.needs_keyframe) keyframe_needed_.store(true);
+        std::optional<media::Picture>& picture = decoded.picture;
         if (!picture) {
-            ++refused_;
+            if (!decoded.needs_keyframe) ++refused_;
+            ++not_shown_since_;
             continue;
         }
         ++pictures_;
         if (picture->damaged) {
-            // Built on a frame that did not arrive: the last whole picture stays up until the
-            // console's repair, a few frames later, instead of a picture with holes in it.
+            // Built on a frame that did not arrive, in a stream whose frames are not followed: the last
+            // whole picture stays up until the console's repair, instead of a picture with holes in it.
             ++held_back_;
+            ++not_shown_since_;
             continue;
         }
+        const auto now = Clock::now();
+        longest_behind_since_ms_ = std::max(longest_behind_since_ms_, std::chrono::duration<double, std::milli>(now - job.arrived).count());
+        note_handed(now);
         {
             const std::lock_guard lock(picture_mutex_);
             if (fresh_) ++replaced_;
@@ -213,6 +305,35 @@ void Player::decode_loop() {
         }
         render::wake_window();
     }
+}
+
+// A picture goes to the window: was the one before it up for longer than it should have been, and why.
+void Player::note_handed(Clock::time_point now) {
+    if (!first_handed_) first_handed_ = now;
+    if (last_handed_) {
+        const double stood_ms = std::chrono::duration<double, std::milli>(now - *last_handed_).count();
+        handed_spacing_.add(stood_ms);
+        if (stood_ms > kStoodMs) {
+            ++stood_;
+            longest_stood_ms_ = std::max(longest_stood_ms_, stood_ms);
+            std::string causes;
+            const auto cause = [&](std::string text) { causes += (causes.empty() ? "" : "; ") + std::move(text); };
+            if (lost_since_ != 0) cause(std::format("{} frame{} lost", lost_since_, lost_since_ == 1 ? "" : "s"));
+            if (not_shown_since_ != 0) cause(std::format("{} frame{} could not be shown", not_shown_since_, not_shown_since_ == 1 ? "" : "s"));
+            if (longest_arrival_since_ms_ > kArrivedLateMs) cause(std::format("no frame arrived for {:.0f} ms", longest_arrival_since_ms_));
+            if (longest_behind_since_ms_ > kDecoderBehindMs) cause(std::format("a frame waited {:.0f} ms for the decoder", longest_behind_since_ms_));
+            // One cause is counted, the first that applies: a loss comes with a pause more often than not.
+            if (lost_since_ != 0 || not_shown_since_ != 0) ++stood_lost_;
+            else if (longest_arrival_since_ms_ > kArrivedLateMs) ++stood_arrival_;
+            else if (longest_behind_since_ms_ > kDecoderBehindMs) ++stood_decoder_;
+            else ++stood_other_;
+            log::debug("play: {:.1f} s: the picture stood for {:.0f} ms ({})", std::chrono::duration<double>(now - *first_handed_).count(), stood_ms,
+                       causes.empty() ? "nothing seen that explains it" : causes);
+        }
+    }
+    last_handed_ = now;
+    lost_since_ = not_shown_since_ = 0;
+    longest_arrival_since_ms_ = longest_behind_since_ms_ = 0.0;
 }
 
 void Player::play_sound(const proto::AudioHeader& format, const transport::SoundFrame& frame) {
@@ -226,7 +347,8 @@ void Player::play_sound(const proto::AudioHeader& format, const transport::Sound
         }
         sound_.emplace(std::move(*opened));
         const SDL_AudioSpec spec{SDL_AUDIO_S16, static_cast<int>(format.channels), static_cast<int>(format.rate)};
-        audio_ = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, nullptr, nullptr);
+        silence_.assign(std::size_t{format.frame_size} * format.channels, 0);
+        audio_ = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, &Player::sound_wanted, this);
         if (audio_ == nullptr || !SDL_ResumeAudioStreamDevice(audio_)) {
             log::warn("play: no sound: the sound device could not be opened: {}", SDL_GetError());
             sound_failed_ = true;
@@ -234,17 +356,49 @@ void Player::play_sound(const proto::AudioHeader& format, const transport::Sound
         }
         log::info("play: sound through SDL's {} driver, {} Hz, {} channels", SDL_GetCurrentAudioDriver(), format.rate, format.channels);
     }
-    const int bytes_per_ms = static_cast<int>(format.rate * format.channels * 2 / 1000);
-    const auto put = [&](std::span<const std::int16_t> samples, std::uint64_t& counted) {
-        if (SDL_GetAudioStreamQueued(audio_) > kMaxSoundQueuedMs * bytes_per_ms) {
-            ++sound_left_out_;
-            return;
+    const std::lock_guard lock(sound_mutex_);
+    sound_line_.push(std::vector<std::uint8_t>(frame.data.begin(), frame.data.end()), frame.lost_before, Clock::now());
+    // Every ten seconds of sound, how the line is doing: for the log's file.
+    const media::SoundBuffer::Counters& line = sound_line_.counters();
+    if (line.arrived % 1000 == 0) {
+        log::debug("play: sound: {} frames in line (aimed at {}, the device takes {} at a time); so far it ran empty {} times, {} frames' time was "
+                   "continued, {} silent, {} frames came too late",
+                   sound_line_.depth(), sound_line_.aim(), sound_line_.period(), line.ran_empty, line.concealed, line.silent, line.let_go);
+    }
+}
+
+void SDLCALL Player::sound_wanted(void* self, SDL_AudioStream* stream, int additional, int /*total*/) {
+    static_cast<Player*>(self)->fill_sound(stream, additional);
+}
+
+// On the sound device's thread, whenever it needs more than the stream holds: a frame's worth at a time.
+void Player::fill_sound(SDL_AudioStream* stream, int additional) {
+    if (additional <= 0 || silence_.empty()) return;
+    {
+        const int frame_bytes = static_cast<int>(silence_.size() * sizeof(std::int16_t));
+        const std::lock_guard lock(sound_mutex_);
+        sound_line_.begin_period(static_cast<std::size_t>((additional + frame_bytes - 1) / frame_bytes));
+    }
+    while (additional > 0) {
+        media::SoundBuffer::Next next;
+        double speed = 1.0;
+        {
+            const std::lock_guard lock(sound_mutex_);
+            next = sound_line_.pull(Clock::now());
+            speed = sound_line_.speed();
         }
-        SDL_PutAudioStreamData(audio_, samples.data(), static_cast<int>(samples.size_bytes()));
-        ++counted;
-    };
-    for (std::uint32_t i = 0; i < std::min(frame.lost_before, kMaxConcealed); ++i) put(sound_->conceal(), sound_filled_);
-    put(sound_->decode(frame.data), sound_played_);
+        std::span<const std::int16_t> samples = silence_;
+        if (next.kind == media::SoundBuffer::Kind::frame) samples = sound_->decode(next.frame);
+        else if (next.kind == media::SoundBuffer::Kind::concealed) samples = sound_->conceal();
+        SDL_PutAudioStreamData(stream, samples.data(), static_cast<int>(samples.size_bytes()));
+        additional -= static_cast<int>(samples.size_bytes());
+        // A line that is longer or shorter than aimed for is brought back by playing a little
+        // faster or slower, which is not heard.
+        if (std::abs(speed - sound_speed_) >= kSpeedStep || (speed == 1.0 && sound_speed_ != 1.0)) {
+            sound_speed_ = speed;
+            SDL_SetAudioStreamFrequencyRatio(stream, static_cast<float>(speed));
+        }
+    }
 }
 
 void Player::on_event(const SDL_Event& event) {
@@ -380,11 +534,8 @@ void Player::on_event(const SDL_Event& event) {
 
 std::vector<std::string> Player::report() {
     std::vector<std::string> lines;
-    std::uint64_t microseconds = microseconds_, slowest = slowest_;
-    if (decoder_) {
-        microseconds += decoder_->counters().microseconds;
-        slowest = std::max(slowest, decoder_->counters().slowest_microseconds);
-    }
+    if (decoder_) take_counters();
+    const std::uint64_t microseconds = microseconds_, slowest = slowest_;
     if (!decoder_error_.empty()) lines.push_back(std::format("Pictures could not be decoded: {}.", decoder_error_));
     if (frames_ != 0 && decoder_error_.empty()) {
         lines.push_back(std::format("Played ({}): {} pictures decoded from {} frames, {} shown, {} replaced by a newer one before the screen took them, "
@@ -393,10 +544,37 @@ std::vector<std::string> Player::report() {
                                     decoder_text_, pictures_, frames_, shown_, replaced_, held_back_, refused_,
                                     static_cast<double>(microseconds) / 1000.0 / static_cast<double>(std::max<std::uint64_t>(frames_, 1)),
                                     static_cast<double>(slowest) / 1000.0, longest_queue_));
+        if (unfollowed_.empty()) {
+            lines.push_back(std::format("Behind lost frames: {} frames were decoded from the nearest frame held in place of a lost one, {} pictures shown "
+                                        "were built on those until the console's repair, {} frames could not be decoded from anything held.",
+                                        changed_, approximate_, undecodable_));
+        } else {
+            lines.push_back(std::format("Behind lost frames the picture stands until the console's repair: {}.", unfollowed_));
+        }
+        lines.push_back(std::format("Frames arrived this far apart: {}.", arrival_spacing_.text()));
+        lines.push_back(std::format("Frames that came late with none lost: {} were held up on the way (the next one came right behind), {} the console "
+                                    "sent late (the next one kept its distance: the game's own pace).",
+                                    late_on_the_way_, late_sent_));
+        lines.push_back(std::format("Pictures went to the screen this far apart: {}.", handed_spacing_.text()));
+        lines.push_back(std::format("Smoothness: the picture stood for over {:.0f} ms {} times (the longest: {:.0f} ms): {} with frames lost or not "
+                                    "shown, {} after a pause in arriving, {} with the decoder behind, {} unexplained.",
+                                    kStoodMs, stood_, longest_stood_ms_, stood_lost_, stood_arrival_, stood_decoder_, stood_other_));
     }
     if (sound_) {
-        lines.push_back(std::format("Sound: {} frames played, {} filled in for frames that did not arrive, {} left out to keep up with the picture{}.",
-                                    sound_played_, sound_filled_, sound_left_out_, audio_ == nullptr ? " (no sound device)" : ""));
+        media::SoundBuffer::Counters line;
+        std::size_t aim = 0;
+        {
+            const std::lock_guard lock(sound_mutex_);
+            line = sound_line_.counters();
+            aim = sound_line_.aim();
+        }
+        lines.push_back(std::format("Sound: {} frames played, {} filled in for frames that did not arrive, {} left out to keep up with the picture{}; "
+                                    "the line of frames ran empty {} times: the sound before was continued for {} frames' time and {} were silent; "
+                                    "the device took up to {} frames at a time, and {} to {} waited when it did ({:.1f} on average, aimed at {} "
+                                    "in the end; a frame is 10 ms).",
+                                    line.played, line.filled, line.let_go, audio_ == nullptr ? " (no sound device)" : "", line.ran_empty, line.concealed,
+                                    line.silent, line.largest_period, line.least_depth, line.most_depth,
+                                    static_cast<double>(line.depth_sum) / static_cast<double>(std::max<std::uint64_t>(line.periods, 1)), aim));
     }
     lines.push_back(pad_name_.empty() ? std::string("Controller: none was connected (the keyboard's arrow keys, Enter and Backspace stood in).")
                                       : std::format("Controller: {}.", pad_name_));
@@ -421,6 +599,7 @@ int run_player(SessionPlan plan, const PlayOptions& options) {
         std::atomic<bool> done{false};
         plan.on_media = [&](transport::MediaOutput& media, const std::optional<proto::StreamInfo>& info) { player.on_media(media, info); };
         plan.controller = [&](transport::Buttons& buttons, transport::InputState& state) { return player.controller(buttons, state); };
+        plan.wants_keyframe = [&] { return player.wants_keyframe(); };
         plan.stop = [&] { return stop.load(); };
         std::thread session([&] {
             session_code = run_session(plan);
@@ -437,12 +616,21 @@ int run_player(SessionPlan plan, const PlayOptions& options) {
             window.next_picture = [&] { return player.next_picture(); };
             window.finished = [&] { return done.load(); };
             window.on_event = [&](const SDL_Event& event) { player.on_event(event); };
+            if (const auto file = window_place_file()) {
+                window.place = load_window_place(*file);
+                window.on_place = [file = *file](const WindowPlace& place) {
+                    if (!save_window_place(file, place)) log::warn("window: its size could not be kept in {}", file.string());
+                };
+            }
             window_code = render::run_window(window);
         }
         stop.store(true);
         session.join();
         player.finish();
-        for (const std::string& line : player.report()) std::printf("%s\n", line.c_str());
+        for (const std::string& line : player.report()) {
+            std::printf("%s\n", line.c_str());
+            log::record(line);
+        }
     }
     SDL_QuitSubSystem(SDL_INIT_GAMEPAD);
     SDL_QuitSubSystem(SDL_INIT_AUDIO);
@@ -451,9 +639,3 @@ int run_player(SessionPlan plan, const PlayOptions& options) {
 }
 
 }  // namespace psvp::app
-            if (const auto file = window_place_file()) {
-                window.place = load_window_place(*file);
-                window.on_place = [file = *file](const WindowPlace& place) {
-                    if (!save_window_place(file, place)) log::warn("window: its size could not be kept in {}", file.string());
-                };
-            }

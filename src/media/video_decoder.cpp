@@ -1,5 +1,7 @@
 #include "media/video_decoder.h"
 
+#include "media/frame_refs.h"
+
 #include <algorithm>
 #include <chrono>
 #include <cstring>
@@ -65,6 +67,9 @@ struct VideoDecoder::State {
     std::vector<std::uint8_t> header;
     bool header_due = true;
     VideoDecoderCounters counters;
+    // HEVC: which frames the decoder holds, for the frames behind a lost one.
+    std::optional<ReferenceTracker> tracker;
+    std::string unfollowed;
 };
 
 VideoDecoder::VideoDecoder(std::unique_ptr<State> state) : state_(std::move(state)) {}
@@ -99,13 +104,52 @@ std::expected<VideoDecoder, std::string> VideoDecoder::open(VideoCodec codec, st
         return std::unexpected(std::format("FFmpeg's {} decoder did not open: {}", state->implementation->name, error_text(result)));
     }
     state->header.assign(header.begin(), header.end());
+    if (codec == VideoCodec::hevc) {
+        state->tracker.emplace(header);
+        state->unfollowed = state->tracker->unread_reason();
+    } else {
+        state->unfollowed = "an H.264 stream's frames are not read";
+    }
     return VideoDecoder(std::move(state));
 }
 
 void VideoDecoder::restart() {
     avcodec_flush_buffers(state_->context.get());
     state_->header_due = true;
+    if (state_->tracker) state_->tracker.emplace(state_->header);
 }
+
+VideoDecoder::Decoded VideoDecoder::decode(std::uint16_t index, std::span<const std::uint8_t> frame) {
+    State& state = *state_;
+    Decoded result;
+    if (!state.tracker) {
+        result.picture = decode(frame);
+        return result;
+    }
+    using Way = ReferenceTracker::Way;
+    const ReferenceTracker::Verdict verdict = state.tracker->look(index, frame);
+    state.unfollowed = verdict.way == Way::unread ? verdict.why : std::string();
+    if (verdict.way == Way::no_reference) {
+        ++state.counters.frames;
+        ++state.counters.undecodable;
+        result.needs_keyframe = true;
+        return result;
+    }
+    if (verdict.way == Way::changed) ++state.counters.changed;
+    result.picture = decode(verdict.way == Way::changed ? std::span<const std::uint8_t>(verdict.changed) : frame);
+    state.tracker->decoded(index, result.picture.has_value());
+    if (result.picture && verdict.way != Way::unread) {
+        // The decoder was asked for frames it holds only: what it thinks of the stream's own
+        // list, which still names the lost frame, does not count.
+        if (result.picture->damaged) --state.counters.damaged;
+        result.picture->damaged = false;
+        result.picture->approximate = !verdict.exact;
+        if (!verdict.exact) ++state.counters.approximate;
+    }
+    return result;
+}
+
+const std::string& VideoDecoder::unfollowed_reason() const noexcept { return state_->unfollowed; }
 
 std::optional<Picture> VideoDecoder::decode(std::span<const std::uint8_t> frame) {
     State& state = *state_;

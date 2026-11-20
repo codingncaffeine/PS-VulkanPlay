@@ -75,13 +75,22 @@ void close_file() {
 void write(Level level, std::string_view text) {
     State& s = state();
     const std::lock_guard lock(s.mutex);
-    if (level < s.minimum) return;
+    if (level < s.minimum && s.file == nullptr) return;
     const std::string line = std::format("{} {} {}\n", timestamp(), label(level), text);
-    std::fputs(line.c_str(), stderr);
+    if (level >= s.minimum) std::fputs(line.c_str(), stderr);
     if (s.file != nullptr) {
         std::fputs(line.c_str(), s.file);
         std::fflush(s.file);
     }
+}
+
+void record(std::string_view text) {
+    State& s = state();
+    const std::lock_guard lock(s.mutex);
+    if (s.file == nullptr) return;
+    const std::string line = std::format("{} SAID  {}\n", timestamp(), text);
+    std::fputs(line.c_str(), s.file);
+    std::fflush(s.file);
 }
 
 }  // namespace psvp::log

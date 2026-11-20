@@ -22,6 +22,7 @@
 #include "app/console_store.h"
 #include "app/decoding.h"
 #include "app/json.h"
+#include "app/log.h"
 #include "app/paths.h"
 #include "app/session_run.h"
 #include "net/socket.h"
@@ -60,12 +61,16 @@ constexpr std::size_t kMaxResponseHead = 1500;
 
 template <class... Args>
 void say(std::format_string<Args...> format, Args&&... args) {
-    std::fputs((std::format(format, std::forward<Args>(args)...) + "\n").c_str(), stdout);
+    const std::string text = std::format(format, std::forward<Args>(args)...);
+    std::fputs((text + "\n").c_str(), stdout);
+    log::record(text);
 }
 
 template <class... Args>
 int fail(std::format_string<Args...> format, Args&&... args) {
-    std::fputs((std::format(format, std::forward<Args>(args)...) + "\n").c_str(), stderr);
+    const std::string text = std::format(format, std::forward<Args>(args)...);
+    std::fputs((text + "\n").c_str(), stderr);
+    log::record(text);
     return kFailed;
 }
 
@@ -800,6 +805,36 @@ std::optional<std::string> read_plan(const Parsed& parsed, SessionPlan& plan) {
 // With a controller of the caller's, the stream's loop looks at it this often at least.
 constexpr auto kControllerEvery = 2ms;
 
+// Tells a pause on the network from a pause in this program, by the times the system took
+// the stream's packets off the network and the times they were read.
+struct ArrivalWatch {
+    static constexpr double kLongPauseMs = 35.0;  // two frames' time: a picture comes late
+    static constexpr double kSlowReadMs = 5.0;
+    std::optional<std::chrono::system_clock::time_point> last;
+    std::uint64_t timed = 0, pauses = 0, slow_reads = 0;
+    double longest_pause_ms = 0.0, longest_wait_ms = 0.0;
+
+    // The pause before this packet, in milliseconds, when it was a long one.
+    std::optional<double> packet(std::chrono::system_clock::time_point taken, std::chrono::system_clock::time_point read) {
+        const auto ms = [](std::chrono::system_clock::duration time) { return std::chrono::duration<double, std::milli>(time).count(); };
+        ++timed;
+        const double waited = ms(read - taken);
+        longest_wait_ms = std::max(longest_wait_ms, waited);
+        if (waited > kSlowReadMs) ++slow_reads;
+        std::optional<double> pause;
+        if (last) {
+            const double since = ms(taken - *last);
+            longest_pause_ms = std::max(longest_pause_ms, since);
+            if (since > kLongPauseMs) {
+                ++pauses;
+                pause = since;
+            }
+        }
+        last = taken;
+        return pause;
+    }
+};
+
 int run_session_here(const SessionPlan& plan) {
     namespace transport = proto::transport;
     const transport::VideoProfile& video = plan.video;
@@ -971,6 +1006,8 @@ int run_session_here(const SessionPlan& plan) {
     using State = transport::ClientStream::State;
     // A keyframe arrives as one burst of packets: room for them while the control channel is looked after.
     const std::size_t receive_buffer = link->socket.set_receive_buffer(4U << 20);
+    const bool arrivals_timed = link->socket.note_arrival_times();
+    ArrivalWatch arrivals;
     // The frames that are ready leave the stream at once; they are kept only when a dump was asked for.
     std::uint64_t video_bytes = 0;
     std::uint64_t sound_bytes = 0;
@@ -995,6 +1032,13 @@ int run_session_here(const SessionPlan& plan) {
             if (*datagram) {
                 if ((*datagram)->from != link->console) continue;
                 const auto now = Clock::now();
+                // Once the stream runs: a pause between two packets is the network's (or the console's), a
+                // packet that waited to be read is this program's.
+                if ((*datagram)->taken && stream.state() == State::ready && stream.info()) {
+                    if (const auto pause = arrivals.packet(*(*datagram)->taken, std::chrono::system_clock::now())) {
+                        log::debug("stream: {:.1f} s: nothing arrived for {:.0f} ms", std::chrono::duration<double>(now - setup_started).count(), *pause);
+                    }
+                }
                 if (plan.on_packet) plan.on_packet(registration.kind, (*datagram)->data, std::chrono::duration_cast<std::chrono::microseconds>(now - setup_started));
                 send_all(stream.on_datagram((*datagram)->data, now));
             }
@@ -1050,6 +1094,8 @@ int run_session_here(const SessionPlan& plan) {
         if (plan.controller && actions.empty() && plan.controller(buttons, controller_state)) {
             send_all(stream.set_controller(buttons, controller_state, now));
         }
+        // No frame can be decoded from what the decoder holds: a frame that needs none is asked for.
+        if (plan.wants_keyframe && plan.wants_keyframe()) send_all(stream.request_keyframe(now));
         return now >= hold_until || (plan.stop && plan.stop());
     });
     const auto held_for = Clock::now() - hold_started;
@@ -1076,9 +1122,18 @@ int run_session_here(const SessionPlan& plan) {
         say("Told the console: {} times of frames that did not arrive, {} congestion reports, {} input states (a resting controller's); "
             "receive buffer: {} bytes.",
             counters.loss_reports, counters.congestion_reports, counters.input_states, receive_buffer);
+        if (counters.keyframe_requests != 0) say("Asked the console for a frame that needs no earlier one: {} times.", counters.keyframe_requests);
         if (!actions.empty()) {
             say("Buttons: {} changes told to the console in {} input history packets (each change's packet, and the last one sent again).",
                 counters.input_events, counters.history_packets);
+        }
+        if (arrivals.timed != 0) {
+            say("Arrival: {} times nothing came from the console for over {:.0f} ms (the longest pause: {:.0f} ms); a packet waited {:.1f} ms at "
+                "most before this program read it ({} waited over {:.0f} ms).",
+                arrivals.pauses, ArrivalWatch::kLongPauseMs, arrivals.longest_pause_ms, arrivals.longest_wait_ms, arrivals.slow_reads,
+                ArrivalWatch::kSlowReadMs);
+        } else if (!arrivals_timed) {
+            say("Arrival: this system does not tell when a packet came in.");
         }
     }
     if (plan.on_report) plan.on_report();
@@ -1211,13 +1266,45 @@ int command_play(std::span<const std::string_view> args) {
         }
     }
     if (play_runner == nullptr) return fail("play: this build has no window to play in");
-    return play_runner(std::move(plan), options);
+    // Everything a session says and logs is kept: the file of the last session, and the one before beside it.
+    if (const auto dirs = resolve_dirs(process_env())) {
+        const auto file = dirs->state / "logs" / "play.log";
+        if (!log::open_file(file)) log::warn("log: cannot write {}", file.string());
+    }
+    // Builds between two releases carry one version: when this one was made tells them apart.
+    std::string built;
+    {
+        std::error_code failed;
+        const auto written = std::filesystem::last_write_time("/proc/self/exe", failed);
+        if (!failed) built = std::format(", built {:%Y-%m-%d %H:%M} UTC", std::chrono::floor<std::chrono::minutes>(std::chrono::file_clock::to_sys(written)));
+    }
+    log::info("{} {}{}: play {}", PSVP_BINARY, PSVP_VERSION, built, plan.console);
+    const int code = play_runner(std::move(plan), options);
+    log::info("play ended with code {}", code);
+    log::close_file();
+    return code;
 }
 
 // Decodes what 'session --dump' kept: the same decoders, without a console.
 int command_decode(std::span<const std::string_view> args) {
-    const Parsed parsed = parse(args, {}, {"--expect-clip"}, 1);
+    const Parsed parsed = parse(args, {"--lose"}, {"--expect-clip"}, 1);
     if (!parsed.error.empty()) return usage("decode: {}", parsed.error);
+    // Frames to leave out, as if they had not arrived: what a player then shows is compared with the whole stream's pictures.
+    std::vector<std::uint64_t> lose;
+    if (const auto text = parsed.option("--lose")) {
+        for (const auto part : std::views::split(*text, ',')) {
+            std::uint64_t first = 0, last = 0;
+            const std::string_view range(part.begin(), part.end());
+            const auto dash = range.find('-');
+            const std::string_view from = range.substr(0, dash), to = dash == std::string_view::npos ? from : range.substr(dash + 1);
+            const auto a = std::from_chars(from.data(), from.data() + from.size(), first);
+            const auto b = std::from_chars(to.data(), to.data() + to.size(), last);
+            if (a.ec != std::errc() || b.ec != std::errc() || a.ptr != from.data() + from.size() || b.ptr != to.data() + to.size() || last < first || last - first > 1000) {
+                return usage("decode: --lose takes frame numbers and ranges, as in 100,250-252");
+            }
+            for (std::uint64_t frame = first; frame <= last; ++frame) lose.push_back(frame);
+        }
+    }
     if (parsed.words.empty()) return usage("decode: which folder? Give one that 'session --dump' wrote");
     const std::filesystem::path folder(parsed.words.front());
     const auto read = [&](const char* name) -> std::optional<std::string> {
@@ -1251,13 +1338,20 @@ int command_decode(std::span<const std::string_view> args) {
     // video.tsv: frame, bytes, repaired, lost-before, picture-size, header-bytes (the header stands before the frame).
     std::size_t at = 0;
     std::map<std::uint64_t, std::span<const std::uint8_t>> headers;
+    std::uint32_t left_out = 0;
     for (const auto& row : rows(*video_list)) {
         if (row.size() < 6 || row[5] > video->size() - at || row[1] > video->size() - at - row[5]) return fail("decode: video.tsv does not fit video.bin");
         if (row[5] != 0) headers[row[4]] = bytes(*video, at, row[5]);
         at += row[5];
-        decoding.video(headers[row[4]], static_cast<unsigned>(row[4]), static_cast<std::uint16_t>(row[0]), bytes(*video, at, row[1]),
-                       static_cast<std::uint32_t>(row[3]));
+        const auto index = static_cast<std::uint16_t>(row[0]);
+        const auto frame = bytes(*video, at, row[1]);
         at += row[1];
+        if (!lose.empty()) decoding.reference(headers[row[4]], static_cast<unsigned>(row[4]), index, frame);
+        if (std::ranges::find(lose, row[0]) != lose.end()) {
+            ++left_out;
+            continue;
+        }
+        decoding.video(headers[row[4]], static_cast<unsigned>(row[4]), index, frame, static_cast<std::uint32_t>(row[3]) + std::exchange(left_out, 0U));
     }
     // sound.tsv: frame, bytes, haptics, from-a-later-packet, lost-before. The format is the one every console was seen to send.
     const proto::AudioHeader format;

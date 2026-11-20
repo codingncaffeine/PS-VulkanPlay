@@ -150,12 +150,43 @@ keyframe. A decoder has to keep going over the three frames in between. One that
 list names a frame it does not have never comes back, since each later frame lists nine.
 
 **[read]** The reference reports from the frame after the last one it handed on up to the frame before the one
-that just began, and asks for a keyframe when restoring a frame fails. It also reads the beginning of every
-frame to see which earlier frame it refers to, and drops a frame whose reference it does not have. This
-client leaves that to its decoder: every frame that arrives is decoded, and a picture the decoder marks as
-built on a frame it did not have is not shown; the last whole picture stays up until the console's repair.
-**[seen]** On the stream above, FFmpeg 9 marked exactly the three frames between the loss and the repair.
-Older versions of FFmpeg do not mark them; there such pictures are shown, for a few frames.
+that just began, and asks for a keyframe when restoring a frame fails.
+
+### After a lost frame
+
+**[seen]** A PS5's HEVC frames say in their first bits which earlier frames they name and which one they are
+predicted from (the slice header's own short-term reference set, H.265 7.3.7: the stream's parameter sets
+carry none). Every frame names up to nine frames before it, each one frame further back, and marks exactly one
+of them as used: the frame just before it, or, in the console's repair, the last frame before the loss. The
+order count has four bits and goes up by one with every frame, lost ones included. The parameter sets have no
+long-term frames, no scaling lists and no reordering of the list of frames used. An HDR stream has the same
+shape.
+
+**[read]** The reference reads the frame a frame is predicted from. When it did not hand that frame to its
+decoder, it marks the nearest older frame that it did hand over as the one used, in the frame's own bits, and
+decodes that; when it handed none of the frames named over, it drops the frame. H.264 frames it reads, and
+drops when their frame is missing, but does not change.
+
+This client does the same for HEVC, with two differences. It takes the nearest frame the decoder holds, older
+or not than the one the frame asked for. And it changes the marks of any frame of this shape, with one frame
+used or several: each frame that is not held gives its mark to the nearest frame that is held and was only
+named, and the frame is left undecoded when none is held (then the console is asked for a keyframe, every
+half second while that lasts). The pictures of a changed frame and of the frames built on it are close to
+the console's, not the same; they are shown, and the console's repair makes the picture exact again. Changing
+a mark keeps the frame's length in bits. In bytes it can grow or shrink by one, where the changed bit makes or
+breaks a run of two zero bytes in front of a byte of 0 to 3: the byte that keeps such a run from reading as a
+start code is taken out before the change and put back after it.
+
+A stream of another shape is not read, and says why in the report: its frames are decoded as they are sent,
+and a picture the decoder marks as built on a frame it did not have is not shown; the last whole picture
+stays up until the console's repair. That is also what happens to H.264 streams. **[seen]** On the PS5 stream
+above, FFmpeg 9 marked exactly the three frames between the loss and the repair when they were decoded as
+sent; older versions of FFmpeg do not mark them.
+
+**[seen]** In a session of 19 minutes with a PS5, 327 frames were given up, one every 3.6 s, and 786 more
+pictures were held back for it: the picture stood for about four frames each time. **[checked]** With frames
+taken out of two streams kept from a PS5 (one of them HDR), one at a time, two and six in a row, every
+frame behind them gave a picture, off by 0.2 of 255 at most from the picture of the whole stream.
 
 ### Congestion reports
 

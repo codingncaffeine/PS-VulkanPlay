@@ -27,6 +27,10 @@ public:
     // of frames that did not arrive since the frame before.
     void video(std::span<const std::uint8_t> header, unsigned size_index, std::uint16_t index, std::span<const std::uint8_t> frame,
                std::uint32_t lost_before);
+    // The same frame, when video() gets only some of the frames: decoded on the side by a decoder
+    // that gets them all, so that each picture can be compared with what it should have been.
+    // To be called before video() for that frame.
+    void reference(std::span<const std::uint8_t> header, unsigned size_index, std::uint16_t index, std::span<const std::uint8_t> frame);
     // One sound frame, in order.
     void sound(unsigned rate, unsigned channels, unsigned frame_samples, std::span<const std::uint8_t> frame, std::uint32_t lost_before);
 
@@ -45,6 +49,16 @@ private:
     std::uint64_t frames_ = 0, pictures_ = 0, damaged_ = 0, refused_ = 0, undecodable_ = 0;
     std::uint64_t microseconds_ = 0, slowest_microseconds_ = 0;
     std::string decoder_text_;
+    std::uint64_t changed_ = 0, approximate_ = 0, no_reference_ = 0;
+    std::string unfollowed_;
+    // The decoder that gets every frame, and its last picture.
+    std::optional<media::VideoDecoder> reference_;
+    std::optional<unsigned> reference_size_index_;
+    std::optional<media::Picture> reference_picture_;
+    std::uint16_t reference_index_ = 0;
+    std::uint64_t compared_ = 0, same_ = 0, missing_ = 0;
+    double difference_sum_ = 0.0, worst_difference_ = 0.0;
+    std::uint16_t worst_index_ = 0;
     // The clip.
     std::uint64_t clip_right_ = 0, clip_wrong_ = 0, clip_wrong_after_loss_ = 0;
     std::optional<std::uint16_t> clip_first_wrong_;

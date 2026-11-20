@@ -70,6 +70,9 @@ private:
 struct Datagram {
     Address from;
     std::vector<std::uint8_t> data;
+    // When the system took it off the network, for a socket that was asked to note it: how long
+    // it then waited to be read tells a pause on the network from a pause in this program.
+    std::optional<std::chrono::system_clock::time_point> taken;
 };
 
 class UdpSocket {
@@ -87,6 +90,8 @@ public:
     // Asks for room for `bytes` of datagrams that wait to be read (a keyframe arrives as a burst of
     // hundreds). The system may give less; what it gave is returned, 0 when that cannot be read.
     std::size_t set_receive_buffer(std::size_t bytes) noexcept;
+    // From now on every datagram says when the system took it. False where the system cannot tell.
+    bool note_arrival_times() noexcept;
 
 private:
     Fd fd_;

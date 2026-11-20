@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <chrono>
 #include <cstring>
+#include <ctime>
 #include <format>
 
 #include <arpa/inet.h>
@@ -13,6 +15,7 @@
 #include <netinet/tcp.h>
 #include <poll.h>
 #include <sys/socket.h>
+#include <sys/uio.h>
 #include <unistd.h>
 
 namespace psvp::net {
@@ -151,6 +154,43 @@ std::size_t UdpSocket::set_receive_buffer(std::size_t bytes) noexcept {
     return static_cast<std::size_t>(got);
 }
 
+#ifdef SCM_TIMESTAMPNS
+namespace {
+// The time the system noted for a datagram, from the notes it handed over with it. The notes
+// stand one behind the other, each a header and its data, each begun at a multiple of a long's
+// size. (They are walked here by that rule: the C libraries' macros for it differ in what a
+// strict compiler says about them.)
+std::optional<std::chrono::system_clock::time_point> arrival_time(const msghdr& message) {
+    const auto* notes = static_cast<const unsigned char*>(message.msg_control);
+    const auto size = static_cast<std::size_t>(message.msg_controllen);
+    const std::size_t data_at = CMSG_LEN(0);
+    for (std::size_t at = 0; notes != nullptr && size >= sizeof(cmsghdr) && at <= size - sizeof(cmsghdr);) {
+        cmsghdr header{};
+        std::memcpy(&header, notes + at, sizeof(header));
+        const auto length = static_cast<std::size_t>(header.cmsg_len);
+        if (length < data_at || length > size - at) break;
+        if (header.cmsg_level == SOL_SOCKET && header.cmsg_type == SCM_TIMESTAMPNS && length - data_at >= sizeof(timespec)) {
+            timespec when{};
+            std::memcpy(&when, notes + at + data_at, sizeof(when));
+            return std::chrono::system_clock::time_point(std::chrono::duration_cast<std::chrono::system_clock::duration>(
+                std::chrono::seconds(when.tv_sec) + std::chrono::nanoseconds(when.tv_nsec)));
+        }
+        at += (length + sizeof(long) - 1) / sizeof(long) * sizeof(long);
+    }
+    return std::nullopt;
+}
+}  // namespace
+#endif
+
+bool UdpSocket::note_arrival_times() noexcept {
+#ifdef SO_TIMESTAMPNS
+    const int on = 1;
+    return ::setsockopt(fd_.get(), SOL_SOCKET, SO_TIMESTAMPNS, &on, sizeof(on)) == 0;
+#else
+    return false;
+#endif
+}
+
 std::expected<UdpSocket, std::string> UdpSocket::open(std::uint32_t bind_ip, std::uint16_t first_port,
                                                      std::uint16_t last_port, bool allow_broadcast) {
     UdpSocket socket;
@@ -198,12 +238,22 @@ std::expected<std::optional<Datagram>, std::string> UdpSocket::receive(Clock::ti
         Datagram datagram;
         datagram.data.resize(2048);
         sockaddr_in from{};
-        socklen_t from_size = sizeof(from);
-        const ssize_t got = ::recvfrom(fd_.get(), datagram.data.data(), datagram.data.size(), 0,
-                                       reinterpret_cast<sockaddr*>(&from), &from_size);
+        iovec part{datagram.data.data(), datagram.data.size()};
+        alignas(cmsghdr) char notes[CMSG_SPACE(sizeof(timespec)) + 64];
+        msghdr message{};
+        message.msg_name = &from;
+        message.msg_namelen = sizeof(from);
+        message.msg_iov = &part;
+        message.msg_iovlen = 1;
+        message.msg_control = notes;
+        message.msg_controllen = sizeof(notes);
+        const ssize_t got = ::recvmsg(fd_.get(), &message, 0);
         if (got >= 0) {
             datagram.data.resize(static_cast<std::size_t>(got));
             datagram.from = from_sockaddr(from);
+#ifdef SCM_TIMESTAMPNS
+            datagram.taken = arrival_time(message);
+#endif
             return std::optional<Datagram>(std::move(datagram));
         }
         // A refused earlier datagram is reported on a later read; it is not this read's failure.

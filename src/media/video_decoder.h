@@ -34,6 +34,9 @@ struct Picture {
     bool keyframe = false;
     // The decoder did not have everything this picture is built from: it may show damage.
     bool damaged = false;
+    // Built on a frame that stood in for a lost one, or on a picture that was: close to the
+    // console's picture, not the same. The console's repair ends it.
+    bool approximate = false;
     const std::uint8_t* planes[3] = {nullptr, nullptr, nullptr};
     std::size_t strides[3] = {0, 0, 0};  // in bytes
     std::shared_ptr<void> keep;          // the planes live as long as this does
@@ -49,6 +52,9 @@ struct VideoDecoderCounters {
     std::uint64_t pictures = 0;  // came out
     std::uint64_t refused = 0;   // frames the decoder gave no picture for
     std::uint64_t damaged = 0;   // pictures that came out marked as damaged
+    std::uint64_t changed = 0;       // frames made to use a frame the decoder held, in place of a lost one
+    std::uint64_t approximate = 0;   // pictures that came out of those, and of frames built on them
+    std::uint64_t undecodable = 0;   // frames left out: the decoder held none of the frames they name
     std::uint64_t microseconds = 0;      // spent decoding, all frames together
     std::uint64_t slowest_microseconds = 0;
 };
@@ -64,6 +70,17 @@ public:
     // One frame as the console sent it, in the stream's order. A frame is one picture, and the
     // decoder holds none back: the picture of this frame comes out, or nothing does.
     [[nodiscard]] std::optional<Picture> decode(std::span<const std::uint8_t> frame);
+    // The same for a frame whose number in the stream is known, which lets the pictures go on
+    // behind a lost frame (HEVC; media/frame_refs.h): a frame predicted from one the decoder does
+    // not hold is decoded from the nearest one it holds, and its picture is marked approximate,
+    // not damaged. Nothing comes out and `needs_keyframe` is set when it holds none at all.
+    struct Decoded {
+        std::optional<Picture> picture;
+        bool needs_keyframe = false;
+    };
+    [[nodiscard]] Decoded decode(std::uint16_t index, std::span<const std::uint8_t> frame);
+    // Why frames are decoded as they are sent, whatever they are predicted from; empty when the stream is followed.
+    [[nodiscard]] const std::string& unfollowed_reason() const noexcept;
     // The frames that follow do not continue the ones before: the next one must be a keyframe.
     void restart();
 

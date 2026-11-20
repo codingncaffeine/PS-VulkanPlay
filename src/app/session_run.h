@@ -43,6 +43,8 @@ struct SessionPlan {
     std::function<void(const std::vector<proto::transport::ConsoleData>&, std::chrono::microseconds)> on_console_data;
     // The controller as it is now; true when it changed since the last call. Asked every few milliseconds.
     std::function<bool(proto::transport::Buttons&, proto::transport::InputState&)> controller;
+    // True when the console is to be asked for a frame that needs no earlier one. Asked every few milliseconds.
+    std::function<bool()> wants_keyframe;
     // True ends the stream.
     std::function<bool()> stop;
     // After the stream's own report lines: more of them.

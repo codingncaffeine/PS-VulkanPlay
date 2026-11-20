@@ -73,7 +73,9 @@ pkg_check_modules(PSVP_FFMPEG REQUIRED IMPORTED_TARGET libavcodec libavutil)
 pkg_check_modules(PSVP_OPUS REQUIRED IMPORTED_TARGET opus)
 add_library(psvp_media STATIC
     src/media/color.cpp
+    src/media/frame_refs.cpp
     src/media/sound_decoder.cpp
+    src/media/sound_buffer.cpp
     src/media/test_clip.cpp
     src/media/video_decoder.cpp)
 target_include_directories(psvp_media PUBLIC src)
