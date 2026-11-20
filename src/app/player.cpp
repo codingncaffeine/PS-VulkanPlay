@@ -81,11 +81,12 @@ struct Spacing {
 class Player {
 public:
     // `frames_per_second` is what the console was asked for; with `pacing`, pictures are shown that evenly.
-    Player(double frames_per_second, bool pacing, int haptics_volume, std::optional<transport::Button> back_left,
+    // With a `cushion_ms`, that much delay is kept so that frames which come that much late are shown in place.
+    Player(double frames_per_second, bool pacing, int cushion_ms, int haptics_volume, std::optional<transport::Button> back_left,
            std::optional<transport::Button> back_right)
         : haptics_volume_(haptics_volume), back_left_(back_left), back_right_(back_right), decode_thread_([this] { decode_loop(); }) {
         const std::lock_guard lock(jobs_mutex_);
-        if (pacing) pacer_.emplace(frames_per_second);
+        if (pacing) pacer_.emplace(frames_per_second, std::chrono::milliseconds(cushion_ms));
     }
     // Ends the decoding: frames still waiting are not decoded any more. After it the counts stand still.
     void finish() {
@@ -278,6 +279,7 @@ private:
     // When to show each picture. Set before the first frame is there; the decode thread's from then on.
     std::optional<media::FramePacer> pacer_;
     std::uint64_t paced_ = 0, paced_late_ = 0, paced_microseconds_ = 0, paced_most_microseconds_ = 0;
+    std::uint64_t through_ = 0, through_microseconds_ = 0;  // pictures handed on, and how long after their frames arrived
     // When the picture stood, and what was seen to go with it.
     std::optional<Clock::time_point> first_handed_, last_handed_;
     std::uint64_t stood_ = 0, stood_lost_ = 0, stood_arrival_ = 0, stood_decoder_ = 0, stood_other_ = 0;
@@ -392,6 +394,7 @@ void Player::decode_loop() {
         }
         lost_since_ += job.lost_before;
         longest_arrival_since_ms_ = std::max(longest_arrival_since_ms_, job.since_arrival_ms);
+        const auto began = Clock::now();
         auto decoded = decoder_->decode(job.index, job.data);
         // No frame the decoder holds leads to this one: only a keyframe gets the picture going again.
         if (decoded.needs_keyframe) keyframe_needed_.store(true);
@@ -413,9 +416,11 @@ void Player::decode_loop() {
         longest_behind_since_ms_ = std::max(longest_behind_since_ms_, std::chrono::duration<double, std::milli>(ready - job.arrived).count());
         if (pacer_) {
             std::unique_lock lock(jobs_mutex_);
-            // With frames already waiting behind this one the stream is behind (a bunch came after a pause):
-            // the picture is shown at once, so that the pause does not stay as delay.
-            const media::FramePacer::Slot slot = pacer_->schedule(ready, !jobs_.empty());
+            // With more frames waiting behind this one than a cushion is made of, the stream is behind (a bunch
+            // came after a pause): the picture is shown at once, so that the pause does not stay as delay.
+            // It could have been ready when its frame had arrived and was decoded; what it waited before
+            // that, behind the picture before it, is delay it carries already.
+            const media::FramePacer::Slot slot = pacer_->schedule(job.arrived + (ready - began), ready, jobs_.size());
             if (slot.late) ++paced_late_;
             if (slot.at > ready) {
                 ++paced_;
@@ -427,6 +432,8 @@ void Player::decode_loop() {
         }
         const auto now = Clock::now();
         note_handed(now);
+        through_microseconds_ += static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(now - job.arrived).count());
+        ++through_;
         {
             const std::lock_guard lock(picture_mutex_);
             if (fresh_) ++replaced_;
@@ -797,13 +804,18 @@ std::vector<std::string> Player::report() {
                                     "sent late (the next one kept its distance: the game's own pace).",
                                     late_on_the_way_, late_sent_));
         lines.push_back(std::format("Pictures went to the screen this far apart: {}.", handed_spacing_.text()));
+        const double through_ms = static_cast<double>(through_microseconds_) / 1000.0 / static_cast<double>(std::max<std::uint64_t>(through_, 1));
         if (pacer_) {
+            const auto cushion = std::chrono::duration_cast<std::chrono::milliseconds>(pacer_->cushion()).count();
             lines.push_back(std::format("Pacing: {} of {} pictures were held back to follow the one before by a frame's time, by {:.1f} ms on average "
-                                        "and {:.1f} ms at most; {} had newer frames waiting behind them (a bunch after a pause) and were shown at once.",
+                                        "and {:.1f} ms at most; {} had more frames waiting behind them than the cushion is long (a bunch after a pause) "
+                                        "and were shown at once. {}; a picture was on its way to the screen {:.1f} ms after its frame had arrived, on average.",
                                         paced_, pictures_, static_cast<double>(paced_microseconds_) / 1000.0 / static_cast<double>(std::max<std::uint64_t>(paced_, 1)),
-                                        static_cast<double>(paced_most_microseconds_) / 1000.0, paced_late_));
+                                        static_cast<double>(paced_most_microseconds_) / 1000.0, paced_late_,
+                                        cushion > 0 ? std::format("A cushion of {} ms was kept for frames that come late", cushion) : std::string("No cushion was kept"),
+                                        through_ms));
         } else {
-            lines.emplace_back("Pacing: off; every picture was shown the moment it was there.");
+            lines.push_back(std::format("Pacing: off; every picture was shown the moment it was there, {:.1f} ms after its frame had arrived, on average.", through_ms));
         }
         lines.push_back(std::format("Smoothness: the picture stood for over {:.0f} ms {} times (the longest: {:.0f} ms): {} with frames lost or not "
                                     "shown, {} after a pause in arriving, {} with the decoder behind, {} unexplained.",
@@ -875,7 +887,7 @@ int run_player(SessionPlan plan, const PlayOptions& options) {
     int window_code = 0;
     int session_code = 0;
     {
-        Player player(static_cast<double>(plan.video.max_fps), options.pacing, options.haptics_volume, options.back_left, options.back_right);
+        Player player(static_cast<double>(plan.video.max_fps), options.pacing, options.cushion_ms, options.haptics_volume, options.back_left, options.back_right);
         std::atomic<bool> stop{false};
         std::atomic<bool> done{false};
         plan.on_media = [&](transport::MediaOutput& media, const std::optional<proto::StreamInfo>& info) { player.on_media(media, info); };

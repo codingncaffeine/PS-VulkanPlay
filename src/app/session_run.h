@@ -69,6 +69,8 @@ struct PlayOptions {
     // Show pictures evenly, a frame's time apart, by holding one back for as long as frames were
     // lately seen to arrive unevenly (media/frame_pacer.h). Off: every picture the moment it is there.
     bool pacing = true;
+    // Delay kept on purpose, in milliseconds, so that frames which come that much late are still shown in place.
+    int cushion_ms = 0;
     // How strong a DualSense's haptics are: the volume of the two channels of its sound device
     // that move its actuators, in percent.
     int haptics_volume = 100;

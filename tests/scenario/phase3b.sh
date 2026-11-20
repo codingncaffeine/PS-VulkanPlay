@@ -82,6 +82,7 @@ held=$(number "$out" 'took them, ([0-9]+) held back as damaged')
 [ -n "$shown" ] && [ -n "$replaced" ] && [ -n "$held" ] && [ $((shown + replaced + held)) -ge $((decoded - 2)) ] && [ $((shown + replaced + held)) -le "$decoded" ] \
     && ok "$shown reached the screen, $replaced were replaced by a newer one first, $held were held back" || fail "shown '$shown' replaced '$replaced' held '$held' of '$decoded'"
 check "pictures are shown evenly: the report says how long they were held back for it" grep -aqE "^Pacing: [0-9]+ of [0-9]+ pictures were held back to follow the one before by a frame's time, by [0-9.]+ ms on average" "$out"
+check "and that no delay was kept on purpose" grep -aqE "^Pacing: .* No cushion was kept; a picture was on its way to the screen [0-9.]+ ms after its frame had arrived, on average\.$" "$out"
 # How many the screen takes depends on how fast this machine draws; that most do is the point.
 between "$shown" $((decoded / 2)) "$decoded" && ok "more than half reached the screen" || fail "only '$shown' of '$decoded' pictures reached the screen"
 check "no frame was without a picture" grep -aqE ' 0 frames gave no picture; ' "$out"
@@ -106,7 +107,7 @@ check "and of no DualSense features" lacks "$log" "control message type 0x13"
 
 echo "what the console sends for the controller is read; a DualSense is announced when asked for"
 start_mock feedback --kind ps5 --clip 416x240 --frame-ms 16 --media-ms 10 --feedback-ms 800 --haptics-every 1
-"$app" play "Living Room" --seconds 3 --controller dualsense --back-left cross --back-right r3 > "$work/feedback.out" 2> "$work/feedback.err"; rc=$?
+"$app" play "Living Room" --seconds 3 --controller dualsense --back-left cross --back-right r3 --cushion 30 > "$work/feedback.out" 2> "$work/feedback.err"; rc=$?
 sleep 0.3; stop_mock
 out="$work/feedback.out"; log="$work/feedback.log"
 [ $rc -eq 0 ] && ok "play --controller dualsense: exit 0" || fail "play --controller dualsense: exit $rc: $(tail -3 "$out")"
@@ -123,10 +124,17 @@ grep -aqE "^For the controller the console sent: rumble 2 times \(0 reached the 
 haptics=$(number "$out" 'and ([0-9]+) frames of haptics')
 between "$haptics" 250 320 && ok "$haptics frames of haptics in three seconds, each of the size a console's are" || fail "haptics frames: '$haptics'"
 check "with no sound device of a DualSense the haptics are to become rumble" has "$work/feedback.err" "haptics become rumble"
+# The cushion asked for is delay that is kept: it is taken up over the first half second, so over three seconds
+# a picture is well over half of it behind its frame, however fast this machine decodes.
+check "the cushion asked for was kept" has "$out" "A cushion of 30 ms was kept for frames that come late; a picture was on its way to the screen"
+through=$(number "$out" 'on its way to the screen ([0-9]+)\.[0-9] ms after its frame had arrived')
+between "$through" 15 500 && ok "with it a picture was $through ms behind its frame on average" || fail "the delay with a cushion of 30 ms: '$through': $(grep -a '^Pacing' "$out")"
 check "the back buttons are what was asked for" has "$out" "Back buttons: the left one is cross, the right one is r3; they were pressed 0 times."
 check "the controller information says player 2, and strengths 1 and 2" has "$out" "(player 2, haptics strength 1, trigger strength 2, 1 asked to take the controller's position as its rest)"
 check "no error was logged" lacks "$work/feedback.err" " ERROR "
 check "what does not go with the option is refused" sh -c "! '$app' play 'Living Room' --controller wheel > /dev/null 2>&1"
+check "a cushion is 50 ms at most" sh -c "! '$app' play 'Living Room' --cushion 80 > /dev/null 2>&1"
+check "and is part of the pacing: not without it" sh -c "! '$app' play 'Living Room' --cushion 20 --pacing off > /dev/null 2>&1"
 check "a back button takes a button's name and nothing else" sh -c "! '$app' play 'Living Room' --back-left lever > /dev/null 2>&1"
 
 echo "a session that does not start opens no window"
