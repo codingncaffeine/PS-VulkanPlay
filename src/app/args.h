@@ -18,6 +18,8 @@ struct Options {
     std::optional<std::uint64_t> frames;
     // Show the generated clip instead of a console's picture: a check of the decoder and of the drawing.
     bool test_clip = false;
+    // One frame of that clip, standing still: for a check that reads the colors off the screen.
+    std::optional<std::uint32_t> test_clip_frame;
 };
 
 // The arguments after the program name. The error is a sentence for the user.

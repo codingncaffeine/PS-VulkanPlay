@@ -8,6 +8,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "app/args.h"
@@ -110,13 +111,21 @@ int run(int argc, char** argv) {
         }
         clip->decoder.emplace(std::move(*decoder));
         psvp::log::info("test clip: {}", clip->decoder->description());
-        window.next_picture = [clip]() -> std::optional<psvp::media::Picture> {
-            const auto now = std::chrono::steady_clock::now();
-            if (now < clip->next) return std::nullopt;
-            clip->next = now + std::chrono::microseconds(16667);
-            return clip->decoder->decode(clip->writer.frame(clip->counter++, false));
-        };
-        window.ask_every = std::chrono::milliseconds(2);
+        if (options->test_clip_frame) {
+            // One frame, handed over once: it stays on the screen.
+            window.next_picture = [clip, frame = *options->test_clip_frame, shown = false]() mutable -> std::optional<psvp::media::Picture> {
+                if (std::exchange(shown, true)) return std::nullopt;
+                return clip->decoder->decode(clip->writer.frame(frame, true));
+            };
+        } else {
+            window.next_picture = [clip]() -> std::optional<psvp::media::Picture> {
+                const auto now = std::chrono::steady_clock::now();
+                if (now < clip->next) return std::nullopt;
+                clip->next = now + std::chrono::microseconds(16667);
+                return clip->decoder->decode(clip->writer.frame(clip->counter++, false));
+            };
+            window.ask_every = std::chrono::milliseconds(2);
+        }
     }
     const int code = psvp::render::run_window(window);
     psvp::log::info("{} exiting with code {}", PSVP_BINARY, code);

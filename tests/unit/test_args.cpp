@@ -27,6 +27,13 @@ PSVP_TEST(args_read_each_option) {
     CHECK(parse({"--verbose"}).value().verbose);
     const auto frames = parse({"--verbose", "--frames", "30"});
     CHECK(frames.has_value() && frames->verbose && frames->frames == 30U);
+    const auto clip = parse({"--test-clip"});
+    CHECK(clip.has_value() && clip->test_clip && !clip->test_clip_frame);
+    const auto still = parse({"--test-clip-frame", "23130"});
+    CHECK(still.has_value() && still->test_clip && still->test_clip_frame == 23130U);
+    CHECK(!parse({"--test-clip-frame"}).has_value());
+    CHECK(!parse({"--test-clip-frame", "65536"}).has_value());
+    CHECK(!parse({"--test-clip-frame", "x"}).has_value());
 }
 
 PSVP_TEST(args_refuse_a_bad_frame_count) {
@@ -47,7 +54,7 @@ PSVP_TEST(args_name_an_unknown_option) {
 
 PSVP_TEST(args_help_lists_every_option) {
     const std::string help = psvp::app::help_text();
-    for (const char* option : {"--version", "--help", "--verbose", "--frames"}) {
+    for (const char* option : {"--version", "--help", "--verbose", "--frames", "--test-clip", "--test-clip-frame"}) {
         CHECK(help.find(option) != std::string::npos);
     }
 }

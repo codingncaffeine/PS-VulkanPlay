@@ -19,6 +19,16 @@ std::expected<Options, std::string> parse_args(std::span<const std::string_view>
             options.verbose = true;
         } else if (arg == "--test-clip") {
             options.test_clip = true;
+        } else if (arg == "--test-clip-frame") {
+            if (i + 1 >= args.size()) return std::unexpected(std::string("--test-clip-frame needs a number"));
+            const std::string_view text = args[++i];
+            std::uint32_t value = 0;
+            const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), value);
+            if (error != std::errc{} || end != text.data() + text.size() || value > 65535) {
+                return std::unexpected(std::format("--test-clip-frame needs a number from 0 to 65535, not '{}'", text));
+            }
+            options.test_clip = true;
+            options.test_clip_frame = value;
         } else if (arg == "--frames") {
             if (i + 1 >= args.size()) return std::unexpected(std::string("--frames needs a number"));
             const std::string_view text = args[++i];
@@ -46,7 +56,8 @@ std::string help_text() {
         "  --verbose      log more detail\n"
         "  --frames N     present N frames, then exit (for automated checks)\n"
         "  --test-clip    show a generated clip instead of a console's picture: moving blocks,\n"
-        "                 color patches (a check that pictures are decoded and drawn right)\n",
+        "                 color patches (a check that pictures are decoded and drawn right)\n"
+        "  --test-clip-frame N   show only frame N of that clip, standing still\n",
         PSVP_NAME, PSVP_VERSION, PSVP_BINARY);
 }
 
