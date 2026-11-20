@@ -623,11 +623,12 @@ public:
             return out.is_open();
         };
         if (!file(dump.video_, "video.bin") || !file(dump.video_list_, "video.tsv") || !file(dump.sound_, "sound.bin") ||
-            !file(dump.sound_list_, "sound.tsv") || !file(dump.packets_, "packets.tsv")) {
+            !file(dump.sound_list_, "sound.tsv") || !file(dump.packets_, "packets.tsv") || !file(dump.data_, "data.tsv")) {
             return std::unexpected(std::format("{}: cannot write there", folder.string()));
         }
         dump.video_list_ << "frame\tbytes\trepaired\tlost-before\tpicture-size\theader-bytes\n";
         dump.sound_list_ << "frame\tbytes\thaptics\tfrom-a-later-packet\tlost-before\n";
+        dump.data_ << "ms\twhat\tchannel\tbytes\thex\n";
         dump.packets_ << "ms\tkind\tpacket\tframe\tunit\tunits\trepair-or-new\trepeated\tcodec\tpicture-size\tkey-position\tbytes\tword\tlonger-header\n";
         return dump;
     }
@@ -666,10 +667,19 @@ public:
         }
     }
 
+    // What the console sent besides picture and sound, with its bytes.
+    void take(const std::vector<proto::transport::ConsoleData>& data, std::chrono::microseconds since_start) {
+        for (const auto& item : data) {
+            data_ << std::format("{:.3f}\t{} {}\t{}\t{}\t{}\n", static_cast<double>(since_start.count()) / 1000.0,
+                                 item.message ? "message type" : "data kind", item.kind, item.channel, item.bytes.size(),
+                                 proto::hex_encode(item.bytes));
+        }
+    }
+
     // False when something could not be written.
     [[nodiscard]] bool close() {
         bool good = true;
-        for (std::ofstream* file : {&video_, &video_list_, &sound_, &sound_list_, &packets_}) {
+        for (std::ofstream* file : {&video_, &video_list_, &sound_, &sound_list_, &packets_, &data_}) {
             file->flush();
             good = good && file->good();
             file->close();
@@ -687,6 +697,7 @@ private:
     std::ofstream sound_;
     std::ofstream sound_list_;
     std::ofstream packets_;
+    std::ofstream data_;
     int picture_size_ = -1;
     std::uint64_t video_bytes_ = 0;
     std::uint64_t sound_bytes_ = 0;
@@ -768,6 +779,12 @@ int command_session(std::span<const std::string_view> args) {
     proto::Key16 nonce{};
     {
         auto stream = net::TcpStream::connect(address, Clock::now() + kStepWait);
+        if (!stream && stream.error().ends_with("Connection refused")) {
+            // Seen on a PS5 that answered the search as "ready" a moment before; half a minute later it took the session.
+            return fail("{} refused the connection: it is on, but is not taking Remote Play sessions at this moment "
+                        "(it may still be starting, or closing an earlier session). Try again in a few seconds.",
+                        registration.nickname);
+        }
         if (!stream) return fail("session: {}", stream.error());
         const std::string request = proto::build_session_request(registration.kind, address_text, registration.regist_key);
         if (const auto sent = stream->send_all(net::bytes_of(request), Clock::now() + kStepWait); !sent) return fail("session: {}", sent.error());
@@ -916,6 +933,8 @@ int command_session(std::span<const std::string_view> args) {
         for (const auto& frame : media.video) video_bytes += frame.data.size();
         for (const auto& frame : media.sound) sound_bytes += frame.data.size();
         if (dump) dump->take(std::move(media), stream.info());
+        const auto data = stream.take_console_data();
+        if (dump && !data.empty()) dump->take(data, std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - setup_started));
     };
 
     const auto send_all = [&](const transport::Datagrams& datagrams) {
@@ -995,7 +1014,7 @@ int command_session(std::span<const std::string_view> args) {
     }
     if (dump) {
         const bool written = dump->close();
-        say("Kept in {}: video.bin ({} bytes), sound.bin ({} bytes), and a line per frame and per packet{}.", dump->folder().string(),
+        say("Kept in {}: video.bin ({} bytes), sound.bin ({} bytes), and a line per frame, per packet and per other message{}.", dump->folder().string(),
             dump->video_bytes(), dump->sound_bytes(), written ? "" : "; SOMETHING COULD NOT BE WRITTEN");
     }
     if (!counters.messages.empty()) say("Messages from the console: {}.", counts_text(counters.messages, "type"));

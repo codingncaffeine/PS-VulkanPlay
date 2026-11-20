@@ -86,6 +86,15 @@ struct MediaOutput {
     std::vector<SoundFrame> sound;  // sound and haptics, as they came
 };
 
+// Something the console sent on a set-up stream besides picture and sound: a message by its type, or
+// data of another kind (rumble, the controller's lights and the like), with its bytes as they came.
+struct ConsoleData {
+    bool message = false;
+    std::uint32_t kind = 0;
+    std::uint16_t channel = 0;
+    std::vector<std::uint8_t> bytes;
+};
+
 // The client's side, from a finished handshake on the stream port.
 class ClientStream {
 public:
@@ -97,6 +106,7 @@ public:
     static constexpr std::chrono::milliseconds kInputEvery{200};  // when nothing about the controller changes
     static constexpr std::uint16_t kReportChannel = 2;
     static constexpr std::size_t kMaxUnreported = 8;
+    static constexpr std::size_t kMaxConsoleData = 256;  // kept until taken; further ones are only counted
     static constexpr std::uint16_t kSessionChannel = 1;
     static constexpr std::uint16_t kStreamInfoAckChannel = 9;
 
@@ -113,6 +123,8 @@ public:
     [[nodiscard]] bool goodbye_pending() const noexcept { return goodbye_ && messenger_.waiting() > 0; }
     // The frames that became ready since the last call.
     [[nodiscard]] MediaOutput take_media() { return std::exchange(media_, {}); }
+    // What the console sent besides picture, sound and heartbeats since the last call.
+    [[nodiscard]] std::vector<ConsoleData> take_console_data() { return std::exchange(console_data_, {}); }
     // The controller's sticks and sensors, as the next input state packets will tell them.
     void set_input(const InputState& state) noexcept { input_ = state; }
     // Asks the console for a picture that needs no earlier one. Nothing while the stream is not set up.
@@ -173,6 +185,7 @@ private:
     SoundReceiver sound_;
     SoundReceiver haptics_;
     MediaOutput media_;
+    std::vector<ConsoleData> console_data_;
     std::vector<FrameRange> unreported_;   // lost frames the console has not been told about yet
     std::vector<std::uint8_t> scratch_;    // a packet's payload while it is decrypted
     std::uint64_t interval_received_ = 0;  // sound packets since the last congestion report
@@ -239,6 +252,7 @@ private:
     void send_sound(Datagrams& out);
 
     bool disconnected_ = false;
+    bool client_info_answered_ = false;
     std::optional<TimePoint> next_media_;
     std::optional<TimePoint> next_frame_;
     std::optional<MediaSender> media_;

@@ -27,8 +27,10 @@ constexpr std::size_t kPatternHead = 13;
 }  // namespace
 
 std::optional<std::vector<std::uint8_t>> MediaSender::finish(StreamMediaPacket& packet, std::vector<std::uint8_t> payload) {
-    // The payload's key stream begins sixteen bytes behind the packet's key position.
-    const std::uint64_t position = keys_->take(payload.size() + kPayloadKeyOffset);
+    // The payload's key stream begins sixteen bytes behind the packet's key position. A console
+    // moves its position on by the payload, rounded up to whole blocks of sixteen, and sixteen more.
+    const std::uint64_t position = keys_->next_position;
+    keys_->next_position += (payload.size() + 15) / 16 * 16 + kPayloadKeyOffset;
     packet.key_position = static_cast<std::uint32_t>(position);
     keys_->cipher.apply_key_stream(position + kPayloadKeyOffset, payload);
     auto datagram = encode_stream_media(kind_, packet, payload);

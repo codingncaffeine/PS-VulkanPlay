@@ -107,6 +107,11 @@ void ClientStream::on_bang(Datagrams& out, const DataChunk& chunk, const BangMes
     if (!secret) return fail("the console's key is not usable");
     const KeySignature expected = sign_public_key(handshake_key_, *bang.ecdh_public_key);
     bang_->signature_matches = std::ranges::equal(expected, *bang.ecdh_signature);
+    // A PS5 signs its key with the handshake key (seen); what a PS4 signs with has not been seen,
+    // so there a mismatch is only reported.
+    if (!bang_->signature_matches && request_.kind == ConsoleKind::ps5) {
+        return fail("the console's key is not signed with this session's handshake key");
+    }
 
     send_keys_ = std::make_shared<SendKeys>(StreamCipher(kClientDirection, handshake_key_, *secret));
     receive_keys_ = std::make_shared<ReceiveKeys>(StreamCipher(kConsoleDirection, handshake_key_, *secret));
@@ -242,7 +247,13 @@ void ClientStream::on_message(Datagrams& out, const DataChunk& chunk, const Stre
     case State::awaiting_stream_info:
         if (const auto* info = message.as<StreamInfo>()) on_stream_info(out, *info, now);
         break;
-    case State::ready: ++counters_.messages[message.type]; break;
+    case State::ready:
+        ++counters_.messages[message.type];
+        // Kept for whoever wants to look at them; the console's heartbeats are only counted.
+        if (message.type != message_type::kHeartbeat && console_data_.size() < kMaxConsoleData) {
+            console_data_.push_back(ConsoleData{true, message.type, chunk.channel, chunk.data});
+        }
+        break;
     default: break;
     }
 }
@@ -252,6 +263,9 @@ void ClientStream::handle(Datagrams& out, Messenger::Received& received, TimePoi
         if (chunk.chunks > 1) ++counters_.split_messages;
         if (chunk.data_type != data_type::kMessage) {
             ++counters_.other_data[chunk.data_type];
+            if (console_data_.size() < kMaxConsoleData) {
+                console_data_.push_back(ConsoleData{false, chunk.data_type, chunk.channel, chunk.data});
+            }
             continue;
         }
         if (state_ == State::failed || state_ == State::closed) continue;
@@ -458,6 +472,16 @@ void ConsoleStream::on_message(Datagrams& out, const DataChunk& chunk, TimePoint
     }
     events_.push_back(std::format("message type {} channel {} flags {} key-position {} {}: {}", message->type, chunk.channel, chunk.flags,
                                   chunk.key_position, chunk.authentic ? "authentic" : "NOT SEALED", hex_encode(chunk.data)));
+    if (message->type == message_type::kStreamInfo && messenger_.keyed() && !std::exchange(client_info_answered_, true)) {
+        // What a PS5 was seen to send once a client's stream was set up: "stream information received",
+        // and one chunk of information for the controller (kind 9, here 25 zero bytes). On which
+        // channels it sends them has not been recorded yet.
+        send(out, make_plain_message(message_type::kStreamInfoAck), ClientStream::kSessionChannel, now);
+        const std::vector<std::uint8_t> pad_info(25, 0);
+        if (auto sent = messenger_.send(chunk_flag::kLast, ClientStream::kSessionChannel, pad_info, now, data_type::kPadInfo)) {
+            out.push_back(std::move(sent->datagram));
+        }
+    }
     if (const auto* goodbye = message->as<DisconnectMessage>()) {
         disconnected_ = true;
         next_media_.reset();

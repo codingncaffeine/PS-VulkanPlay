@@ -624,19 +624,32 @@ PSVP_TEST(stream_setup_completes_on_a_clean_link) {
         "message type 21 channel 1 flags 1 key-position 46 authentic: 0815b2010410011802",
         "message type 13 channel 1 flags 1 key-position 64 authentic: 080d7a10120e01100000bb80000001e000000001",
         "ack key-position 88 authentic",
+        // The console answers the client's stream information with two chunks in two packets; each gets
+        // its acknowledgment, 29 + 13 behind the one before it.
+        "ack key-position 130 authentic",
+        "ack key-position 172 authentic",
     };
     std::vector<std::string> after_spec(link.events.begin() + 2, link.events.end());
     CHECK(after_spec == expected);
+    // Those two chunks, as a PS5 was seen to send them: "stream information received" and controller information.
+    const std::vector<ConsoleData> data = link.client.take_console_data();
+    CHECK(data.size() == 2);
+    if (data.size() == 2) {
+        CHECK(data[0].message && data[0].kind == message_type::kStreamInfoAck && data[0].channel == 1 && hex(data[0].bytes) == "080e");
+        CHECK(!data[1].message && data[1].kind == data_type::kPadInfo && data[1].channel == 1 && data[1].bytes == std::vector<std::uint8_t>(25, 0));
+    }
+    CHECK(link.client.counters().messages.at(message_type::kStreamInfoAck) == 1 && link.client.counters().other_data.at(data_type::kPadInfo) == 1);
+    CHECK(link.client.take_console_data().empty());
 
     // A heartbeat every second.
     link.run(3500ms);
     CHECK(link.client.counters().heartbeats_sent == 3);
-    // Two acknowledgments, three messages and three heartbeats were sealed, and a congestion report and an
+    // Four acknowledgments, three messages and three heartbeats were sealed, and a congestion report and an
     // input state every 200 ms from the set-up's end at 4 ms to here at 3514 ms: seventeen of each. Each of
-    // the 42 sits where the one before it ended. The input states are a resting controller's, in order.
+    // the 44 sits where the one before it ended. The input states are a resting controller's, in order.
     CHECK(link.client.counters().congestion_reports == 17 && link.client.counters().input_states == 17);
     CHECK(link.console.summary() == "heartbeats 3 control-rejected 0 before-keys 0 kind-5-authentic 17 kind-6-authentic 17 "
-                                    "key-positions 42 out-of-step 0 input-states 17 at-rest 17 unreadable 0 out-of-order 0 "
+                                    "key-positions 44 out-of-step 0 input-states 17 at-rest 17 unreadable 0 out-of-order 0 "
                                     "frames-sent 0 sound-sent 0 withheld 0 congestion-received 0 congestion-lost 0");
 
     // The goodbye.
@@ -712,9 +725,10 @@ PSVP_TEST(stream_setup_survives_reordering_and_loss) {
         // Both were answered with one acknowledgment, after the client's three messages
         // (of 2, 9 and 20 bytes: key positions 0, 4 and 22, and 46 for the acknowledgment).
         link.run(10ms);
-        CHECK(link.count("ack key-position") == 1);
         CHECK(link.has("message type 14 channel 9 flags 1 key-position 0 authentic: 080e"));
         CHECK(link.has("ack key-position 46 authentic"));
+        // And one each for the console's two answers to the client's stream information, 29 + 13 apart.
+        CHECK(link.count("ack key-position") == 3 && link.has("ack key-position 88 authentic") && link.has("ack key-position 130 authentic"));
     }
     {
         // The first copy of every datagram is lost, both ways.
@@ -756,15 +770,31 @@ PSVP_TEST(stream_setup_drops_a_changed_packet_and_takes_its_resend) {
     CHECK(link.now == kStart + link.hop + 200ms + link.hop);
 }
 
-PSVP_TEST(stream_setup_reports_a_signature_that_does_not_match) {
-    auto options = StreamLink::options(ConsoleKind::ps5);
-    options.wrong_signature = true;
-    StreamLink link(StreamLink::request(ConsoleKind::ps5, kMtuCeiling), std::move(options));
-    link.start();
-    link.run_until_settled();
-    // Not yet a reason to stop: what a console signs with has not been seen (docs/protocol/stream-setup.md).
-    CHECK(link.client.state() == ClientStream::State::ready);
-    CHECK(link.client.bang() && !link.client.bang()->signature_matches);
+PSVP_TEST(stream_setup_refuses_a_ps5_whose_signature_does_not_match) {
+    {
+        auto options = StreamLink::options(ConsoleKind::ps5);
+        options.wrong_signature = true;
+        StreamLink link(StreamLink::request(ConsoleKind::ps5, kMtuCeiling), std::move(options));
+        link.start();
+        link.run_until_settled();
+        // A PS5 signs its key with the handshake key: another signature ends the set-up, before any key is used.
+        CHECK(link.client.state() == ClientStream::State::failed);
+        CHECK(link.client.reason() == "the console's key is not signed with this session's handshake key");
+        CHECK(link.client.bang() && !link.client.bang()->signature_matches);
+        CHECK(!link.client.info());
+        link.run(500ms);
+        CHECK(link.count("message type") == 0);  // nothing of the client's followed
+    }
+    {
+        // What a PS4 signs with has not been seen: there it is reported, and the stream goes on.
+        auto options = StreamLink::options(ConsoleKind::ps4);
+        options.wrong_signature = true;
+        StreamLink link(StreamLink::request(ConsoleKind::ps4, kMtuCeiling), std::move(options));
+        link.start();
+        link.run_until_settled();
+        CHECK(link.client.state() == ClientStream::State::ready);
+        CHECK(link.client.bang() && !link.client.bang()->signature_matches);
+    }
 }
 
 PSVP_TEST(stream_setup_gives_up_on_a_console_that_does_not_answer) {

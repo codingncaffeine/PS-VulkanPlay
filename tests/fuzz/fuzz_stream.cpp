@@ -124,9 +124,9 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
     (void)client.on_datagram(input, now);
     (void)console.on_datagram(input, now);
     if (as_message) {
-        // The console has sent two chunks (its answer and the stream information) and two acknowledgments,
-        // the client five chunks: the sequence numbers and key positions that come next are known.
-        std::vector<std::uint8_t> sealed = chunk_for(kClientTag, kConsoleTag + 2, input);
+        // The console has sent four chunks (its answer, the stream information, and its two answers to the
+        // client's stream information), the client four: the sequence numbers that come next are known.
+        std::vector<std::uint8_t> sealed = chunk_for(kClientTag, kConsoleTag + 4, input);
         SendKeys console_keys(console_cipher);
         console_keys.next_position = 1 << 20;
         (void)seal_datagram(console_cipher, console_keys.take(size), sealed);

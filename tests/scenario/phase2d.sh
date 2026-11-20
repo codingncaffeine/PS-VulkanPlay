@@ -93,6 +93,9 @@ for kind in ps4 ps5; do
         && ok "an input state every 200 ms: the mock decrypted $states, each a resting controller's, in order" \
         || fail "input states: $(grep -a 'stream summary' "$log")"
     check "one line per packet was kept" [ "$(grep -c picture "$work/$kind-whole/packets.tsv")" -ge 400 ]
+    check "the list of the console's other messages is there, with its heading" [ "$(head -1 "$work/$kind-whole/data.tsv")" = "$(printf 'ms\twhat\tchannel\tbytes\thex')" ]
+    check "with the two things the mock sends as a PS5 was seen to: 'stream information received' and controller information" \
+        [ "$(cut -f2-5 "$work/$kind-whole/data.tsv" | tail -n +2 | tr '\t\n' ' ;')" = "message type 14 1 2 080e;data kind 9 1 25 $(printf '00%.0s' $(seq 25));" ]
 
     echo "$family: lost packets that the repair packets cover"
     # Every third frame loses its first two packets, as many as it has repair packets;

@@ -321,7 +321,7 @@ Messenger::Messenger(std::uint32_t local_tag, std::uint32_t remote_tag, std::uin
     : local_tag_(local_tag), remote_tag_(remote_tag), next_local_(first_local_sequence), next_remote_(first_remote_sequence), keys_(keys) {}
 
 Messenger::Sent Messenger::send_chunk(std::uint8_t flags, std::uint16_t channel, bool first, std::span<const std::uint8_t> data,
-                                      TimePoint now) {
+                                      TimePoint now, std::uint8_t kind) {
     // The packet is built in a buffer of its final size.
     const std::size_t header = first ? kDataHeaderSize : kChunkHeaderSize;
     std::vector<std::uint8_t> datagram(kPacketHeaderSize + header + data.size());
@@ -333,7 +333,8 @@ Messenger::Sent Messenger::send_chunk(std::uint8_t flags, std::uint16_t channel,
     put16(datagram, 15, static_cast<std::uint16_t>(header + data.size() + 4));
     put32(datagram, kPacketHeaderSize, sequence);
     put16(datagram, kPacketHeaderSize + 4, channel);
-    // The two bytes after the channel stay zero; a first chunk's kind of data is "message", which is zero too.
+    // The two bytes after the channel stay zero; a first chunk then names its kind of data.
+    if (first) datagram[kPacketHeaderSize + kChunkHeaderSize] = kind;
     std::copy(data.begin(), data.end(), datagram.begin() + static_cast<std::ptrdiff_t>(kPacketHeaderSize + header));
     if (send_keys_) (void)seal_datagram(send_keys_->cipher, send_keys_->take(data.size()), datagram);
     unacknowledged_.push_back(Pending{sequence, 0, now, datagram});
@@ -341,9 +342,9 @@ Messenger::Sent Messenger::send_chunk(std::uint8_t flags, std::uint16_t channel,
 }
 
 std::optional<Messenger::Sent> Messenger::send(std::uint8_t flags, std::uint16_t channel, std::span<const std::uint8_t> data,
-                                               TimePoint now) {
+                                               TimePoint now, std::uint8_t kind) {
     if (unacknowledged_.size() >= kWindow) return std::nullopt;
-    return send_chunk(flags, channel, true, data, now);
+    return send_chunk(flags, channel, true, data, now, kind);
 }
 
 std::optional<std::vector<Messenger::Sent>> Messenger::send_message(std::uint16_t channel, std::span<const std::uint8_t> data,

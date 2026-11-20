@@ -250,9 +250,9 @@ public:
         std::uint32_t sequence = 0;
         std::vector<std::uint8_t> datagram;
     };
-    // One chunk. Nothing while kWindow chunks still wait for their acknowledgment.
+    // One chunk, of a message or of data of another kind. Nothing while kWindow chunks still wait for their acknowledgment.
     [[nodiscard]] std::optional<Sent> send(std::uint8_t flags, std::uint16_t channel, std::span<const std::uint8_t> data,
-                                           TimePoint now);
+                                           TimePoint now, std::uint8_t kind = data_type::kMessage);
     // A whole message, in as many chunks as it takes to keep every datagram
     // within `max_datagram` bytes. Nothing when the window has no room for all of them.
     [[nodiscard]] std::optional<std::vector<Sent>> send_message(std::uint16_t channel, std::span<const std::uint8_t> data,
@@ -312,7 +312,8 @@ private:
         std::vector<std::uint8_t> unchecked;  // the whole packet, kept until the keys arrive
     };
 
-    Sent send_chunk(std::uint8_t flags, std::uint16_t channel, bool first, std::span<const std::uint8_t> data, TimePoint now);
+    Sent send_chunk(std::uint8_t flags, std::uint16_t channel, bool first, std::span<const std::uint8_t> data, TimePoint now,
+                    std::uint8_t kind = data_type::kMessage);
     void hand_over(Received& result);
 
     std::uint32_t local_tag_;

@@ -150,8 +150,10 @@ stop_mock
 start_mock signature --wrong-signature yes
 "$app" session "Living Room" --seconds 1 > "$work/signature.out" 2>&1; rc=$?
 stop_mock
-[ $rc -eq 0 ] && has "$work/signature.out" "its key signature DOES NOT MATCH" \
-    && ok "a key signature that does not match is reported" || fail "signature: exit $rc: $(tail -3 "$work/signature.out")"
+[ $rc -eq 1 ] && has "$work/signature.out" "its key signature DOES NOT MATCH" \
+    && has "$work/signature.out" "Living Room: the stream: the console's key is not signed with this session's handshake key." \
+    && ok "a PS5 whose key signature does not match: reported, and the stream is not set up" || fail "signature: exit $rc: $(tail -3 "$work/signature.out")"
+check "nothing was held after it" lacks "$work/signature.out" "Stream held"
 
 echo "what the command line refuses"
 "$app" session "Living Room" --codec vp9 > "$work/bad-codec.out" 2>&1; rc=$?

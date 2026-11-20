@@ -78,7 +78,8 @@ start_mock stranger --kind ps4 --name "Living Room" --regist-key 0badc0de
 [ $rc -eq 1 ] && has "$work/stranger.out" "register with it again" && ok "a console that no longer knows this client: exit 1 and what to do" || fail "stranger: exit $rc: $(head -2 "$work/stranger.out")"
 stop_mock
 "$app" session "Living Room" --seconds 1 > "$work/down.out" 2>&1; rc=$?
-[ $rc -eq 1 ] && ok "no console at the address: exit 1" || fail "console down: exit $rc"
+[ $rc -eq 1 ] && has "$work/down.out" "Living Room refused the connection: it is on, but is not taking Remote Play sessions at this moment" \
+    && ok "nothing takes sessions at the address: exit 1, and what that means" || fail "console down: exit $rc: $(head -2 "$work/down.out")"
 "$app" session "Nobody" > "$work/nobody.out" 2>&1; rc=$?
 [ $rc -eq 1 ] && has "$work/nobody.out" "No registered console" && ok "an unknown name: exit 1 and a reason" || fail "unknown console: exit $rc"
 
