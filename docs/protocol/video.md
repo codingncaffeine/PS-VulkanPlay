@@ -132,14 +132,25 @@ repaired holds the picture up by 16 ms at most.
 
 Frames that were given up are reported in a message of type 5 ([messages.md](messages.md)) with the first
 and the last frame's index; a message of type 25 asks the console for a frame that needs no earlier one (a
-keyframe). **[checked]** Both messages are byte for byte the reference's. **[read]** Both go out on channel
-2, with flags 1. **[read]** After a report the console codes the next frames so that they need none of the
-reported ones.
+keyframe). **[checked]** Both messages are byte for byte the reference's. Both go out on channel 2, with
+flags 1 (**[read]**; **[seen]** for the report, which a PS5 acted on).
+
+**[seen]** After a report the console codes a frame that needs none of the reported ones. In a PS5's HEVC
+stream every frame after the first lists the nine frames before it as kept and is predicted from the one
+just before it. When frame 576 of a stream was lost whole (both of its packets), the report went out 16 ms
+after frame 577 began. Frames 577 to 579 were still predicted from the frame before each, so they could not
+be shown right. Frame 580, 67 ms after the lost one, was predicted from frame 575, the last one before the
+loss, and the frames after it from the one before again: the picture was whole after four frames, without a
+keyframe. A decoder has to keep going over the three frames in between. One that refuses every frame whose
+list names a frame it does not have never comes back, since each later frame lists nine.
 
 **[read]** The reference reports from the frame after the last one it handed on up to the frame before the one
 that just began, and asks for a keyframe when restoring a frame fails. It also reads the beginning of every
 frame to see which earlier frame it refers to, and drops a frame whose reference it does not have. This
-client does not look into frames yet; that comes with the decoder.
+client leaves that to its decoder: every frame that arrives is decoded, and a picture the decoder marks as
+built on a frame it did not have is not shown; the last whole picture stays up until the console's repair.
+**[seen]** On the stream above, FFmpeg 9 marked exactly the three frames between the loss and the repair.
+Older versions of FFmpeg do not mark them; there such pictures are shown, for a few frames.
 
 ### Congestion reports
 
@@ -195,8 +206,11 @@ in a small buffer first.
   exactly the bytes this client keeps with `session --dump`.
 - **[seen]** in four sessions with a PS5 on system software 14.23 (2026-11-19; 720p H.264, 1080p HEVC twice,
   1080p HEVC with HDR; forty seconds in all): 5,756 picture and 3,992 sound packets, every one with the right
-  code; the pictures decode and the sound decodes, as marked above. No packet was lost that a frame needed, so
-  restoring a lost unit of a real stream and the loss report's effect are still to be seen.
+  code; the pictures decode and the sound decodes, as marked above. No packet was lost that a frame needed.
+- **[seen]** in a fifth session (2026-11-20, 1080p HEVC, twelve seconds, 2,951 picture and 1,196 sound
+  packets): two packets in a row were lost, the one source unit and the one repair unit of a frame. The frame
+  was given up after 16 ms and reported, and the console answered as described under "Telling the console".
+  Restoring a lost unit of a real stream is still to be seen.
 
 `src/proto/media_packet.h`, `src/proto/erasure.h`, `src/proto/frame_assembler.h`, `src/proto/sound.h`,
 `src/proto/media_sender.h` (the mock console's side)

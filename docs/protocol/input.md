@@ -85,6 +85,9 @@ Six buttons have no third byte; their code says released, and 0x20 more says pre
 lifted; its number (0 to 127); then x and y in twelve bits each, x first. A lifted finger is told with the
 place it had.
 
+**[read]** A touch's place is counted from the touchpad's top left corner, from 0 to 1919 across and from 0
+to 1079 down.
+
 ### Which events, in which order
 
 **[checked]** When a controller's state changes, its events are, in this order: buttons released; touches;
@@ -113,9 +116,12 @@ event's, and each following event's is one less.
   `phase2e.sh`): the mock decrypts every input state it sends and reads a resting controller's, the same bytes
   this client sends; and when it presses buttons, the mock reads from its history packets the changes, with
   the numbers, that it reads from this client's.
-- **[seen]** A PS5 that was sent a resting controller's state every 200 ms kept its stream up for twenty
-  seconds, and sent one data chunk of kind 9 (information for the controller, seventeen bytes) at the
-  stream's start. That it read the states is not shown by this; a button press on a real console has not been
-  seen yet.
+- **[seen]** on a PS5 with system software 14.23 (2026-11-20, 1080p HEVC, twelve seconds): the d-pad's right
+  was pressed four seconds into the stream and released 100 ms later, and its left three seconds after that.
+  The console's home screen was still, at 45 to 140 thousand bytes of picture per half second; the half
+  second after each press brought 466 and 472 thousand. So the console reads the history packets' button
+  events. It was sent a resting controller's state every 200 ms throughout and sent the data chunk of kind 9
+  (information for the controller, seventeen bytes) three times in the stream's first second. Triggers, the
+  touchpad, sticks and motion have not been seen to arrive on a real console yet.
 
 `src/proto/input.h`
