@@ -134,6 +134,15 @@ public:
     [[nodiscard]] MediaOutput take_media() { return std::exchange(media_, {}); }
     // What the console sent besides picture, sound and heartbeats since the last call.
     [[nodiscard]] std::vector<ConsoleData> take_console_data() { return std::exchange(console_data_, {}); }
+    // The first sound packets of a stream that is neither the sound nor the haptics, should a console
+    // send one: their fields and their payload, decrypted, for whoever wants to find out what it is.
+    struct OtherSound {
+        std::uint8_t stream = 0, codec = 0, unit_size = 0, new_frames = 0, repeated_frames = 0;
+        std::uint16_t frame_index = 0;
+        std::vector<std::uint8_t> payload;
+    };
+    static constexpr std::size_t kMaxOtherSound = 32;  // kept in all; further ones are only counted
+    [[nodiscard]] std::vector<OtherSound> take_other_sound() { return std::exchange(other_sound_, {}); }
     // The controller as it is now. What changed about its buttons, triggers and touchpad goes out at once,
     // in input history packets; its sticks and sensors in an input state packet, at most every 8 ms.
     // Before the stream is set up nothing is sent, and the buttons count as not yet told.
@@ -205,6 +214,7 @@ private:
     SoundReceiver haptics_;
     MediaOutput media_;
     std::vector<ConsoleData> console_data_;
+    std::vector<OtherSound> other_sound_;
     std::vector<FrameRange> unreported_;   // lost frames the console has not been told about yet
     std::vector<std::uint8_t> scratch_;    // a packet's payload while it is decrypted
     std::uint64_t interval_received_ = 0;  // sound packets since the last congestion report
@@ -239,6 +249,9 @@ public:
         unsigned sound_repeats = 2;                // earlier frames sent again in every sound packet
         unsigned lose_sound_every = 0;             // every sound packet whose frame index this divides is not sent
         unsigned haptics_every = 0;                // a haptics packet with every Nth sound packet (PS5); 0: none
+        // With every Nth sound packet one of a stream no client knows, named 5 (PS5): what a console
+        // might send for something else, to see that it does not get into the sound. 0: none.
+        unsigned other_stream_every = 0;
         // Where the frames' content comes from when it is not the fixed pattern: a clip a decoder
         // can decode. The picture source is asked for every frame in order, the sound source
         // for every sound frame once; `picture_lost` hears which frames the client reported.
@@ -255,6 +268,8 @@ public:
         // effects and controller information with a light color; 400 ms later, rumble that is still. 0: none.
         std::chrono::milliseconds feedback_at{0};
     };
+    // The stream that `other_stream_every` names.
+    static constexpr std::uint8_t kMockOtherStream = 5;
     // The channel a PS5 was seen to send its own messages and data on.
     static constexpr std::uint16_t kOwnChannel = 0;
 
@@ -299,6 +314,7 @@ private:
     std::uint16_t frame_index_ = 0;
     std::uint16_t sound_index_ = 0;
     std::uint16_t haptics_index_ = 0;
+    std::uint16_t other_index_ = 0;
     std::uint64_t sound_packets_ = 0;
     bool keyframe_wanted_ = true;
     std::optional<std::vector<std::uint8_t>> held_;  // a packet that goes out late on purpose

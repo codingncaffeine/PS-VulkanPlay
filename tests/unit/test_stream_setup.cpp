@@ -1221,3 +1221,36 @@ PSVP_TEST(stream_hands_on_what_the_console_sends_for_the_controller) {
     CHECK(data.size() == 1 && data[0].kind == data_type::kRumble && parse_rumble(data[0].bytes) == Rumble{});
     CHECK(link.client.counters().other_data.at(data_type::kRumble) == 2 && link.client.counters().other_data.at(data_type::kTriggerEffects) == 1);
 }
+
+// A sound packet that names a stream which is neither the sound nor the haptics: counted, its
+// first packets kept for a look, and no frame of it among the sound's.
+PSVP_TEST(stream_keeps_an_unknown_sound_stream_out_of_the_sound) {
+    auto options = media_options(ConsoleKind::ps5);
+    options.media_every = 10ms;
+    options.haptics_every = 4;
+    options.other_stream_every = 2;
+    StreamLink link(StreamLink::request(ConsoleKind::ps5, kMtuCeiling), options);
+    link.start();
+    link.run_until_settled();
+    link.run(605ms);
+    const Taken taken(link, options);
+    // The sound and the haptics are what they are without it.
+    CHECK(taken.sound == counting(1, 60) && taken.sound_wrong == 0 && link.client.sound().frames == 60);
+    CHECK(taken.haptics == counting(1, 15) && link.client.haptics().frames == 15);
+    const StreamCounters& counters = link.client.counters();
+    CHECK(counters.other_sound_packets == 30);
+    CHECK(counters.sound_streams.size() == 3);
+    const std::uint32_t codec = counters.sound_streams.begin()->first & 0xffU;
+    CHECK(counters.sound_streams.at(codec) == 60 && counters.sound_streams.at((2U << 8) | codec) == 15 &&
+          counters.sound_streams.at((std::uint32_t{ConsoleStream::kMockOtherStream} << 8) | codec) == 30);
+    // Its first packets, as they came: one new frame of 24 bytes each, in order.
+    const auto kept = link.client.take_other_sound();
+    CHECK(kept.size() == 30);
+    bool as_sent = !kept.empty();
+    for (std::size_t i = 0; i < kept.size(); ++i) {
+        as_sent = as_sent && kept[i].stream == ConsoleStream::kMockOtherStream && kept[i].frame_index == i + 1 && kept[i].new_frames == 1 &&
+                  kept[i].repeated_frames == 0 && kept[i].unit_size == 24 && kept[i].payload.size() == 24;
+    }
+    CHECK(as_sent);
+    CHECK(link.client.take_other_sound().empty());
+}

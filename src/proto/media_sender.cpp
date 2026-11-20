@@ -80,7 +80,8 @@ Datagrams MediaSender::video_frame(std::uint16_t index, std::uint8_t adaptive_st
 }
 
 std::optional<std::vector<std::uint8_t>> MediaSender::sound_packet(std::uint16_t index, std::span<const std::vector<std::uint8_t>> fresh,
-                                                                   std::span<const std::vector<std::uint8_t>> repeated, bool haptics) {
+                                                                   std::span<const std::vector<std::uint8_t>> repeated, bool haptics,
+                                                                   std::uint8_t stream) {
     if (fresh.empty() || fresh.size() > 15 || repeated.size() > 15) return std::nullopt;
     const std::size_t size = fresh.front().size();
     if (size == 0 || size > 0xff) return std::nullopt;
@@ -100,6 +101,7 @@ std::optional<std::vector<std::uint8_t>> MediaSender::sound_packet(std::uint16_t
     packet.source_frames = static_cast<std::uint8_t>(fresh.size());
     packet.repeated_frames = static_cast<std::uint8_t>(repeated.size());
     packet.haptics = haptics;
+    packet.sound_stream = stream;  // for a stream that is neither the sound nor the haptics
     return finish(packet, std::move(payload));
 }
 

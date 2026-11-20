@@ -14,6 +14,7 @@
 #include <map>
 #include <optional>
 #include <ranges>
+#include <set>
 #include <thread>
 #include <vector>
 
@@ -1023,11 +1024,24 @@ int run_session_here(const SessionPlan& plan) {
     // The frames that are ready leave the stream at once; they are kept only when a dump was asked for.
     std::uint64_t video_bytes = 0;
     std::uint64_t sound_bytes = 0;
+    std::set<std::uint32_t> sound_streams_seen;
     const auto take_media = [&] {
         transport::MediaOutput media = stream.take_media();
         for (const auto& frame : media.video) video_bytes += frame.data.size();
         for (const auto& frame : media.sound) sound_bytes += frame.data.size();
         if (plan.on_media && (!media.video.empty() || !media.sound.empty())) plan.on_media(media, stream.info());
+        // A sound stream of a kind this version does not know is worth a line when it first shows up, and a look at its first packets.
+        for (const auto& [key, count] : stream.counters().sound_streams) {
+            if (sound_streams_seen.insert(key).second && stream.state() == State::ready && key >> 8 != 0) {
+                log::info("stream: {:.1f} s: sound packets of stream {} with codec {} begin", std::chrono::duration<double>(Clock::now() - setup_started).count(),
+                          key >> 8, key & 0xffU);
+            }
+        }
+        for (const auto& other : stream.take_other_sound()) {
+            log::info("stream: a sound packet of the unknown stream {}: codec {}, frame {}, {} new and {} repeated frames of {} bytes; its payload begins {}",
+                      other.stream, other.codec, other.frame_index, other.new_frames, other.repeated_frames, other.unit_size,
+                      proto::hex_encode(std::span(other.payload).first(std::min<std::size_t>(other.payload.size(), 48))));
+        }
         const auto data = stream.take_console_data();
         if (plan.on_console_data && !data.empty()) plan.on_console_data(data, std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - setup_started));
     };

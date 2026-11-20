@@ -27,7 +27,8 @@ public:
     // One sound packet: `fresh` frames from `index` on, then the `repeated` frames that came just before them.
     // All frames are of one size. Nothing for sizes the packet cannot say.
     [[nodiscard]] std::optional<std::vector<std::uint8_t>> sound_packet(std::uint16_t index, std::span<const std::vector<std::uint8_t>> fresh,
-                                                                        std::span<const std::vector<std::uint8_t>> repeated, bool haptics);
+                                                                        std::span<const std::vector<std::uint8_t>> repeated, bool haptics,
+                                                                        std::uint8_t stream = 0);
 
 private:
     std::optional<std::vector<std::uint8_t>> finish(StreamMediaPacket& packet, std::vector<std::uint8_t> payload);

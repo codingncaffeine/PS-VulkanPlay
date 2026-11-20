@@ -83,7 +83,7 @@ std::optional<std::vector<std::uint8_t>> encode_stream_media(ConsoleKind kind, c
         put16(18, packet.video_word);
         out[20] = static_cast<std::uint8_t>(packet.adaptive_stream << 5);
     } else if (ps5) {
-        out[header - 1] = packet.haptics ? 0x02 : 0x00;
+        out[header - 1] = packet.haptics ? 0x02 : packet.sound_stream;
     }
     out.insert(out.end(), payload.begin(), payload.end());
     return out;

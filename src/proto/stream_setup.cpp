@@ -177,7 +177,10 @@ void ClientStream::on_media(std::span<const std::uint8_t> datagram, TimePoint no
     ++counters_.sound_streams[(std::uint32_t{packet->sound_stream} << 8) | packet->codec];
     if (packet->sound_stream != 0 && !packet->haptics) {
         // A stream this client does not know: its frames are not the sound's, and are kept out of it.
-        ++counters_.other_sound_packets;
+        if (++counters_.other_sound_packets <= kMaxOtherSound) {
+            other_sound_.push_back(OtherSound{packet->sound_stream, packet->codec, packet->unit_size, packet->source_frames, packet->repeated_frames,
+                                             packet->frame_index, scratch_});
+        }
         return;
     }
     SoundReceiver& receiver = packet->haptics ? haptics_ : sound_;
@@ -745,6 +748,10 @@ void ConsoleStream::send_sound(Datagrams& out) {
     }
     if (options_.haptics_every != 0 && options_.kind == ConsoleKind::ps5 && sound_packets_ % options_.haptics_every == 0) {
         if (auto haptics = packet_for(++haptics_index_, true)) out.push_back(std::move(*haptics));
+    }
+    if (options_.other_stream_every != 0 && options_.kind == ConsoleKind::ps5 && sound_packets_ % options_.other_stream_every == 0) {
+        const std::vector<std::vector<std::uint8_t>> fresh{pattern_sound_frame(options_.seed + 99, ++other_index_, 24, false)};
+        if (auto other = media_->sound_packet(other_index_, fresh, {}, false, kMockOtherStream)) out.push_back(std::move(*other));
     }
 }
 
