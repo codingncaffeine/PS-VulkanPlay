@@ -70,8 +70,14 @@ header (bytes; all three required); 2 the sound format (bytes, required); 3 star
 idle timeout before disconnecting, 6 congestion control interval (numbers); 7 a sound channel, once per
 channel: a message of 1 its type (a number), 2 its format in the form of the sound format (bytes), 3 whether
 its frames are samples as they are (a number, 0 or 1; optional). **[read]** The reference does not read
-field 7. This client keeps the list and prints it; what types a console lists, and for what, has not been
-seen yet.
+field 7. This client keeps the list and prints it. **[seen]** A PS5 that was told of one DualSense listed
+five channels: type 0 with 2 channels, 16 bits, 48000 Hz, frames of 480, not marked as samples (the sound),
+and types 2, 3, 4 and 5, each with 2 channels, 16 bits, 3000 Hz, frames of 30, samples as they are (the form
+of a DualSense's haptics). No type 1 was listed, and no channel of any other form: nothing in the list could
+carry what a game plays on a controller's speaker. In a session of over an hour, packets came for two of the
+five only: the stream byte of every sound packet ([video.md](video.md)) was 0 or 2, which fits that byte
+being a channel's type. What types 3 to 5 are for has not been seen; haptics for a second, third and fourth
+controller would fit their form.
 
 **The console's view of the connection** (console): 1 the picture's target bitrate in bits per second, 2 an
 upstream bitrate (numbers); 3 an upstream loss (four bytes, a floating-point number); 4 upstream sound off

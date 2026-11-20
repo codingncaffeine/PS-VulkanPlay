@@ -28,6 +28,8 @@ A **sound** packet goes on with one byte that is not understood: 19 bytes. A PS5
 all, which names the packet's stream: 0 the sound, 2 the controller's **haptics**. **[read]** The reference
 takes every other value for the sound. This client counts sound packets by that byte and the codec byte, and
 keeps a packet whose byte is neither 0 nor 2 out of the sound: a stream of its own, should a console send one.
+**[seen]** In a session of over an hour with a DualSense announced, a PS5 sent 0 and 2 and nothing else,
+though it had listed more channels ([messages.md](messages.md), the stream information).
 
 With bit 4 of the first byte set, three more bytes follow the header; they are not read. **[seen]** A PS5
 sets it on all packets of a frame or on none. In its HEVC streams those are the frames with more than one

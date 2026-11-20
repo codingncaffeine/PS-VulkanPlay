@@ -168,8 +168,11 @@ both strengths 1).
 ([stream-setup.md](stream-setup.md)) carries type 2 for a DualShock 4 or 6 for a DualSense, and a client with
 a DualSense also sends two messages on the control channel first ([session.md](session.md)). The reference
 plays a DualSense's haptics from a second sound stream ([video.md](video.md)) and sets its triggers from the
-trigger effects; **[seen]** a PS5 that is told of a DualShock 4 sends no haptics. Whether a PS5 still sends
-rumble to a client that announced a DualSense has not been seen.
+trigger effects; **[seen]** a PS5 that is told of a DualShock 4 sends no haptics. **[seen]** A PS5 that is
+told of a DualSense sends no rumble at all: in sessions of over an hour it sent haptics all the time, trigger
+effects of the types 0x05 (which sets a trigger free), 0x21 and 0x25 whenever a game changed them, and the
+controller information several times a minute with a light bar color that followed the game; the player in
+it stayed 0 and both strengths 1, and it asked for "take this position" once.
 
 **[read]** A haptics frame is 120 bytes: 10 ms for the controller's two actuators, 30 samples each, 16 bits
 little-endian, left first, at 3000 samples a second. The reference plays them, brought to 48000 a second, on
