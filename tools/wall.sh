@@ -7,8 +7,10 @@
 #   tools/wall.sh --check     the control: proves each point below from inside
 #
 # Inside the wall (bubblewrap):
-#   - no sound is possible: /dev/snd and the folder of the PulseAudio and
-#     PipeWire sockets are empty; SDL's dummy audio driver is a second layer only
+#   - no sound is possible: there is no /dev/snd, and the folder of the PulseAudio
+#     and PipeWire sockets is empty; SDL's dummy audio driver is a second layer only
+#   - none of the machine's devices can be opened: no controller, keyboard or
+#     other input device, no USB device, no camera, no graphics card
 #   - no network but loopback: nothing started here can reach a console on the
 #     home network, or anything else. The network inside is the wall's own, so a
 #     test may open the consoles' real ports and add a test interface to it
@@ -16,12 +18,13 @@
 #     started here ends when the wall does
 #   - the window servers of the desktop cannot be reached; windows open on a
 #     virtual X server whose screen is kept in a file (PSVP_TEST_FB)
-#   - a private home and private XDG folders: never the real profile
+#   - a private home, private XDG folders and a private /tmp: never the real profile
 #   - a session bus of its own that can start nothing
 #   - Vulkan runs on the software driver only, without the desktop's layers
 #
 # Where bubblewrap cannot run (a container that forbids it), the command runs
-# without it only if the machine has no sound device at all. Tests that use the
+# without it only if the machine has no sound, input, USB, camera or graphics
+# device at all. Tests that use the
 # network then need PSVP_TEST_ISOLATED_NET set by whoever started the container,
 # as a statement that its network is not anyone's home network.
 #
@@ -35,25 +38,42 @@ RT="/run/user/$(id -u)"
 # A mistake in sizing a test run should cost the run, never someone's desktop programs.
 echo 1000 > /proc/self/oom_score_adj 2>/dev/null || true
 
-BWRAP=(--dev-bind / / --unshare-user --unshare-pid --unshare-net --proc /proc --die-with-parent
+# The machine's files, but not its devices: /dev inside holds only what every program needs
+# (null, zero, random, a terminal, shared memory). No sound card, no controller or keyboard,
+# no USB device, no camera and no graphics card of this machine can be opened from inside.
+# (Built by hand and not with bubblewrap's own --dev: for that one it moves the command into a second
+# user namespace, where the rights over the wall's network, asked for below, no longer count.)
+BWRAP=(--dev-bind / / --tmpfs /dev --tmpfs /dev/shm --unshare-user --unshare-pid --unshare-net --proc /proc --die-with-parent
+       --symlink /proc/self/fd /dev/fd --symlink /proc/self/fd/0 /dev/stdin --symlink /proc/self/fd/1 /dev/stdout
+       --symlink /proc/self/fd/2 /dev/stderr
        --cap-add CAP_NET_BIND_SERVICE --cap-add CAP_NET_ADMIN)
-[ -d /dev/snd ] && BWRAP+=(--tmpfs /dev/snd)
+for node in null zero full random urandom tty; do
+    [ -e "/dev/$node" ] && BWRAP+=(--dev-bind "/dev/$node" "/dev/$node")
+done
 [ -d "$RT" ] && BWRAP+=(--tmpfs "$RT")
 [ -d /tmp/.X11-unix ] && BWRAP+=(--perms 1777 --tmpfs /tmp/.X11-unix)
 WALL=1
 if ! command -v bwrap >/dev/null 2>&1 || ! bwrap "${BWRAP[@]}" true 2>/dev/null; then WALL=0; fi
 has_sound() { [ -n "$(ls -A /dev/snd 2>/dev/null)" ]; }
+# Controllers, keyboards and other HID devices, USB devices, cameras, graphics cards.
+devices_here='ls -d /dev/input/* /dev/hidraw* /dev/uinput /dev/uhid /dev/bus/usb/*/* /dev/video* /dev/dri/* 2>/dev/null; true'
+has_devices() { [ -n "$(sh -c "$devices_here")" ]; }
 
 if [ "$1" = "--check" ]; then
     if [ "$WALL" = 0 ]; then
         if has_sound; then echo "wall: CONTROL FAILED, bubblewrap cannot run and this machine has sound devices"; exit 1; fi
-        echo "wall: control ok (no bubblewrap here, and no sound device at all)"; exit 0
+        if has_devices; then echo "wall: CONTROL FAILED, bubblewrap cannot run and this machine has input, USB, camera or graphics devices"; exit 1; fi
+        echo "wall: control ok (no bubblewrap here, and no sound, input, USB, camera or graphics device at all)"; exit 0
     fi
     inside() { bwrap "${BWRAP[@]}" -- "$@"; }
     out="$(inside sh -c 'ls -A /dev/snd 2>/dev/null; for s in "'"$RT"'"/pulse "'"$RT"'"/pipewire-0 "'"$RT"'"/bus; do [ -e "$s" ] && echo "$s"; done; true')"
     if [ -n "$out" ]; then echo "wall: CONTROL FAILED, reachable inside the wall:"; echo "$out"; exit 1; fi
     if has_sound; then echo "wall: control ok (sound: $(ls -A /dev/snd | wc -l) devices outside, none inside)"
     else echo "wall: control ok (sound: this machine has no devices at all)"; fi
+
+    reachable="$(inside sh -c "$devices_here")"
+    if [ -n "$reachable" ]; then echo "wall: CONTROL FAILED, devices reachable inside the wall:"; echo "$reachable" | head -5; exit 1; fi
+    echo "wall: control ok (devices: $(sh -c "$devices_here" | wc -l) input, USB, camera and graphics devices outside, none inside)"
 
     # /proc/net/dev lists the links of the network a process is in (the wall has its own /proc).
     links_of='awk "NR > 2 { sub(/:.*/, \"\"); gsub(/ /, \"\"); print }" /proc/net/dev | sort | tr "\n" " "'
@@ -105,13 +125,23 @@ ENVS=(HOME="$TMP/home" XDG_CONFIG_HOME="$TMP/config" XDG_DATA_HOME="$TMP/data" X
 # The X server picks a free display number itself and reports it, so runs started
 # at the same moment never share one. It is ours ($!), and it is stopped by us.
 inner='
-  rm -f "$PSVP_TEST_TMP/display"
-  Xvfb -displayfd 3 -screen 0 "$PSVP_TEST_SCREEN" -nolisten tcp -fbdir "$PSVP_TEST_TMP/fb" \
-      3>"$PSVP_TEST_TMP/display" 2>/dev/null &
-  server=$!
-  for _ in $(seq 200); do [ -s "$PSVP_TEST_TMP/display" ] && break; sleep 0.05; done
-  if [ ! -s "$PSVP_TEST_TMP/display" ]; then
-    echo "wall: the virtual X server did not start" >&2; kill $server 2>/dev/null; exit 4
+  # Up to three tries, and what the server said is kept: a start that fails is told with its reason.
+  server=""
+  for attempt in 1 2 3; do
+    rm -f "$PSVP_TEST_TMP/display"
+    # Without GLX: nothing here draws with OpenGL, and an X server that offers it loads the
+    # graphics drivers of the machine, which have no device to find behind the wall.
+    Xvfb -displayfd 3 -screen 0 "$PSVP_TEST_SCREEN" -nolisten tcp -extension GLX -fbdir "$PSVP_TEST_TMP/fb" \
+        3>"$PSVP_TEST_TMP/display" 2>"$PSVP_TEST_TMP/xvfb-$attempt.err" &
+    server=$!
+    for _ in $(seq 200); do [ -s "$PSVP_TEST_TMP/display" ] && break; kill -0 $server 2>/dev/null || break; sleep 0.05; done
+    [ -s "$PSVP_TEST_TMP/display" ] && break
+    kill $server 2>/dev/null; wait $server 2>/dev/null
+    echo "wall: the virtual X server did not start (try $attempt): $(tail -2 "$PSVP_TEST_TMP/xvfb-$attempt.err" | tr "\n" " ")" >&2
+    server=""
+  done
+  if [ -z "$server" ]; then
+    echo "wall: the virtual X server did not start" >&2; exit 4
   fi
   export DISPLAY=":$(cat "$PSVP_TEST_TMP/display")"
   if command -v dbus-run-session >/dev/null 2>&1; then
@@ -125,7 +155,11 @@ inner='
 
 if [ "$WALL" = 0 ]; then
     if has_sound; then echo "wall: bubblewrap cannot run and this machine has sound devices; refusing to run" >&2; exit 3; fi
+    if has_devices; then echo "wall: bubblewrap cannot run and this machine has input, USB, camera or graphics devices; refusing to run" >&2; exit 3; fi
     env "${ENVS[@]}" bash -c "$inner" wall "$@"
 else
-    bwrap "${BWRAP[@]}" -- env "${ENVS[@]}" bash -c "$inner" wall "$@"
+    # A /tmp of its own, with only this run's folder in it: X servers that start at the same moment
+    # in different walls would otherwise write the same file there (the keyboard map of display 0),
+    # and now and then one of them failed to start.
+    bwrap "${BWRAP[@]}" --perms 1777 --tmpfs /tmp --bind "$TMP" "$TMP" -- env "${ENVS[@]}" bash -c "$inner" wall "$@"
 fi
