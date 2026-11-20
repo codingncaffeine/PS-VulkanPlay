@@ -15,7 +15,8 @@ Early development: there is no release yet. What exists so far:
 - an app (`ps-vulkanplay` with nothing after it): your consoles as cards with Play and Wake, adding a console
   step by step (signing in with PSN gives it your account, so there is no account ID to look up), settings
   for everything a session can do, a choice of looks, and the connected controller with its battery at the
-  bottom of the window. Navigating it with a controller is not there yet
+  bottom of the window. A controller moves through it as well as a pointer does: the direction buttons or the
+  left stick, accept and back, the shoulder buttons for its pages, and keys on the page for a console's PIN
 - finding consoles on the network, waking them from rest mode and registering with them
   (`ps-vulkanplay --help` lists the commands)
 - taking over the consoles already registered in Chiaki or chiaki-ng (`ps-vulkanplay import`)

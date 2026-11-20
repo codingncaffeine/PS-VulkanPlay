@@ -57,6 +57,14 @@ sleep 0.3; stop_mock
 check "the mock took the session" has "$work/play.log" "session request"
 check "and was told goodbye" grep -aqi "goodbye\|disconnect" "$work/play.log"
 
+echo "a controller the real program reads (a pretended one): its presses move through the app's window and press Play"
+start_mock pad --kind ps5 --clip 416x240 --frame-ms 16 --media-ms 10
+PSVP_E2E_NATIVE="$native" PSVP_E2E_CONTROLLER=1 "$tests" -method "*A_controller_the_real_program_reads_moves_through_the_app_and_presses_Play" > "$work/pad.out" 2>&1; rc=$?
+sleep 0.3; stop_mock
+[ $rc -eq 0 ] && grep -aq "Total: 1, Errors: 0, Failed: 0, Skipped: 0" "$work/pad.out" && ok "the controller's presses reached the window through the real program, and its cross started the session" \
+    || fail "the controller in the app: exit $rc: $(sed 's/\x1b\[[0-9;]*m//g' "$work/pad.out" | grep -aE 'not happen|Failure|Expected|Actual|Skip|Total' | head -6)"
+check "the mock took the session the controller started" has "$work/pad.log" "session request"
+
 echo "a console that is in use: the page shows the program's own reason"
 start_mock in-use --kind ps5 --in-use yes
 PSVP_E2E_NATIVE="$native" PSVP_E2E_IN_USE=1 "$tests" -method "*A_console_that_refuses_gives_the_programs_reason_on_the_page" > "$work/in-use.out" 2>&1; rc=$?

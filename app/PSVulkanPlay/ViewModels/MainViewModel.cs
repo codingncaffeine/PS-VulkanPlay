@@ -23,7 +23,8 @@ public sealed class MainViewModel : Observable
     private IRunningProgram? _session, _watch;
     private string _busyWith = "";
     private IReadOnlyList<ControllerInfo> _controllers = [];
-    private bool _controllersKnown;
+    private bool _controllersKnown, _controllerInUse;
+    private int _pressedBy;
 
     /// <param name="post">Runs an action on the UI thread.</param>
     /// <param name="signIn">The PSN sign-in; tests give one that asks a stand-in service.</param>
@@ -68,6 +69,7 @@ public sealed class MainViewModel : Observable
             Changed(nameof(IsHome));
             Changed(nameof(IsSettings));
             Changed(nameof(IsAddConsole));
+            Changed(nameof(CanGoBack));
         }
     }
 
@@ -102,14 +104,66 @@ public sealed class MainViewModel : Observable
         private set
         {
             _controllers = value;
+            if (value.Count == 0) ControllerInUse = false;
             Changed();
             Changed(nameof(HasController));
             Changed(nameof(ControllerLine));
             Changed(nameof(ControllerNote));
             Changed(nameof(HasControllerNote));
             Changed(nameof(ControllerBatteryLow));
+            Changed(nameof(Buttons));
         }
     }
+
+    /// <summary>
+    /// A press of a controller and which controller of the list it was, for whoever moves the
+    /// window's focus; raised on the UI thread. Whether it counts is the window's to say
+    /// (<see cref="ControllerUsed"/>): the program reads controllers also while another program is in front.
+    /// </summary>
+    public event Action<ControllerPress, int>? Pressed;
+
+    /// <summary>
+    /// The app is being moved through with a controller: from its first press until the
+    /// keyboard is typed on, or no controller is left. What only a controller needs shows then.
+    /// </summary>
+    public bool ControllerInUse { get => _controllerInUse; private set => Set(ref _controllerInUse, value); }
+
+    /// <summary>What the buttons are called on the controller that was pressed last (the first one, before any press).</summary>
+    public ButtonNames Buttons => _controllers.Count == 0 ? ButtonNames.For("") : _controllers[_pressedBy < _controllers.Count ? _pressedBy : 0].Buttons;
+
+    /// <summary>Back leads somewhere: the hint for it shows only then.</summary>
+    public bool CanGoBack => Page != Page.Home;
+
+    /// <summary>The keyboard was typed on: what only a controller needs gets out of the way.</summary>
+    public void KeyboardUsed() => ControllerInUse = false;
+
+    /// <summary>A press counted: the app is being moved through with that controller.</summary>
+    public void ControllerUsed(int controller)
+    {
+        if (controller != _pressedBy && controller >= 0)
+        {
+            _pressedBy = controller;
+            Changed(nameof(Buttons));
+        }
+        ControllerInUse = true;
+    }
+
+    /// <summary>The controller's "back": out of a step, out of a page, out of a question, or the last notice away.</summary>
+    public void Back()
+    {
+        if (Page == Page.AddConsole)
+        {
+            if (AddConsole.Step > 1) AddConsole.Back.Execute(null);
+            else Show(Page.Home);
+        }
+        else if (Page == Page.Settings) Show(Page.Home);
+        else if (Consoles.FirstOrDefault(card => card.ConfirmForget) is { } asking) asking.ConfirmForget = false;
+        else if (HasNotice) DismissNotice.Execute(null);
+    }
+
+    /// <summary>The controller's shoulder buttons: the pages at the top, in their order.</summary>
+    public void PreviousPage() { if (Page != Page.Home) Show(Page.Home); }
+    public void NextPage() { if (Page != Page.Settings) Show(Page.Settings); }
 
     public bool HasController => _controllers.Count > 0;
 
@@ -136,8 +190,13 @@ public sealed class MainViewModel : Observable
     public void WatchControllers()
     {
         if (_watch is not null || Playing || Busy && _busyWith == "play") return;
-        _watch = _runner.Start(["controllers", "--json", "--watch"], line => _post(() =>
+        _watch = _runner.Start(["controllers", "--json", "--watch", "--presses"], line => _post(() =>
         {
+            if (ControllerJson.ReadPress(line) is { } pressed)
+            {
+                Pressed?.Invoke(pressed.Press, pressed.Controller);
+                return;
+            }
             if (ControllerJson.Read(line) is not { } list) return;
             _controllersKnown = true;
             Controllers = list;

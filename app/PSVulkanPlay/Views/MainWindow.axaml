@@ -27,7 +27,7 @@
         </Border>
 
         <!-- ===== Consoles ===== -->
-        <ScrollViewer Grid.Row="1" IsVisible="{Binding IsHome}" VerticalScrollBarVisibility="Auto">
+        <ScrollViewer x:Name="HomeScroll" Grid.Row="1" IsVisible="{Binding IsHome}" VerticalScrollBarVisibility="Auto">
             <StackPanel Margin="28,26,28,28">
                 <Grid ColumnDefinitions="*,Auto,Auto" IsVisible="{Binding !ShowEmpty}">
                     <TextBlock Classes="title" Text="Your consoles" VerticalAlignment="Center" />
@@ -116,9 +116,10 @@
                         <Border Classes="rule" />
                         <Grid ColumnDefinitions="*,Auto">
                             <StackPanel VerticalAlignment="Center"><TextBlock Text="Bitrate" /><TextBlock Classes="secondary small" Text="{Binding BitrateText}" /></StackPanel>
-                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="14">
-                                <CheckBox Content="Automatic" IsChecked="{Binding AutoBitrate}" />
-                                <Slider Minimum="2" Maximum="50" TickFrequency="1" IsSnapToTickEnabled="True" Value="{Binding BitrateMbps}" IsEnabled="{Binding !AutoBitrate}" Width="170" />
+                            <!-- One above the other: left and right on a slider change its value, so a control beside one could not be reached with a controller. -->
+                            <StackPanel Grid.Column="1">
+                                <CheckBox Content="Automatic" IsChecked="{Binding AutoBitrate}" HorizontalAlignment="Right" />
+                                <Slider Minimum="2" Maximum="50" TickFrequency="1" IsSnapToTickEnabled="True" Value="{Binding BitrateMbps}" IsEnabled="{Binding !AutoBitrate}" />
                             </StackPanel>
                         </Grid>
                     </StackPanel>
@@ -224,7 +225,7 @@
         </ScrollViewer>
 
         <!-- ===== Adding a console ===== -->
-        <ScrollViewer Grid.Row="1" IsVisible="{Binding IsAddConsole}" VerticalScrollBarVisibility="Auto">
+        <ScrollViewer x:Name="AddScroll" Grid.Row="1" IsVisible="{Binding IsAddConsole}" VerticalScrollBarVisibility="Auto">
             <StackPanel Margin="28,26,28,28" MaxWidth="660">
                 <Grid ColumnDefinitions="*,Auto">
                     <TextBlock Classes="title" Text="Add a console" />
@@ -241,7 +242,7 @@
                             <ItemsControl x:Name="FoundList" ItemsSource="{Binding Found}">
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate x:DataType="core:FoundConsole">
-                                        <Button Classes="row" Command="{Binding $parent[ItemsControl].((vm:AddConsoleViewModel)DataContext).Choose}" CommandParameter="{Binding}">
+                                        <Button Classes="row first" Command="{Binding $parent[ItemsControl].((vm:AddConsoleViewModel)DataContext).Choose}" CommandParameter="{Binding}">
                                             <Grid ColumnDefinitions="*,Auto">
                                                 <StackPanel>
                                                     <TextBlock Text="{Binding Name}" FontSize="16" FontWeight="SemiBold" />
@@ -316,6 +317,24 @@
                             <TextBlock Classes="secondary" Margin="0,6,0,16"
                                        Text="On the console, open Settings, System, Remote Play, Link Device. It shows eight digits for five minutes: type them here." />
                             <TextBox x:Name="PinBox" Classes="pin" Text="{Binding Pin}" MaxLength="9" PlaceholderText="0000 0000" />
+                            <!-- The PIN's keys, for whoever sits there with a controller and no keyboard. -->
+                            <UniformGrid x:Name="PinPad" Columns="3" Width="250" HorizontalAlignment="Left" Margin="-4,10,-4,0"
+                                         IsVisible="{Binding $parent[Window].((vm:MainViewModel)DataContext).ControllerInUse}">
+                                <Button Classes="key first" Content="1" Command="{Binding PinDigit}" CommandParameter="1" />
+                                <Button Classes="key" Content="2" Command="{Binding PinDigit}" CommandParameter="2" />
+                                <Button Classes="key" Content="3" Command="{Binding PinDigit}" CommandParameter="3" />
+                                <Button Classes="key" Content="4" Command="{Binding PinDigit}" CommandParameter="4" />
+                                <Button Classes="key" Content="5" Command="{Binding PinDigit}" CommandParameter="5" />
+                                <Button Classes="key" Content="6" Command="{Binding PinDigit}" CommandParameter="6" />
+                                <Button Classes="key" Content="7" Command="{Binding PinDigit}" CommandParameter="7" />
+                                <Button Classes="key" Content="8" Command="{Binding PinDigit}" CommandParameter="8" />
+                                <Button Classes="key" Content="9" Command="{Binding PinDigit}" CommandParameter="9" />
+                                <Panel />
+                                <Button Classes="key" Content="0" Command="{Binding PinDigit}" CommandParameter="0" />
+                                <Button x:Name="PinEraseKey" Classes="key" Command="{Binding PinErase}" ToolTip.Tip="Erase the last digit">
+                                    <Path Data="M7.5 1 H21 V15 H7.5 L1 8 Z M11 5 L17 11 M17 5 L11 11" Stroke="{DynamicResource TextPrimary}" StrokeThickness="1.6" StrokeJoin="Round" StrokeLineCap="Round" Width="22" Height="16" />
+                                </Button>
+                            </UniformGrid>
                             <StackPanel Orientation="Horizontal" Spacing="10" Margin="0,22,0,0">
                                 <Button x:Name="RegisterButton" Classes="primary big" Content="Register" Command="{Binding Register}" />
                                 <Button Classes="quiet" Content="Back" Command="{Binding Back}" />
@@ -360,7 +379,7 @@
 
         <!-- ===== The controller a session would use ===== -->
         <Border Grid.Row="4" BorderBrush="{DynamicResource Line}" BorderThickness="0,1,0,0" Padding="28,9">
-            <Grid ColumnDefinitions="Auto,Auto,*">
+            <Grid ColumnDefinitions="Auto,Auto,*,Auto">
                 <Panel Width="24" Height="17" VerticalAlignment="Center">
                     <Path Data="M7 0 H17 A7 7 0 0 1 24 7 V11.5 A5 5 0 0 1 15.3 14.9 L14 13 H10 L8.7 14.9 A5 5 0 0 1 0 11.5 V7 A7 7 0 0 1 7 0 Z"
                           Fill="{DynamicResource TextSecondary}" IsVisible="{Binding !HasController}" Opacity="0.55" />
@@ -373,6 +392,32 @@
                                IsVisible="{Binding !ControllerBatteryLow}" />
                     <TextBlock Classes="small" Text="{Binding ControllerNote}" Foreground="{DynamicResource Resting}" HorizontalAlignment="Right" IsVisible="{Binding ControllerBatteryLow}" />
                 </Panel>
+                <!-- What the controller's buttons do here, called what its maker calls them. -->
+                <StackPanel x:Name="Hints" Grid.Column="3" Orientation="Horizontal" Spacing="18" Margin="24,0,0,0" VerticalAlignment="Center" IsVisible="{Binding HasController}">
+                    <StackPanel Orientation="Horizontal" Spacing="7">
+                        <Border Classes="pad">
+                            <Panel>
+                                <Path Data="M1 1 L9 9 M9 1 L1 9" Stroke="{DynamicResource TextPrimary}" StrokeThickness="1.5" StrokeLineCap="Round" Width="10" Height="10" IsVisible="{Binding Buttons.Shapes}" />
+                                <TextBlock x:Name="AcceptName" Classes="padname" Text="{Binding Buttons.Accept}" IsVisible="{Binding !Buttons.Shapes}" />
+                            </Panel>
+                        </Border>
+                        <TextBlock Classes="secondary small" Text="Choose" VerticalAlignment="Center" />
+                    </StackPanel>
+                    <StackPanel x:Name="BackHint" Orientation="Horizontal" Spacing="7" IsVisible="{Binding CanGoBack}">
+                        <Border Classes="pad">
+                            <Panel>
+                                <Ellipse Stroke="{DynamicResource TextPrimary}" StrokeThickness="1.5" Width="10" Height="10" IsVisible="{Binding Buttons.Shapes}" />
+                                <TextBlock Classes="padname" Text="{Binding Buttons.Back}" IsVisible="{Binding !Buttons.Shapes}" />
+                            </Panel>
+                        </Border>
+                        <TextBlock Classes="secondary small" Text="Back" VerticalAlignment="Center" />
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Spacing="5">
+                        <Border Classes="pad wide"><TextBlock x:Name="PreviousName" Classes="padname" Text="{Binding Buttons.Previous}" /></Border>
+                        <Border Classes="pad wide"><TextBlock Classes="padname" Text="{Binding Buttons.Next}" /></Border>
+                        <TextBlock Classes="secondary small" Text="Pages" VerticalAlignment="Center" Margin="2,0,0,0" />
+                    </StackPanel>
+                </StackPanel>
             </Grid>
         </Border>
     </Grid>

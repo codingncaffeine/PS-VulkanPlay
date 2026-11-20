@@ -3,6 +3,7 @@ add_executable(psvp_tests
     unit/test_args.cpp
     unit/test_base64.cpp
     unit/test_color.cpp
+    unit/test_connection_view.cpp
     unit/test_controller_feedback.cpp
     unit/test_decoder.cpp
     unit/test_discovery.cpp
@@ -16,6 +17,7 @@ add_executable(psvp_tests
     unit/test_json.cpp
     unit/test_media.cpp
     unit/test_controller_list.cpp
+    unit/test_controller_presses.cpp
     unit/test_paths.cpp
     unit/test_probe.cpp
     unit/test_regist.cpp

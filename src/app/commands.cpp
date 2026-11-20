@@ -20,6 +20,7 @@
 
 #include "app/account_id.h"
 #include "app/chiaki_import.h"
+#include "app/connection_view.h"
 #include "app/console_store.h"
 #include "app/controllers.h"
 #include "app/decoding.h"
@@ -1087,6 +1088,8 @@ int run_session_here(const SessionPlan& plan) {
         for (const auto& datagram : datagrams) (void)link->socket.send_to(link->console, datagram);
     };
     // Runs the stream until `stop` says so, the stream ends, or the control channel fails.
+    // How the console sees the connection, as it was written into the log last.
+    std::optional<proto::ConnectionQuality> view_said;
     const auto run_stream = [&](const std::function<bool()>& stop) -> std::expected<void, std::string> {
         while (!stop() && stream.state() != State::failed && !(stream.state() == State::closed && !stream.goodbye_pending())) {
             if (!service()) return {};
@@ -1104,6 +1107,14 @@ int run_session_here(const SessionPlan& plan) {
                 }
                 if (plan.on_packet) plan.on_packet(registration.kind, (*datagram)->data, std::chrono::duration_cast<std::chrono::microseconds>(now - setup_started));
                 send_all(stream.on_datagram((*datagram)->data, now));
+                // The console lowers the picture's bitrate, and with it what a person sees, when it thinks the
+                // connection is poor: when its view moves, the log says so, with the time.
+                if (const auto& quality = stream.quality(); quality && connection_view_changed(view_said, *quality)) {
+                    view_said = *quality;
+                    log::debug("stream: {:.1f} s: the console's view of the connection: target bitrate {} kbit/s, round-trip value {:.1f}, loss {}",
+                               std::chrono::duration<double>(now - setup_started).count(), quality->target_bitrate.value_or(0) / 1000, quality->rtt.value_or(0.0),
+                               quality->loss.value_or(0));
+                }
             }
             // A deadline may pass while packets keep coming: it is looked at after every one of them.
             if (Clock::now() >= stream.deadline()) send_all(stream.on_timeout(Clock::now()));
@@ -1411,13 +1422,17 @@ ControllersRunner controllers_runner = nullptr;
 
 // The controllers that are connected: what a session would find.
 int command_controllers(std::span<const std::string_view> args) {
-    const Parsed parsed = parse(args, {"--pretend"}, {"--json", "--watch"}, 0);
+    const Parsed parsed = parse(args, {"--pretend", "--pretend-taps"}, {"--json", "--watch", "--presses"}, 0);
     if (!parsed.error.empty()) return usage("controllers: {}", parsed.error);
     if (controllers_runner == nullptr) return fail("controllers: this build does not read controllers");
     ControllersOptions options;
     options.json = parsed.flag("--json");
     options.watch = parsed.flag("--watch");
+    options.presses = parsed.flag("--presses");
     if (const auto text = parsed.option("--pretend")) options.pretend = std::string(*text);
+    if (const auto text = parsed.option("--pretend-taps")) options.pretend_taps = std::string(*text);
+    if (options.presses && !options.watch) return usage("controllers: --presses goes with --watch");
+    if (options.pretend_taps && !(options.pretend && options.watch)) return usage("controllers: --pretend-taps goes with --pretend and --watch");
     return controllers_runner(options);
 }
 
@@ -1685,9 +1700,10 @@ std::string commands_help() {
         "      take over the consoles registered in Chiaki or chiaki-ng\n"
         "  {0} account [ID] [--json]\n"
         "      show or set the PSN account ID used for registering\n"
-        "  {0} controllers [--json] [--watch]\n"
+        "  {0} controllers [--json] [--watch [--presses]]\n"
         "      list the controllers that are connected, with battery and what each can do; --watch goes\n"
-        "      on and says it again whenever that changes\n",
+        "      on and says it again whenever that changes; --presses also says what is pressed on one\n"
+        "      (a direction, accept, back, the page before or after)\n",
         PSVP_BINARY);
 }
 

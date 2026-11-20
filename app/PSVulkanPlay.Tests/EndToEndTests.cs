@@ -51,6 +51,75 @@ public class EndToEndTests
         if (Directory.Exists(folder)) Directory.Delete(folder, true);
     });
 
+    /// <summary>
+    /// The real program, asked for its controllers with one that exists only inside it: a
+    /// DualSense Edge whose buttons are pressed by lines added to a file. Each run that watches
+    /// gets a file of its own (a second run would press everything in the first one's again).
+    /// </summary>
+    private sealed class WithAPretendedController(IProgramRunner real, string folder) : IProgramRunner
+    {
+        private int _runs;
+        public string Location => real.Location;
+        public string Taps { get; private set; } = "";
+        public Task<RunResult> RunAsync(IReadOnlyList<string> arguments, CancellationToken cancel = default) => real.RunAsync(arguments, cancel);
+
+        public IRunningProgram Start(IReadOnlyList<string> arguments, Action<string> line)
+        {
+            if (arguments[0] != "controllers") return real.Start(arguments, line);
+            Directory.CreateDirectory(folder);
+            Taps = Path.Combine(folder, $"taps-{++_runs}");
+            File.WriteAllText(Taps, "");
+            return real.Start([.. arguments, "--pretend", "054c:0df2", "--pretend-taps", Taps], line);
+        }
+
+        public void Tap(string button) => File.AppendAllText(Taps, $"tap {button}\n");
+    }
+
+    [Fact]
+    public void A_controller_the_real_program_reads_moves_through_the_app_and_presses_Play() => Ui.Run(() =>
+    {
+        if (string.IsNullOrEmpty(Native) || Environment.GetEnvironmentVariable("PSVP_E2E_CONTROLLER") != "1")
+            Assert.Skip("needs the stream program and a stand-in console: run tests/scenario/phase5a.sh behind the wall");
+        Environment.SetEnvironmentVariable("PSVP_NATIVE", Native);
+        string folder = Path.Combine(Path.GetTempPath(), "psvp-e2e-" + Guid.NewGuid().ToString("N"));
+        var runner = new WithAPretendedController(new ProgramRunner(), folder);
+        App.RunnerOverride = runner;
+        App.SettingsFileOverride = Path.Combine(folder, "app.json");
+        var app = (App)Avalonia.Application.Current!;
+        MainViewModel model = app.CreateModel();
+        var window = new MainWindow { DataContext = model };
+        window.Show();
+        Ui.Until(() => Ui.Shows(window, "Living Room") && model.Consoles.Count == 1 && model.Consoles[0].IsReady, "the registered console is on the page and on");
+        Ui.Until(() => Ui.Shows(window, "A controller for checks"), "the bottom line names the controller the program found");
+        Assert.True(Ui.Shows(window, "L1") && Ui.Shows(window, "R1"));   // it is a DualSense Edge by its numbers
+
+        // Its buttons, pressed inside the program: read by the input library, said as presses, taken by the window.
+        Assert.Null(window.Navigator.Focused as Button);
+        runner.Tap("down");
+        Ui.Until(() => window.Navigator.Focused is Button { Content: "Play" }, "the first press put the focus on Play");
+        runner.Tap("right-shoulder");
+        Ui.Until(() => model.IsSettings, "the right shoulder button led to the settings");
+        runner.Tap("east");
+        Ui.Until(() => model.IsHome, "the circle led back");
+        Ui.Until(() => window.Navigator.Focused is Button { Content: "Play" }, "the focus is on Play again");
+        string first = runner.Taps;
+        runner.Tap("south");
+        Ui.Until(() => model.StreamShown, "the cross pressed Play and the stream's own window showed its first picture");
+        Thread.Sleep(500);
+        model.Stop.Execute(null);
+        Ui.Until(() => !model.Busy, "the session ended");
+        Assert.False(model.NoticeIsError, model.Notice + "\n" + model.Report);
+        Assert.Contains("Goodbye sent and acknowledged.", model.Report);
+        // The controllers are watched again, by a new run of the program, and its presses count again.
+        Ui.Until(() => runner.Taps != first && Ui.Shows(window, "A controller for checks"), "the controller is on the bottom line again");
+        Ui.Until(() => window.Navigator.Focused is Button { Content: "Play" }, "the focus is back on the page");
+        runner.Tap("right-shoulder");
+        Ui.Until(() => model.IsSettings, "the controller moves through the app again after the session");
+        Assert.Single(model.Report.Split('\n'), line => line.StartsWith("Played (", StringComparison.Ordinal));
+        window.Close();
+        if (Directory.Exists(folder)) Directory.Delete(folder, true);
+    });
+
     [Fact]
     public void A_console_that_refuses_gives_the_programs_reason_on_the_page() => Ui.Run(() =>
     {

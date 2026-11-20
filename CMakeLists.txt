@@ -92,12 +92,14 @@ add_library(psvp_core STATIC
     src/app/args.cpp
     src/app/chiaki_import.cpp
     src/app/commands.cpp
+    src/app/connection_view.cpp
     src/app/console_store.cpp
     src/app/decoding.cpp
     src/app/json.cpp
     src/app/log.cpp
     src/app/paths.cpp
     src/app/controller_list.cpp
+    src/app/controller_presses.cpp
     src/app/window_place.cpp)
 target_include_directories(psvp_core PUBLIC src "${CMAKE_CURRENT_BINARY_DIR}/generated")
 target_link_libraries(psvp_core PUBLIC psvp_proto psvp_net psvp_media)

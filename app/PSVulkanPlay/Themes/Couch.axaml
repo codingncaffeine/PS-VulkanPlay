@@ -46,6 +46,15 @@
         <Setter Property="Margin" Value="0,14" />
     </Style>
 
+    <!-- ===== The focus, where the arrow keys or a controller put it: a ring that shows from a couch ===== -->
+    <Style Selector="Button, ComboBox, Slider, CheckBox, TextBox">
+        <Setter Property="FocusAdorner">
+            <FocusAdornerTemplate>
+                <Border BorderBrush="{DynamicResource TextPrimary}" BorderThickness="3" CornerRadius="8" />
+            </FocusAdornerTemplate>
+        </Setter>
+    </Style>
+
     <!-- ===== Buttons ===== -->
     <Style Selector="Button">
         <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
@@ -168,6 +177,38 @@
         <Setter Property="Padding" Value="16,12" />
         <Setter Property="Margin" Value="0,0,0,8" />
         <Setter Property="Background" Value="{DynamicResource Surface}" />
+    </Style>
+
+    <!-- A key of the PIN's pad. -->
+    <Style Selector="Button.key">
+        <Setter Property="Height" Value="48" />
+        <Setter Property="Margin" Value="4" />
+        <Setter Property="Padding" Value="0" />
+        <Setter Property="FontSize" Value="19" />
+        <Setter Property="HorizontalAlignment" Value="Stretch" />
+    </Style>
+
+    <!-- A controller's button, in the line that says what it does. -->
+    <Style Selector="Border.pad">
+        <Setter Property="Width" Value="20" />
+        <Setter Property="Height" Value="20" />
+        <Setter Property="CornerRadius" Value="10" />
+        <Setter Property="Background" Value="{DynamicResource SurfaceAlt}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource Line}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="VerticalAlignment" Value="Center" />
+    </Style>
+    <Style Selector="Border.pad.wide">
+        <Setter Property="Width" Value="NaN" />
+        <Setter Property="MinWidth" Value="28" />
+        <Setter Property="CornerRadius" Value="5" />
+        <Setter Property="Padding" Value="5,0" />
+    </Style>
+    <Style Selector="TextBlock.padname">
+        <Setter Property="FontSize" Value="11" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="HorizontalAlignment" Value="Center" />
+        <Setter Property="VerticalAlignment" Value="Center" />
     </Style>
 
     <!-- ===== Inputs ===== -->

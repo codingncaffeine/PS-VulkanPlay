@@ -108,6 +108,22 @@ public static class Ui
         Settle();
     }
 
+    /// <summary>
+    /// What the desktop tells a window ("Activated", "Deactivated"): the screen that exists only in
+    /// memory has one window in front for ever, so the word is passed on the way a desktop passes it,
+    /// through the window's own platform half. The framework keeps that entrance to itself.
+    /// </summary>
+    public static void DesktopSays(Window window, string what)
+    {
+        object platform = window.PlatformImpl ?? throw new InvalidOperationException("the window has no platform half");
+        System.Reflection.PropertyInfo? said = platform.GetType().GetInterfaces().Append(platform.GetType())
+            .Select(type => type.GetProperty(what, System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic))
+            .FirstOrDefault(property => property is not null && property.PropertyType == typeof(Action));
+        Assert.True(said?.GetValue(platform) is Action, $"the window's platform half has no '{what}' to call");
+        ((Action)said!.GetValue(platform)!).Invoke();
+        Settle();
+    }
+
     /// <summary>The window as drawn, kept as a picture for a person to look at.</summary>
     public static string Capture(Window window, string name)
     {

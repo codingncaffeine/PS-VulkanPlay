@@ -39,7 +39,9 @@ lane clang-libcxx      preset clang-libcxx
 lane oracle            tools/oracle/run.sh
 lane fuzz              tools/fuzz.sh 8
 # The app (.NET): built, its tests run twice. No window is opened and nothing is asked of a console.
-lane app               sh -c 'tools/build-app.sh --test && app/PSVulkanPlay.Tests/bin/Release/net10.0/PSVulkanPlay.Tests > /dev/null'
+# Exit 3 of the build is "built and tested, but bin/app is in use and was left alone": the gate is
+# about the tree, and somebody using the build in bin/ does not make the tree wrong.
+lane app               sh -c 'tools/build-app.sh --test; rc=$?; [ $rc -eq 0 ] || [ $rc -eq 3 ] || exit $rc; app/PSVulkanPlay.Tests/bin/Release/net10.0/PSVulkanPlay.Tests > /dev/null'
 lane launch            launch release
 # Memory errors only: the window system's libraries hold allocations until exit.
 lane launch-asan       env ASAN_OPTIONS=detect_leaks=0 tools/wall.sh tools/launch-check.sh build/san/ps-vulkanplay

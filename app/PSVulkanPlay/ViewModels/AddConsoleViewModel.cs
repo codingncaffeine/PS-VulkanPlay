@@ -31,6 +31,8 @@ public sealed class AddConsoleViewModel : Observable
         Back = new Command(() => { Error = ""; Step = Math.Max(1, Step - 1); });
         Next = new Command(() => { Error = ""; Step = 3; }, () => AccountIdLooksRight);
         Register = new Command(() => _ = RegisterAsync(), () => PinLooksRight && !Working);
+        PinDigit = new Command(digit => { if (digit is string { Length: 1 } one && char.IsAsciiDigit(one[0]) && PinDigits.Length < 8) Pin = Spaced(PinDigits + one); });
+        PinErase = new Command(() => { if (PinDigits.Length > 0) Pin = Spaced(PinDigits[..^1]); });
         SignIn = new Command(() => _ = SignInAsync(), () => !SigningIn);
         UsePasted = new Command(() => _ = TakeAddressAsync(Pasted), () => !SigningIn && PsnSignIn.CodeFrom(Pasted) is not null);
         OpenInBrowser = new Command(() => { ShowPaste = true; OpenBrowser?.Invoke(_signIn.LoginPage); });
@@ -216,6 +218,13 @@ public sealed class AddConsoleViewModel : Observable
     }
 
     private string PinDigits => new(Pin.Where(char.IsAsciiDigit).ToArray());
+
+    /// <summary>The PIN's keys on the page, for whoever has a controller and no keyboard at hand.</summary>
+    public Command PinDigit { get; }
+    public Command PinErase { get; }
+
+    // The way the console shows it: two groups of four.
+    private static string Spaced(string digits) => digits.Length > 4 ? digits[..4] + " " + digits[4..] : digits;
     public bool PinLooksRight => PinDigits.Length == 8 && Pin.All(c => char.IsAsciiDigit(c) || c == ' ');
 
     /// <summary>A fresh start: called each time the page is opened.</summary>

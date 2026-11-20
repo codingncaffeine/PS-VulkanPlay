@@ -72,6 +72,10 @@ sleep 0.3; stop_mock
 out="$work/play.out"; log="$work/play.log"
 [ $rc -eq 0 ] && ok "play: exit 0" || fail "play: exit $rc: $(tail -3 "$out") $(grep -a ERROR "$work/play.err" | head -3)"
 check "it decoded with FFmpeg's H.264 decoder" grep -aqE "^Played \(H\.264, FFmpeg's h264 decoder in software\): " "$out"
+# The mock says every 1.2 s how it sees the connection, always the same: the log has it once, with its time.
+own_log="${XDG_STATE_HOME:-$HOME/.local/state}/ps-vulkanplay/logs/play.log"
+[ "$(grep -ac "the console's view of the connection: target bitrate 9708 kbit/s, round-trip value 200.0, loss 0" "$own_log")" = 1 ] \
+    && ok "the console's view of the connection is in the log once: it did not change" || fail "the console's view in the log: $(grep -a "console's view" "$own_log" | head -3)"
 decoded=$(number "$out" 'Played [^:]*: ([0-9]+) pictures decoded from [0-9]+ frames')
 between "$decoded" 280 320 && ok "$decoded pictures were decoded in five seconds" || fail "decoded: '$decoded': $(grep -a '^Played' "$out")"
 shown=$(number "$out" 'pictures decoded from [0-9]+ frames, ([0-9]+) shown')
@@ -177,6 +181,38 @@ for _ in $(seq 50); do kill -0 $watch_pid 2>/dev/null || break; sleep 0.1; done
 kill -0 $watch_pid 2>/dev/null && { fail "controllers --watch did not end when told to"; kill -KILL $watch_pid; } || ok "controllers --watch says the list once and ends when told to"
 wait $watch_pid 2>/dev/null
 [ "$(cat "$work/watch.out")" = '{"controllers": []}' ] && ok "what it said while nothing changed: the list, once" || fail "watch said: $(head -3 "$work/watch.out")"
+
+echo "what is pressed on a controller is said as what it means to an app: a pretended controller's buttons, pressed from a file"
+presses() {   # presses VENDOR:PRODUCT NAME: taps and holds, what was said goes to $work/NAME.out
+    local taps="$work/$2.taps" pid line
+    : > "$taps"
+    "$app" controllers --json --watch --presses --pretend "$1" --pretend-taps "$taps" > "$work/$2.out" 2> "$work/$2.err" &
+    pid=$!
+    for _ in $(seq 100); do [ -s "$work/$2.out" ] && break; sleep 0.05; done
+    for line in "tap down" "tap south" "tap east" "tap left-shoulder" "tap right-shoulder" "tap up" "tap left" "tap right" "tap north" "not a line"; do
+        echo "$line" >> "$taps"; sleep 0.15
+    done
+    echo "down right" >> "$taps"; sleep 0.75; echo "up right" >> "$taps"; sleep 0.2      # held: once, again after 0.4 s, then every 0.11 s
+    echo "stick 0 -32768" >> "$taps"; sleep 0.15; echo "stick 0 0" >> "$taps"; sleep 0.15
+    kill -TERM $pid 2>/dev/null; wait $pid 2>/dev/null
+}
+said() { grep -a '"press"' "$1" | sed -E 's/.*"press":"([a-z]+)".*/\1/' | tr '\n' ' '; }
+presses 054c:0df2 pad-sony
+check "the list is said first, and names the controller" sh -c "head -1 '$work/pad-sony.out' | grep -aq '\"kind\": \"dualsense-edge\"'"
+[ "$(said "$work/pad-sony.out" | cut -d' ' -f1-8)" = "down accept back previous next up left right" ] \
+    && ok "direction buttons, cross = accept, circle = back, the shoulder buttons = the page before and after; a button that means nothing says nothing" \
+    || fail "a DualSense's presses were said as: $(said "$work/pad-sony.out")"
+held=$(said "$work/pad-sony.out" | tr ' ' '\n' | sed -n '9,$p' | grep -c '^right$')
+[ "$held" -ge 4 ] && [ "$held" -le 6 ] && ok "a direction held for 0.75 s is said $held times (once, again after 0.4 s, then every 0.11 s)" || fail "the held direction was said $held times: $(said "$work/pad-sony.out")"
+[ "$(said "$work/pad-sony.out" | tr ' ' '\n' | grep -c .)" = $((8 + held + 1)) ] && [ "$(said "$work/pad-sony.out" | awk '{print $NF}')" = "up" ] \
+    && ok "the left stick pushed up is 'up', once" || fail "after the held direction: $(said "$work/pad-sony.out")"
+check "each press names its controller's place in the list" grep -aqF '{"press":"down","controller":0}' "$work/pad-sony.out"
+check "a line of the file that is no press is said to be none, and nothing is pressed for it" has "$work/pad-sony.err" "not understood: not a line"
+presses 057e:2009 pad-nintendo
+[ "$(said "$work/pad-nintendo.out" | cut -d' ' -f1-3)" = "down back accept" ] \
+    && ok "where the maker prints A on the right-hand button, that one is accept and the lower one is back" || fail "a Nintendo controller's presses were said as: $(said "$work/pad-nintendo.out")"
+"$app" controllers --presses > "$work/presses-alone.out" 2>&1; rc=$?
+[ $rc -eq 64 ] && has "$work/presses-alone.out" "--presses goes with --watch" && ok "--presses without --watch is refused" || fail "controllers --presses: exit $rc: $(head -2 "$work/presses-alone.out")"
 
 [ $failed -eq 0 ] && echo "PHASE 3B PASSED" || echo "PHASE 3B FAILED"
 exit $failed

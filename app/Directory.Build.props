@@ -1,0 +1,8 @@
+<Project>
+  <!-- NuGet asks its service for known vulnerabilities at every restore. Where that service cannot
+       be reached (a build without a network) it says so with NU1900: that is no fault of the tree
+       and must not fail a build. What it does find (NU1901 to NU1904) still does. -->
+  <PropertyGroup>
+    <WarningsNotAsErrors>$(WarningsNotAsErrors);NU1900</WarningsNotAsErrors>
+  </PropertyGroup>
+</Project>

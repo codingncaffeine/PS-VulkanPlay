@@ -29,7 +29,7 @@ public class WindowTests : IDisposable
 
         // The bottom line: the controller a session would use, as the program reports it.
         Assert.True(Ui.Shows(window, "Looking for a controller"));
-        Assert.Equal(["controllers", "--json", "--watch"], fake.Last("controllers"));
+        Assert.Equal(["controllers", "--json", "--watch", "--presses"], fake.Last("controllers"));
         fake.Watch!.Say("""{"controllers": []}""");
         Ui.Until(() => Ui.Shows(window, "No controller connected"), "the page says that no controller is there");
         fake.Watch.Say("""{"controllers": [{"name": "DualSense Edge Wireless Controller", "kind": "dualsense-edge", "link": "cable", "battery": 55, "power": "charging", "touchpad": true, "motion": true, "rumble": true, "haptics": "sound-device"}]}""");
