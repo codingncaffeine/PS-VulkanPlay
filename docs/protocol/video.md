@@ -81,8 +81,8 @@ Any *k* of a frame's *k* + *m* units give the frame: the source units that arriv
 repair units as source units are missing, and what remains is solved for the missing ones. A restored unit
 carries its padding count again, which tells how many of its bytes belong to the frame.
 
-**[checked]** The factors are distinct only for up to 256 units. A frame of more units is whole only by its
-source units.
+The factors are distinct only for up to 256 units, so this client takes a frame of more units as whole only
+by its source units.
 
 This client hands a frame on the moment it has enough units, and does not wait for the rest of them.
 
@@ -113,12 +113,11 @@ repaired holds the picture up by 16 ms at most.
 
 ### Telling the console
 
-**[checked]** Frames that were given up are reported in a message of type 5 ([messages.md](messages.md))
-with the first and the last frame's index, on channel 2, with flags 1. **[read]** The console then codes the
-next frames so that they need none of the reported ones.
-
-**[checked]** A message of type 25, on channel 2, asks the console for a frame that needs no earlier one (a
-keyframe).
+Frames that were given up are reported in a message of type 5 ([messages.md](messages.md)) with the first
+and the last frame's index; a message of type 25 asks the console for a frame that needs no earlier one (a
+keyframe). **[checked]** Both messages are byte for byte the reference's. **[read]** Both go out on channel
+2, with flags 1. **[read]** After a report the console codes the next frames so that they need none of the
+reported ones.
 
 **[read]** The reference reports from the frame after the last one it handed on up to the frame before the one
 that just began, and asks for a keyframe when restoring a frame fails. It also reads the beginning of every
@@ -127,7 +126,7 @@ client does not look into frames yet; that comes with the decoder.
 
 ### Congestion reports
 
-**[checked]** Every 200 ms the client sends a packet of kind 5, fifteen bytes:
+**[read]** Every 200 ms the client sends a packet of kind 5. **[checked]** It is fifteen bytes:
 
 | Offset | Size | Content |
 |---|---|---|
