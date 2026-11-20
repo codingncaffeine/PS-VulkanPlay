@@ -84,6 +84,9 @@ public:
     [[nodiscard]] std::expected<std::optional<Datagram>, std::string> receive(Clock::time_point deadline);
     [[nodiscard]] std::uint16_t port() const noexcept { return port_; }
     [[nodiscard]] int fd() const noexcept { return fd_.get(); }
+    // Asks for room for `bytes` of datagrams that wait to be read (a keyframe arrives as a burst of
+    // hundreds). The system may give less; what it gave is returned, 0 when that cannot be read.
+    std::size_t set_receive_buffer(std::size_t bytes) noexcept;
 
 private:
     Fd fd_;

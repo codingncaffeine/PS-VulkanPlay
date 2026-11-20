@@ -81,7 +81,7 @@ for kind in ps4 ps5; do
         "stream message type 13 channel 1 flags 1 key-position 64 authentic: 080d7a10120e01100000bb80000001e000000001"
     check "the mock got the goodbye" has "$log" "stream goodbye: Client Disconnecting"
     check "the mock refused none of its packets" has "$log" "control-rejected 0 before-keys 0"
-    check "every key position follows from the sizes before it" grep -aqE 'stream summary: .* key-positions [0-9]+ out-of-step 0$' "$log"
+    check "every key position follows from the sizes before it" grep -aqE 'stream summary: .* key-positions [0-9]+ out-of-step 0 ' "$log"
     check "nothing was rejected or left unsealed" lacks "$log" "REJECTED"
     check "nothing after the keys was unsealed" lacks "$log" "NOT SEALED"
     sent=$(number "$out" 'heartbeats sent: ([0-9]+)\.')
@@ -193,7 +193,7 @@ if [ -n "$reference" ]; then
         setup_of "$log" > "$work/$kind-reference.setup"
         # Its key positions are its own (its threads take them in an order that varies), but they
         # must follow the same rule: each packet's is the one before plus that packet's size.
-        steps=$(number "$log" 'key-positions ([0-9]+) out-of-step 0$')
+        steps=$(number "$log" 'key-positions ([0-9]+) out-of-step 0 ')
         between "$steps" 30 200 && ok "the key positions of its $steps sealed packets follow from their sizes, as this client's do" \
             || fail "key positions: $(grep -a 'stream summary' "$log")"
         if [ "$(wc -l < "$work/$kind-ours.setup")" = 3 ] && cmp -s "$work/$kind-ours.setup" "$work/$kind-reference.setup"; then

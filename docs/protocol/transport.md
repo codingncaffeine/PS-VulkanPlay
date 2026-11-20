@@ -5,9 +5,10 @@ SCTP: a four-step opening handshake, numbered and acknowledged messages for what
 packet types for what may be lost (picture, sound, input). A session uses it twice: first briefly on port 9297
 to measure the network, then on port 9296 for the stream.
 
-This page covers the packet layout, the opening handshake and the messages that must arrive. Encryption and
-the stream's picture and sound packets follow as they are implemented. The messages themselves are listed in
-[messages.md](messages.md); the first connection's exchange is in [probe.md](probe.md).
+This page covers the packet layout, the opening handshake and the messages that must arrive. Encryption is
+in [stream-setup.md](stream-setup.md), the stream's picture and sound packets in [video.md](video.md). The
+messages themselves are listed in [messages.md](messages.md); the first connection's exchange is in
+[probe.md](probe.md).
 
 ## Packets
 
@@ -107,7 +108,7 @@ this client acknowledged, through the whole of the network probe (2026-11-19).
 ## Picture and sound packets on the probe connection
 
 The probe connection uses the transport's older packet layout for picture (kind 2) and sound (kind 3)
-packets; the stream's layouts differ and are described with the receivers.
+packets; the stream's layouts differ and are described in [video.md](video.md).
 
 | Offset | Size | Content |
 |---|---|---|

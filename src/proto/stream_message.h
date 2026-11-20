@@ -128,9 +128,17 @@ struct ControllerConnection {
     friend bool operator==(const ControllerConnection&, const ControllerConnection&) = default;
 };
 
+// "These picture frames did not arrive whole", first to last, both included.
+struct CorruptFrames {
+    std::uint32_t start = 0;
+    std::uint32_t end = 0;
+    friend bool operator==(const CorruptFrames&, const CorruptFrames&) = default;
+};
+
 struct StreamMessage {
     using Body = std::variant<std::monostate, BigMessage, BangMessage, DisconnectMessage, ProbeEcho, ProbeMtu,
-                              ProbeClientMtu, ProtocolRequest, ProtocolRequestAck, StreamInfo, ControllerConnection>;
+                              ProbeClientMtu, ProtocolRequest, ProtocolRequestAck, StreamInfo, ControllerConnection,
+                              CorruptFrames>;
     std::uint32_t type = 0;
     Body body;  // nothing for a type without a body here, or whose body was missing
 

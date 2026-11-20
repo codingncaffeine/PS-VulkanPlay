@@ -24,8 +24,22 @@
 //     --stream no             complete the stream port's handshake, then stay silent
 //     --refuse-version yes    answer the stream's opening message with "version not accepted"
 //     --wrong-signature yes   sign its public key with a key that is not the handshake key
-//     --media-ms N            once a stream is set up, send a sealed sound packet every N ms
-//     --corrupt-media yes     change a byte of each of those after sealing it
+//     --media-ms N            once a stream is set up, send a sound packet every N ms
+//     --haptics-every N       with every Nth sound packet one for the haptics (PS5)
+//     --lose-sound-every N    do not send the sound packets whose frame index N divides
+//     --frame-ms N            send a picture frame every N ms
+//     --frames N              stop after N picture frames (default: go on)
+//     --media-seed N          what the frames hold follows from this number and their index
+//     --frame-bytes N         a picture frame is half to one and a half times this (default 6000)
+//     --repair-units N        repair packets per picture frame (default 2)
+//     --lose-every N          the picture frames whose index N divides lose packets...
+//     --lose-units N          ...this many, from their first on
+//     --late-every N          the last packet of such a frame goes out behind the next frame's first
+//     --corrupt-media yes     change a byte of each picture and sound packet after sealing it
+//
+//   psvp-mock-console --check-dump FOLDER [--media-seed N] [--frame-bytes N]
+//     compares what 'session --dump FOLDER' kept with what a mock with these options sends;
+//     prints what it found and exits 0 when every frame kept is one that was sent
 //
 // It listens on the consoles' real ports, so it needs a network of its own
 // (tools/wall.sh, or a container) and the right to open port 987 for a PS4.
@@ -38,8 +52,10 @@
 #include <cstdlib>
 #include <format>
 #include <fstream>
+#include <iterator>
 #include <map>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -97,7 +113,13 @@ struct Options {
     bool wrong_signature = false;
     int media_ms = 0;
     bool corrupt_media = false;
+    psvp::proto::transport::ConsoleStream::Options media;  // the picture and sound it sends
+    int frame_ms = 0;
+    std::string check_dump;
 };
+
+// The header of the one picture size the mock offers: a placeholder, not a decoder's.
+constexpr std::array<std::uint8_t, 8> kPictureHeader{0x00, 0x00, 0x00, 0x01, 0x4d, 0x4f, 0x43, 0x4b};
 
 // The control channel of the one session the mock can hold.
 struct Control {
@@ -368,6 +390,103 @@ int usage(std::string_view problem) {
     return 64;
 }
 
+// The lines of a tab-separated list behind its heading, as numbers.
+std::optional<std::vector<std::vector<std::uint64_t>>> read_list(const std::string& path) {
+    std::ifstream in(path);
+    if (!in) return std::nullopt;
+    std::vector<std::vector<std::uint64_t>> rows;
+    std::string line;
+    std::getline(in, line);
+    while (std::getline(in, line)) {
+        std::vector<std::uint64_t> row;
+        const char* at = line.data();
+        const char* const end = at + line.size();
+        while (at < end) {
+            std::uint64_t number = 0;
+            const auto [next, error] = std::from_chars(at, end, number);
+            if (error != std::errc{}) return std::nullopt;
+            row.push_back(number);
+            at = next < end ? next + 1 : next;
+        }
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
+std::optional<std::vector<std::uint8_t>> read_file(const std::string& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return std::nullopt;
+    return std::vector<std::uint8_t>(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+
+// Compares what 'session --dump' kept with what a mock with these options sends.
+int check_dump(const Options& options) {
+    using namespace psvp::proto::transport;
+    const std::string folder = options.check_dump + "/";
+    const auto video_list = read_list(folder + "video.tsv");
+    const auto video = read_file(folder + "video.bin");
+    const auto sound_list = read_list(folder + "sound.tsv");
+    const auto sound = read_file(folder + "sound.bin");
+    if (!video_list || !video || !sound_list || !sound) return usage(std::format("{}: not a folder that 'session --dump' wrote", options.check_dump));
+
+    // Picture: every frame kept must be the frame of its index, behind the header where one is announced.
+    std::size_t at = 0;
+    std::uint64_t wrong = 0;
+    std::uint64_t keyframes = 0;
+    std::uint64_t repaired = 0;
+    std::uint64_t headers = 0;
+    std::string missing;
+    std::optional<std::uint64_t> first;
+    std::uint64_t last = 0;
+    for (const auto& row : *video_list) {
+        if (row.size() != 6 || at + row[5] + row[1] > video->size()) return usage("video.tsv does not fit video.bin");
+        if (row[5] != 0) {
+            ++headers;
+            if (row[5] != kPictureHeader.size() || !std::equal(kPictureHeader.begin(), kPictureHeader.end(), video->begin() + static_cast<std::ptrdiff_t>(at))) ++wrong;
+            at += row[5];
+        }
+        const std::span<const std::uint8_t> kept(video->data() + at, row[1]);
+        at += row[1];
+        const bool keyframe = kept.size() > 4 && kept[4] == 0x65;
+        const auto sent = pattern_video_frame(options.media.seed, static_cast<std::uint16_t>(row[0]), options.media.frame_bytes, keyframe);
+        if (!std::ranges::equal(kept, sent)) ++wrong;
+        keyframes += keyframe ? 1 : 0;
+        repaired += row[2];
+        if (first) {
+            for (std::uint64_t gone = last + 1; gone < row[0]; ++gone) missing += std::format(" {}", gone);
+        }
+        if (!first) first = row[0];
+        last = row[0];
+    }
+    if (at != video->size()) ++wrong;
+    std::fputs(std::format("dump: picture frames {} first {} last {} wrong {} keyframes {} repaired {} headers {} missing:{}\n", video_list->size(),
+                           first.value_or(0), last, wrong, keyframes, repaired, headers, missing.empty() ? " none" : missing)
+                   .c_str(),
+               stdout);
+
+    // Sound and haptics: each a row of frames that count up.
+    at = 0;
+    std::uint64_t sound_wrong = 0;
+    std::uint64_t counts[2] = {};
+    std::uint64_t recovered = 0;
+    std::uint64_t gaps = 0;
+    for (const auto& row : *sound_list) {
+        if (row.size() != 5 || row[2] > 1 || at + row[1] > sound->size()) return usage("sound.tsv does not fit sound.bin");
+        const std::span<const std::uint8_t> kept(sound->data() + at, row[1]);
+        at += row[1];
+        if (!std::ranges::equal(kept, pattern_sound_frame(options.media.seed, static_cast<std::uint16_t>(row[0]), row[1], row[2] == 1))) ++sound_wrong;
+        ++counts[row[2]];
+        recovered += row[3];
+        gaps += row[4];
+    }
+    if (at != sound->size()) ++sound_wrong;
+    std::fputs(std::format("dump: sound frames {} haptics frames {} wrong {} from-a-later-packet {} lost {}\n", counts[0], counts[1], sound_wrong,
+                           recovered, gaps)
+                   .c_str(),
+               stdout);
+    return wrong == 0 && sound_wrong == 0 ? 0 : 1;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -443,11 +562,31 @@ int main(int argc, char** argv) {
             if (std::from_chars(text->data(), text->data() + text->size(), options.media_ms).ec != std::errc{} || options.media_ms < 1) {
                 return usage("--media-ms is a number of at least 1");
             }
+        } else if (arg == "--check-dump") {
+            options.check_dump = *text;
+        } else if (arg == "--frame-ms" || arg == "--frames" || arg == "--media-seed" || arg == "--frame-bytes" || arg == "--repair-units" ||
+                   arg == "--lose-every" || arg == "--lose-units" || arg == "--late-every" || arg == "--lose-sound-every" ||
+                   arg == "--haptics-every") {
+            std::uint64_t number = 0;
+            const auto [end, error] = std::from_chars(text->data(), text->data() + text->size(), number);
+            if (error != std::errc{} || end != text->data() + text->size() || number > 1000000) return usage(std::format("{} is a number", arg));
+            const auto count = static_cast<unsigned>(number);
+            if (arg == "--frame-ms") options.frame_ms = static_cast<int>(number);
+            else if (arg == "--frames") options.media.frames = count;
+            else if (arg == "--media-seed") options.media.seed = number;
+            else if (arg == "--frame-bytes") options.media.frame_bytes = number;
+            else if (arg == "--repair-units") options.media.repair_units = count;
+            else if (arg == "--lose-every") options.media.lose_every = count;
+            else if (arg == "--lose-units") options.media.lose_units = count;
+            else if (arg == "--late-every") options.media.late_every = count;
+            else if (arg == "--lose-sound-every") options.media.lose_sound_every = count;
+            else options.media.haptics_every = count;
         } else {
             return usage(std::format("unknown option {}", arg));
         }
     }
     if (options.system_version.empty()) options.system_version = options.kind == ConsoleKind::ps5 ? "09000004" : "12020000";
+    if (!options.check_dump.empty()) return check_dump(options);
 
     std::signal(SIGTERM, on_signal);
     std::signal(SIGINT, on_signal);
@@ -534,12 +673,13 @@ int main(int argc, char** argv) {
                 probes.insert_or_assign(key.second, Probe{from, psvp::proto::transport::ConsoleProbe(handshake.tag(), *handshake.client(), options.path)});
             }
             if (transport_port == psvp::proto::transport::kStreamPort && options.stream && session_cipher) {
-                psvp::proto::transport::ConsoleStream::Options stream_options;
+                psvp::proto::transport::ConsoleStream::Options stream_options = options.media;
+                stream_options.frame_every = std::chrono::milliseconds(options.frame_ms);
                 stream_options.kind = options.kind;
                 stream_options.session_cipher = *session_cipher;
                 stream_options.session_id = std::string(session_id(options.kind));
                 // One picture size; its header is a placeholder, not a decoder's.
-                stream_options.resolutions.push_back(psvp::proto::StreamResolution{1280, 720, {0x00, 0x00, 0x00, 0x01, 0x4d, 0x4f, 0x43, 0x4b}});
+                stream_options.resolutions.push_back(psvp::proto::StreamResolution{1280, 720, {kPictureHeader.begin(), kPictureHeader.end()}});
                 stream_options.max_datagram = std::min(options.path.mtu_in, options.path.mtu_out) - psvp::proto::transport::kSplitMargin;
                 stream_options.accept_version = !options.refuse_version;
                 stream_options.wrong_signature = options.wrong_signature;

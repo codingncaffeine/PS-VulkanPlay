@@ -108,7 +108,7 @@ void ClientStream::on_bang(Datagrams& out, const DataChunk& chunk, const BangMes
     const KeySignature expected = sign_public_key(handshake_key_, *bang.ecdh_public_key);
     bang_->signature_matches = std::ranges::equal(expected, *bang.ecdh_signature);
 
-    auto send_keys = std::make_shared<SendKeys>(StreamCipher(kClientDirection, handshake_key_, *secret));
+    send_keys_ = std::make_shared<SendKeys>(StreamCipher(kClientDirection, handshake_key_, *secret));
     receive_keys_ = std::make_shared<ReceiveKeys>(StreamCipher(kConsoleDirection, handshake_key_, *secret));
     // Whether the answer itself was sealed with the keys it brought.
     if (chunk.chunks == 1) {
@@ -120,7 +120,7 @@ void ClientStream::on_bang(Datagrams& out, const DataChunk& chunk, const BangMes
             bang_->code = code && *code == chunk.mac ? BangFacts::Code::valid : BangFacts::Code::invalid;
         }
     }
-    messenger_.use_keys(std::move(send_keys), receive_keys_);
+    messenger_.use_keys(send_keys_, receive_keys_);
 
     state_ = State::awaiting_stream_info;
     step_deadline_ = now + kAnswerWait;
@@ -145,6 +145,85 @@ void ClientStream::on_stream_info(Datagrams& out, const StreamInfo& info, TimePo
     if (state_ == State::failed) return;
     state_ = State::ready;
     next_heartbeat_ = now + kHeartbeatEvery;
+    next_congestion_ = now + kCongestionEvery;
+    next_input_ = now + kInputEvery;
+}
+
+// A picture or sound packet that carried the right code.
+void ClientStream::on_media(std::span<const std::uint8_t> datagram, TimePoint now) {
+    const auto packet = parse_stream_media(request_.kind, datagram);
+    if (!packet) {
+        ++counters_.media_unreadable;
+        return;
+    }
+    // The key stream of the payload begins sixteen bytes behind the packet's key position.
+    scratch_.assign(packet->payload.begin(), packet->payload.end());
+    receive_keys_->cipher.apply_key_stream(receive_keys_->positions.last() + kPayloadKeyOffset, scratch_);
+    if (packet->video) {
+        FrameOutput frames;
+        video_.on_packet(*packet, scratch_, now, frames);
+        note_lost(frames);
+        for (auto& frame : frames.frames) media_.video.push_back(std::move(frame));
+        return;
+    }
+    SoundReceiver& receiver = packet->haptics ? haptics_ : sound_;
+    const std::uint64_t lost_before = receiver.counters().frames_lost;
+    const std::uint64_t unusable_before = receiver.counters().packets_unusable;
+    receiver.on_packet(*packet, scratch_, media_.sound);
+    if (receiver.counters().packets_unusable == unusable_before) ++interval_received_;
+    interval_lost_ += receiver.counters().frames_lost - lost_before;
+}
+
+// Frames that will not come are reported to the console. What cannot be sent yet is kept;
+// when too much is kept, it becomes one range that covers all of it.
+void ClientStream::note_lost(const FrameOutput& frames) {
+    for (const FrameRange& range : frames.lost) {
+        if (!unreported_.empty() && static_cast<std::uint16_t>(unreported_.back().last + 1) == range.first) unreported_.back().last = range.last;
+        else unreported_.push_back(range);
+    }
+    if (unreported_.size() > kMaxUnreported) unreported_ = {FrameRange{unreported_.front().first, unreported_.back().last}};
+}
+
+void ClientStream::send_reports(Datagrams& out, TimePoint now) {
+    if (state_ != State::ready) return;
+    while (!unreported_.empty() && messenger_.waiting() < Messenger::kWindow) {
+        const FrameRange range = unreported_.front();
+        unreported_.erase(unreported_.begin());
+        send(out, make_message(CorruptFrames{range.first, range.last}), kReportChannel, now);
+        if (state_ != State::ready) return;
+        ++counters_.loss_reports;
+    }
+}
+
+Datagrams ClientStream::request_keyframe(TimePoint now) {
+    Datagrams out;
+    if (state_ != State::ready || messenger_.waiting() >= Messenger::kWindow) return out;
+    send(out, make_plain_message(message_type::kKeyframeRequest), kReportChannel, now);
+    if (state_ == State::ready) ++counters_.keyframe_requests;
+    return out;
+}
+
+// The controller's state: encrypted from sixteen bytes behind the packet's key position on, then sealed.
+void ClientStream::send_input(Datagrams& out) {
+    std::vector<std::uint8_t> state = encode_input_state(request_.kind, input_);
+    const std::uint64_t position = send_keys_->take(state.size() + kPayloadKeyOffset);
+    send_keys_->cipher.apply_key_stream(position + kPayloadKeyOffset, state);
+    std::vector<std::uint8_t> packet = encode_input_packet(input_sequence_++, state);
+    if (!seal_datagram(send_keys_->cipher, position, packet)) return;
+    out.push_back(std::move(packet));
+    ++counters_.input_states;
+}
+
+// How many picture and sound packets arrived and how many did not, since the report before.
+void ClientStream::send_congestion(Datagrams& out) {
+    const UnitStats units = video_.take_unit_stats();
+    const std::uint64_t received = units.received + std::exchange(interval_received_, 0);
+    const std::uint64_t lost = units.missing + std::exchange(interval_lost_, 0);
+    std::vector<std::uint8_t> report = encode_congestion(static_cast<std::uint16_t>(std::min<std::uint64_t>(received, 0xffff)),
+                                                         static_cast<std::uint16_t>(std::min<std::uint64_t>(lost, 0xffff)));
+    if (!seal_datagram(send_keys_->cipher, send_keys_->take(kCongestionSize), report)) return;
+    out.push_back(std::move(report));
+    ++counters_.congestion_reports;
 }
 
 void ClientStream::on_message(Datagrams& out, const DataChunk& chunk, const StreamMessage& message, TimePoint now) {
@@ -201,10 +280,18 @@ Datagrams ClientStream::on_datagram(std::span<const std::uint8_t> datagram, Time
         // The acknowledgment goes last: sealed, if the message it answers brought the keys.
         if (auto ack = messenger_.take_ack()) out.push_back(std::move(*ack));
     } else if (kind == packet_kind::kVideo || kind == packet_kind::kAudio) {
-        if (!receive_keys_) ++counters_.media_before_keys;
-        else if (!verify_datagram(*receive_keys_, datagram)) ++counters_.media_rejected;
-        else if (kind == packet_kind::kVideo) ++counters_.video_packets;
-        else ++counters_.audio_packets;
+        if (!receive_keys_) {
+            ++counters_.media_before_keys;
+        } else if (!verify_datagram(*receive_keys_, datagram)) {
+            ++counters_.media_rejected;
+        } else {
+            ++(kind == packet_kind::kVideo ? counters_.video_packets : counters_.audio_packets);
+            // The picture may begin before the stream information is in: its packets need only the keys.
+            if (state_ == State::ready || state_ == State::awaiting_stream_info) {
+                on_media(datagram, now);
+                send_reports(out, now);
+            }
+        }
     } else {
         ++counters_.other_datagrams;
     }
@@ -226,9 +313,28 @@ Datagrams ClientStream::on_timeout(TimePoint now) {
         if (!timer.abandoned.empty()) {
             fail("the console stopped acknowledging the stream's messages");
         } else if (now >= next_heartbeat_) {
-            send(out, make_plain_message(message_type::kHeartbeat), kSessionChannel, now);
-            if (state_ == State::ready) ++counters_.heartbeats_sent;
+            // With every place for an unanswered message taken, this one is left out: the
+            // messages that wait are sent again, and given up on when the console stays silent.
+            if (messenger_.waiting() < Messenger::kWindow) {
+                send(out, make_plain_message(message_type::kHeartbeat), kSessionChannel, now);
+                if (state_ == State::ready) ++counters_.heartbeats_sent;
+            }
             next_heartbeat_ = now + kHeartbeatEvery;
+        }
+    }
+    if (state_ == State::ready) {
+        FrameOutput frames;
+        video_.on_timeout(now, frames);
+        note_lost(frames);
+        for (auto& frame : frames.frames) media_.video.push_back(std::move(frame));
+        send_reports(out, now);
+        if (now >= next_congestion_) {
+            send_congestion(out);
+            next_congestion_ = now + kCongestionEvery;
+        }
+        if (now >= next_input_) {
+            send_input(out);
+            next_input_ = now + kInputEvery;
         }
     }
     return out;
@@ -238,7 +344,10 @@ TimePoint ClientStream::deadline() const {
     TimePoint when = TimePoint::max();
     if (const auto resend = messenger_.deadline()) when = *resend;
     if (state_ == State::awaiting_bang || state_ == State::awaiting_stream_info) when = std::min(when, step_deadline_);
-    else if (state_ == State::ready) when = std::min(when, next_heartbeat_);
+    else if (state_ == State::ready) {
+        when = std::min({when, next_heartbeat_, next_congestion_, next_input_});
+        if (const auto frame = video_.deadline()) when = std::min(when, *frame);
+    }
     return when;
 }
 
@@ -318,7 +427,9 @@ void ConsoleStream::on_big(Datagrams& out, const DataChunk& chunk, const BigMess
     info.audio_header = encode_audio_header(options_.audio);
     send(out, make_message(std::move(info)), ClientStream::kSessionChannel, now);
     events_.emplace_back("stream information sent");
+    media_.emplace(options_.kind, send_keys_);
     if (options_.media_every.count() > 0) next_media_ = now + options_.media_every;
+    if (options_.frame_every.count() > 0) next_frame_ = now + options_.frame_every;
 }
 
 void ConsoleStream::on_message(Datagrams& out, const DataChunk& chunk, TimePoint now) {
@@ -335,11 +446,22 @@ void ConsoleStream::on_message(Datagrams& out, const DataChunk& chunk, TimePoint
         ++heartbeats_;
         return;
     }
+    if (const auto* frames = message->as<CorruptFrames>()) {
+        events_.push_back(std::format("frames {} to {} reported as not arrived (channel {}, {})", frames->start, frames->end, chunk.channel,
+                                      chunk.authentic ? "authentic" : "NOT SEALED"));
+        return;
+    }
+    if (message->type == message_type::kKeyframeRequest) {
+        keyframe_wanted_ = true;
+        events_.push_back(std::format("keyframe requested (channel {}, {})", chunk.channel, chunk.authentic ? "authentic" : "NOT SEALED"));
+        return;
+    }
     events_.push_back(std::format("message type {} channel {} flags {} key-position {} {}: {}", message->type, chunk.channel, chunk.flags,
                                   chunk.key_position, chunk.authentic ? "authentic" : "NOT SEALED", hex_encode(chunk.data)));
     if (const auto* goodbye = message->as<DisconnectMessage>()) {
         disconnected_ = true;
         next_media_.reset();
+        next_frame_.reset();
         events_.push_back(std::format("goodbye: {}", goodbye->reason));
     }
 }
@@ -387,8 +509,29 @@ Datagrams ConsoleStream::on_datagram(std::span<const std::uint8_t> datagram, Tim
             ++authentic_[kind];
             // A congestion report counts for its fifteen bytes; an input packet for what follows
             // its twelve header bytes and sixteen more.
-            if (kind == packet_kind::kCongestion) positions_[receive_keys_->positions.last()] = 15;
-            else if (kind == packet_kind::kInputState || kind == packet_kind::kInputHistory) positions_[receive_keys_->positions.last()] = datagram.size() - 12 + 16;
+            if (kind == packet_kind::kCongestion) {
+                positions_[receive_keys_->positions.last()] = 15;
+                if (const auto report = parse_congestion(datagram)) {
+                    congestion_received_ += report->received;
+                    congestion_lost_ += report->lost;
+                }
+            }
+            else if (kind == packet_kind::kInputState || kind == packet_kind::kInputHistory) {
+                positions_[receive_keys_->positions.last()] = datagram.size() - 12 + 16;
+                if (kind == packet_kind::kInputState && datagram.size() > kInputHeaderSize) {
+                    // Its state is encrypted from sixteen bytes behind its key position on.
+                    std::vector<std::uint8_t> state(datagram.begin() + kInputHeaderSize, datagram.end());
+                    receive_keys_->cipher.apply_key_stream(receive_keys_->positions.last() + kPayloadKeyOffset, state);
+                    const auto sequence = static_cast<std::uint16_t>((datagram[1] << 8) | datagram[2]);
+                    if (input_sequence_ && static_cast<std::uint16_t>(*input_sequence_ + 1) != sequence) ++input_out_of_order_;
+                    input_sequence_ = sequence;
+                    if (!parse_input_state(options_.kind, state) || datagram[3] != 0) ++input_unreadable_;
+                    else {
+                        ++input_states_;
+                        if (state == encode_input_state(options_.kind, InputState{})) ++input_at_rest_;
+                    }
+                }
+            }
             else positions_checkable_ = false;
         } else {
             ++rejected_[kind];
@@ -400,24 +543,77 @@ Datagrams ConsoleStream::on_datagram(std::span<const std::uint8_t> datagram, Tim
 Datagrams ConsoleStream::on_timer(TimePoint now) {
     Messenger::Timer timer = messenger_.on_timer(now);
     Datagrams out = std::move(timer.resend);
-    if (next_media_ && send_keys_ && now >= *next_media_) {
-        // A sound packet as far as its header goes; what follows it is not a sound unit.
-        MediaHeader header;
-        header.video = false;
-        header.packet_index = media_index_;
-        header.frame_index = media_index_++;
-        std::vector<std::uint8_t> datagram = encode_media(header, 120);
-        (void)seal_datagram(send_keys_->cipher, send_keys_->take(datagram.size()), datagram);
-        if (options_.corrupt_media) datagram.back() ^= 0x01;
-        out.push_back(std::move(datagram));
+    while (next_frame_ && media_ && now >= *next_frame_) {
+        send_frame(out);
+        *next_frame_ += options_.frame_every;
+        if (options_.frames != 0 && frames_sent_ >= options_.frames) {
+            next_frame_.reset();
+            // No frame follows for a held packet to go out behind.
+            if (held_) out.push_back(std::move(*std::exchange(held_, std::nullopt)));
+        }
+    }
+    while (next_media_ && media_ && now >= *next_media_) {
+        send_sound(out);
         *next_media_ += options_.media_every;
     }
     return out;
 }
 
+// One picture frame, with what the options make go wrong with it.
+void ConsoleStream::send_frame(Datagrams& out) {
+    const std::uint16_t index = ++frame_index_;
+    const bool keyframe = std::exchange(keyframe_wanted_, false);
+    const auto frame = pattern_video_frame(options_.seed, index, options_.frame_bytes, keyframe);
+    const std::uint8_t codec = 0;
+    Datagrams packets = media_->video_frame(index, 0, codec, frame, options_.unit_data, options_.repair_units);
+    ++frames_sent_;
+    events_.push_back(std::format("frame {} sent: {} bytes in {} packets{}", index, frame.size(), packets.size(), keyframe ? ", a keyframe" : ""));
+    std::size_t first = 0;
+    if (options_.lose_every != 0 && index % options_.lose_every == 0) {
+        first = std::min<std::size_t>(options_.lose_units, packets.size());
+        packets_withheld_ += first;
+    }
+    const bool late = options_.late_every != 0 && index % options_.late_every == 0 && packets.size() - first > 1;
+    for (std::size_t i = first; i < packets.size(); ++i) {
+        if (options_.corrupt_media) packets[i].back() ^= 0x01;
+        if (late && i + 1 == packets.size()) {
+            held_ = std::move(packets[i]);
+            break;
+        }
+        out.push_back(std::move(packets[i]));
+        // A packet held back from the frame before goes out behind this frame's first.
+        if (i == first && held_ && !late) out.push_back(std::move(*std::exchange(held_, std::nullopt)));
+    }
+}
+
+// One sound packet with a new frame and the frames before it again; now and then one for the haptics too.
+void ConsoleStream::send_sound(Datagrams& out) {
+    const auto packet_for = [&](std::uint16_t index, bool haptics) {
+        const std::vector<std::vector<std::uint8_t>> fresh{pattern_sound_frame(options_.seed, index, options_.sound_bytes, haptics)};
+        std::vector<std::vector<std::uint8_t>> repeated;
+        for (unsigned back = options_.sound_repeats; back >= 1; --back) {
+            repeated.push_back(pattern_sound_frame(options_.seed, static_cast<std::uint16_t>(index - back), options_.sound_bytes, haptics));
+        }
+        return media_->sound_packet(index, fresh, repeated, haptics);
+    };
+    const std::uint16_t index = ++sound_index_;
+    ++sound_packets_;
+    auto packet = packet_for(index, false);
+    if (packet && options_.lose_sound_every != 0 && index % options_.lose_sound_every == 0) {
+        ++packets_withheld_;
+    } else if (packet) {
+        if (options_.corrupt_media) packet->back() ^= 0x01;
+        out.push_back(std::move(*packet));
+    }
+    if (options_.haptics_every != 0 && options_.kind == ConsoleKind::ps5 && sound_packets_ % options_.haptics_every == 0) {
+        if (auto haptics = packet_for(++haptics_index_, true)) out.push_back(std::move(*haptics));
+    }
+}
+
 std::optional<TimePoint> ConsoleStream::deadline() const {
     std::optional<TimePoint> when = messenger_.deadline();
     if (next_media_ && (!when || *next_media_ < *when)) when = next_media_;
+    if (next_frame_ && (!when || *next_frame_ < *when)) when = next_frame_;
     return when;
 }
 
@@ -425,6 +621,7 @@ Datagrams ConsoleStream::disconnect(const std::string& reason, TimePoint now) {
     Datagrams out;
     send(out, make_message(DisconnectMessage{reason}), ClientStream::kSessionChannel, now);
     next_media_.reset();
+    next_frame_.reset();
     return out;
 }
 
@@ -446,6 +643,10 @@ std::string ConsoleStream::summary() const {
     } else {
         text += " key-positions not checked";
     }
+    text += std::format(" input-states {} at-rest {} unreadable {} out-of-order {}", input_states_, input_at_rest_, input_unreadable_,
+                        input_out_of_order_);
+    text += std::format(" frames-sent {} sound-sent {} withheld {} congestion-received {} congestion-lost {}", frames_sent_, sound_packets_,
+                        packets_withheld_, congestion_received_, congestion_lost_);
     return text;
 }
 

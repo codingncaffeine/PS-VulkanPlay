@@ -76,6 +76,16 @@ size_t psvp_ref_encode_audio_info(const uint8_t *audio_header, size_t audio_head
     return encode(&msg, out, out_size);
 }
 
+size_t psvp_ref_encode_corrupt_frames(uint32_t start, uint32_t end, uint8_t *out, size_t out_size) {
+    tkproto_TakionMessage msg;
+    memset(&msg, 0, sizeof(msg));
+    msg.type = tkproto_TakionMessage_PayloadType_CORRUPTFRAME;
+    msg.has_corrupt_payload = true;
+    msg.corrupt_payload.start = start;
+    msg.corrupt_payload.end = end;
+    return encode(&msg, out, out_size);
+}
+
 size_t psvp_ref_encode_disconnect(const char *reason, uint8_t *out, size_t out_size) {
     tkproto_TakionMessage msg;
     memset(&msg, 0, sizeof(msg));

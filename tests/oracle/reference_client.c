@@ -10,6 +10,9 @@
 //   psvp_reference_client session HOST ps5|ps4 REGIST_KEY SECRET_HEX SECONDS
 //       starts a whole session and stops it after SECONDS (the mock console
 //       only goes as far as this project has implemented)
+//       With PSVP_REFERENCE_DUMP=FOLDER in the environment it keeps what the
+//       session hands to a decoder: FOLDER/video.bin (every picture sample, in
+//       order) and FOLDER/sound.bin (every sound frame, in order).
 //
 // Test tool only: built by the oracle lane, never installed.
 #include <stdbool.h>
@@ -74,6 +77,30 @@ static void on_session_event(ChiakiEvent *event, void *user) {
     } else if (event->type == CHIAKI_EVENT_CONNECTED) {
         printf("reference: connected\n");
     }
+}
+
+static FILE *g_video = NULL;
+static FILE *g_sound = NULL;
+static unsigned g_video_samples = 0;
+static unsigned g_sound_frames = 0;
+static unsigned g_sound_concealed = 0;
+
+static bool on_video_sample(uint8_t *buf, size_t buf_size, int32_t frames_lost, bool frame_recovered, void *user) {
+    (void)frames_lost; (void)frame_recovered; (void)user;
+    if (g_video) fwrite(buf, 1, buf_size, g_video);
+    ++g_video_samples;
+    return true;
+}
+
+static void on_audio_header(ChiakiAudioHeader *header, void *user) {
+    (void)header; (void)user;
+}
+
+static void on_audio_frame(uint8_t *buf, size_t buf_size, void *user) {
+    (void)user;
+    if (!buf) { ++g_sound_concealed; return; }  /* a frame it gave up on */
+    if (g_sound) fwrite(buf, 1, buf_size, g_sound);
+    ++g_sound_frames;
 }
 
 static int hex_value(char c) {
@@ -159,11 +186,30 @@ int main(int argc, char **argv) {
         static ChiakiSession session;
         if (chiaki_session_init(&session, &info, &log) != CHIAKI_ERR_SUCCESS) return 3;
         chiaki_session_set_event_cb(&session, on_session_event, NULL);
+        const char *dump = getenv("PSVP_REFERENCE_DUMP");
+        if (dump) {
+            char path[1024];
+            snprintf(path, sizeof(path), "%s/video.bin", dump);
+            g_video = fopen(path, "wb");
+            snprintf(path, sizeof(path), "%s/sound.bin", dump);
+            g_sound = fopen(path, "wb");
+            if (!g_video || !g_sound) return 3;
+        }
+        chiaki_session_set_video_sample_cb(&session, on_video_sample, NULL);
+        ChiakiAudioSink sink;
+        memset(&sink, 0, sizeof(sink));
+        sink.header_cb = on_audio_header;
+        sink.frame_cb = on_audio_frame;
+        chiaki_session_set_audio_sink(&session, &sink);
         if (chiaki_session_start(&session) != CHIAKI_ERR_SUCCESS) return 3;
         wait_done(atoi(argv[6]) * 10);
         chiaki_session_stop(&session);
         chiaki_session_join(&session);
         chiaki_session_fini(&session);
+        if (g_video) fclose(g_video);
+        if (g_sound) fclose(g_sound);
+        printf("reference: %u picture samples, %u sound frames, %u sound frames given up on\n", g_video_samples, g_sound_frames,
+               g_sound_concealed);
         printf("reference: session stopped\n");
         return 0;
     }

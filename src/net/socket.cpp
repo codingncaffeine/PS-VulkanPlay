@@ -142,6 +142,15 @@ void Fd::reset() noexcept {
     fd_ = -1;
 }
 
+std::size_t UdpSocket::set_receive_buffer(std::size_t bytes) noexcept {
+    const int wanted = static_cast<int>(std::min<std::size_t>(bytes, 1U << 30));
+    (void)::setsockopt(fd_.get(), SOL_SOCKET, SO_RCVBUF, &wanted, sizeof(wanted));
+    int got = 0;
+    socklen_t size = sizeof(got);
+    if (::getsockopt(fd_.get(), SOL_SOCKET, SO_RCVBUF, &got, &size) != 0 || got < 0) return 0;
+    return static_cast<std::size_t>(got);
+}
+
 std::expected<UdpSocket, std::string> UdpSocket::open(std::uint32_t bind_ip, std::uint16_t first_port,
                                                      std::uint16_t last_port, bool allow_broadcast) {
     UdpSocket socket;

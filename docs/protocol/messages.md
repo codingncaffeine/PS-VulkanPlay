@@ -36,6 +36,7 @@ the reference **[checked]** (its probe against the mock console: every message e
 | 0 | opening message ("big") | 2 |
 | 1 | its answer ("bang") | 3 |
 | 3 | heartbeat | none |
+| 5 | frames that did not arrive | 6 |
 | 8 | goodbye | 10 |
 | 12 | network probe | 14 |
 | 13 | stream information | 15 |
@@ -57,6 +58,9 @@ key-exchange signature (bytes).
 
 **Its answer** (console): 1 server version, 2 token, 3 encrypted key accepted, 4 version accepted, 5 session
 key (all required), 8 key-exchange public key, 9 key-exchange signature.
+
+**Frames that did not arrive** (client): 1 the first frame's index, 2 the last one's (numbers, both required).
+See [video.md](video.md).
 
 **Goodbye**: 1 reason (text, required). A client sends `Client Disconnecting`.
 
@@ -84,6 +88,6 @@ version chosen.
 **[seen]** A PS5 on system software 14.23 answered the version request, the opening message, the echo
 command, the size requests and the client size test built as above, with messages this client read
 (2026-11-19). **[checked]** The opening message with its key fields, the three messages a client sends after
-the stream information, the heartbeat, the keyframe request and the goodbye are byte for byte what the
-reference's coder writes; the answer and the stream information as this project writes them are read by the
+the stream information, the heartbeat, the keyframe request, the report of frames that did not arrive and the
+goodbye are byte for byte what the reference's coder writes; the answer and the stream information as this project writes them are read by the
 reference's coder to the same values.

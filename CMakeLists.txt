@@ -38,13 +38,19 @@ find_package(OpenSSL 3.0 REQUIRED COMPONENTS Crypto)
 add_library(psvp_proto STATIC
     src/proto/base64.cpp
     src/proto/discovery.cpp
+    src/proto/erasure.cpp
+    src/proto/frame_assembler.cpp
     src/proto/hex.cpp
+    src/proto/input.cpp
     src/proto/key_exchange.cpp
     src/proto/launch_spec.cpp
+    src/proto/media_packet.cpp
+    src/proto/media_sender.cpp
     src/proto/probe.cpp
     src/proto/regist.cpp
     src/proto/rp_cipher.cpp
     src/proto/session.cpp
+    src/proto/sound.cpp
     src/proto/stream_cipher.cpp
     src/proto/stream_message.cpp
     src/proto/stream_setup.cpp

@@ -33,3 +33,6 @@ The reference implementation is [chiaki-ng](https://github.com/chiaki-ng/chiaki-
 - [The network probe](probe.md): measuring the round trip and the largest packet before the stream
 - [Setting a stream up](stream-setup.md): the key exchange, the launch specification, the stream keys, packet
   authentication and the stream information
+- [Picture and sound](video.md): the picture and sound packets, frames and their repair units, what the client
+  reports back
+- [The controller's state](input.md): the input state packet with the sticks and the motion sensors

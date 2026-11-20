@@ -231,6 +231,8 @@ dropped.
 - **[checked]** by the reference's own client against the mock console (`tests/scenario/phase2c.sh`): it takes
   the mock's answer, makes its keys, accepts the sealed stream information and reports the session as
   connected; the mock finds the right code on every packet it sends and each at the position the rule gives.
+- **[checked]** by the mock console on the reference's own client (`tests/scenario/phase2d.sh`): the payload
+  of an input packet is encrypted from sixteen bytes behind its key position on ([input.md](input.md)).
 - Nothing on this page has been seen on a real console yet. First to be seen there: whether the console
   accepts its own session ID, what its answer carries (version, token, session key, a code or none), whether
   its signature matches, and its stream information.

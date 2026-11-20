@@ -12,12 +12,17 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
+#include "proto/frame_assembler.h"
+#include "proto/input.h"
 #include "proto/key_exchange.h"
+#include "proto/media_sender.h"
 #include "proto/probe.h"
 #include "proto/rp_cipher.h"
 #include "proto/session.h"
+#include "proto/sound.h"
 #include "proto/stream_message.h"
 #include "proto/transport.h"
 
@@ -63,11 +68,22 @@ struct StreamCounters {
     std::uint64_t audio_packets = 0;
     std::uint64_t media_rejected = 0;     // with a wrong one
     std::uint64_t media_before_keys = 0;  // arrived before there was a key to check them with
+    std::uint64_t media_unreadable = 0;   // with the right code and a header that makes no sense
+    std::uint64_t loss_reports = 0;       // "these frames did not arrive whole", sent to the console
+    std::uint64_t keyframe_requests = 0;
+    std::uint64_t congestion_reports = 0;
+    std::uint64_t input_states = 0;       // input state packets sent
     std::uint64_t other_datagrams = 0;    // of a kind this version does not read
     std::uint64_t heartbeats_sent = 0;
     std::uint64_t split_messages = 0;     // messages from the console that came in more than one chunk
     std::map<std::uint32_t, std::uint64_t> messages;    // from the console after the set-up, by message type
     std::map<std::uint8_t, std::uint64_t> other_data;   // data that is not a message (rumble and the like), by kind
+};
+
+// Frames that are ready for a decoder, in order.
+struct MediaOutput {
+    std::vector<AssembledFrame> video;
+    std::vector<SoundFrame> sound;  // sound and haptics, as they came
 };
 
 // The client's side, from a finished handshake on the stream port.
@@ -77,6 +93,10 @@ public:
 
     static constexpr std::chrono::milliseconds kAnswerWait{5000};
     static constexpr std::chrono::milliseconds kHeartbeatEvery{1000};
+    static constexpr std::chrono::milliseconds kCongestionEvery{200};
+    static constexpr std::chrono::milliseconds kInputEvery{200};  // when nothing about the controller changes
+    static constexpr std::uint16_t kReportChannel = 2;
+    static constexpr std::size_t kMaxUnreported = 8;
     static constexpr std::uint16_t kSessionChannel = 1;
     static constexpr std::uint16_t kStreamInfoAckChannel = 9;
 
@@ -91,6 +111,15 @@ public:
     // Says goodbye. The state becomes closed; the goodbye is sent again until the console has it.
     [[nodiscard]] Datagrams disconnect(TimePoint now);
     [[nodiscard]] bool goodbye_pending() const noexcept { return goodbye_ && messenger_.waiting() > 0; }
+    // The frames that became ready since the last call.
+    [[nodiscard]] MediaOutput take_media() { return std::exchange(media_, {}); }
+    // The controller's sticks and sensors, as the next input state packets will tell them.
+    void set_input(const InputState& state) noexcept { input_ = state; }
+    // Asks the console for a picture that needs no earlier one. Nothing while the stream is not set up.
+    [[nodiscard]] Datagrams request_keyframe(TimePoint now);
+    [[nodiscard]] const FrameCounters& video() const noexcept { return video_.counters(); }
+    [[nodiscard]] const SoundCounters& sound() const noexcept { return sound_.counters(); }
+    [[nodiscard]] const SoundCounters& haptics() const noexcept { return haptics_.counters(); }
 
     [[nodiscard]] State state() const noexcept { return state_; }
     // Why it failed, or the reason the console gave when it closed the stream.
@@ -111,6 +140,11 @@ private:
     void on_bang(Datagrams& out, const DataChunk& chunk, const BangMessage& bang, TimePoint now);
     void on_stream_info(Datagrams& out, const StreamInfo& info, TimePoint now);
     void fail(std::string why);
+    void on_media(std::span<const std::uint8_t> datagram, TimePoint now);
+    void note_lost(const FrameOutput& frames);
+    void send_reports(Datagrams& out, TimePoint now);
+    void send_congestion(Datagrams& out);
+    void send_input(Datagrams& out);
 
     Messenger messenger_;
     StreamRequest request_;
@@ -123,6 +157,11 @@ private:
     std::string reason_;
     bool closed_by_console_ = false;
     bool goodbye_ = false;
+    TimePoint next_congestion_{};
+    TimePoint next_input_{};
+    InputState input_;
+    std::uint16_t input_sequence_ = 0;
+    std::shared_ptr<SendKeys> send_keys_;
     std::shared_ptr<ReceiveKeys> receive_keys_;
     std::optional<BangFacts> bang_;
     std::optional<StreamInfo> info_;
@@ -130,6 +169,14 @@ private:
     StreamCounters counters_;
     std::size_t opening_size_ = 0;
     std::size_t opening_datagrams_ = 0;
+    FrameAssembler video_;
+    SoundReceiver sound_;
+    SoundReceiver haptics_;
+    MediaOutput media_;
+    std::vector<FrameRange> unreported_;   // lost frames the console has not been told about yet
+    std::vector<std::uint8_t> scratch_;    // a packet's payload while it is decrypted
+    std::uint64_t interval_received_ = 0;  // sound packets since the last congestion report
+    std::uint64_t interval_lost_ = 0;
 };
 
 // The console's side, as the mock console and the tests play it.
@@ -144,8 +191,22 @@ public:
         std::size_t max_datagram = kMtuCeiling - kSplitMargin;
         bool accept_version = true;
         bool wrong_signature = false;              // sign its public key with a key that is not the handshake key
-        std::chrono::milliseconds media_every{0};  // send a sealed sound packet this often; 0: none
-        bool corrupt_media = false;                // change a byte of each after sealing it
+        std::chrono::milliseconds media_every{0};  // send a sound packet this often; 0: none
+        bool corrupt_media = false;                // change a byte of each packet after sealing it
+        // The picture and what goes wrong with it. Frames count from 1; every frame is fixed by seed and index.
+        std::chrono::milliseconds frame_every{0};  // send a picture frame this often; 0: none
+        unsigned frames = 0;                       // stop after this many; 0: go on
+        std::uint64_t seed = 1;
+        std::size_t frame_bytes = 6000;            // a frame is half to one and a half times this
+        std::size_t unit_data = 1000;
+        unsigned repair_units = 2;
+        unsigned lose_every = 0;                   // every frame whose index this divides loses...
+        unsigned lose_units = 0;                   // ...this many of its packets, from its first on
+        unsigned late_every = 0;                   // every such frame's last packet goes out after the next frame's first
+        std::size_t sound_bytes = 40;              // per sound frame
+        unsigned sound_repeats = 2;                // earlier frames sent again in every sound packet
+        unsigned lose_sound_every = 0;             // every sound packet whose frame index this divides is not sent
+        unsigned haptics_every = 0;                // a haptics packet with every Nth sound packet (PS5); 0: none
     };
 
     ConsoleStream(std::uint32_t local_tag, const Endpoint& client, Options options, const KeyExchange& keys);
@@ -174,9 +235,28 @@ private:
     KeyExchange keys_;
     std::shared_ptr<SendKeys> send_keys_;
     std::shared_ptr<ReceiveKeys> receive_keys_;
+    void send_frame(Datagrams& out);
+    void send_sound(Datagrams& out);
+
     bool disconnected_ = false;
     std::optional<TimePoint> next_media_;
-    std::uint16_t media_index_ = 0;
+    std::optional<TimePoint> next_frame_;
+    std::optional<MediaSender> media_;
+    std::uint16_t frame_index_ = 0;
+    std::uint16_t sound_index_ = 0;
+    std::uint16_t haptics_index_ = 0;
+    std::uint64_t sound_packets_ = 0;
+    bool keyframe_wanted_ = true;
+    std::optional<std::vector<std::uint8_t>> held_;  // a packet that goes out late on purpose
+    std::uint64_t frames_sent_ = 0;
+    std::uint64_t packets_withheld_ = 0;
+    std::uint64_t congestion_received_ = 0;
+    std::uint64_t congestion_lost_ = 0;
+    std::uint64_t input_states_ = 0;      // input state packets that could be read
+    std::uint64_t input_at_rest_ = 0;     // of them, those of a controller that nothing is done with
+    std::uint64_t input_unreadable_ = 0;
+    std::optional<std::uint16_t> input_sequence_;
+    std::uint64_t input_out_of_order_ = 0;
     std::uint64_t heartbeats_ = 0;
     std::map<std::uint8_t, std::uint64_t> authentic_;  // packets that are not messages, by kind
     std::map<std::uint8_t, std::uint64_t> rejected_;

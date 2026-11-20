@@ -213,6 +213,22 @@ std::optional<MacLayout> layout_of(std::span<const std::uint8_t> datagram) {
 
 }  // namespace
 
+std::vector<std::uint8_t> encode_congestion(std::uint16_t received, std::uint16_t lost) {
+    std::vector<std::uint8_t> out(kCongestionSize, 0);
+    out[0] = packet_kind::kCongestion;
+    out[3] = static_cast<std::uint8_t>(received >> 8);
+    out[4] = static_cast<std::uint8_t>(received);
+    out[5] = static_cast<std::uint8_t>(lost >> 8);
+    out[6] = static_cast<std::uint8_t>(lost);
+    return out;
+}
+
+std::optional<CongestionReport> parse_congestion(std::span<const std::uint8_t> datagram) {
+    if (datagram.size() != kCongestionSize || (datagram[0] & 0x0f) != packet_kind::kCongestion) return std::nullopt;
+    return CongestionReport{static_cast<std::uint16_t>((datagram[3] << 8) | datagram[4]),
+                            static_cast<std::uint16_t>((datagram[5] << 8) | datagram[6])};
+}
+
 std::optional<Mac4> datagram_mac(const StreamCipher& cipher, std::uint64_t key_position, std::span<const std::uint8_t> datagram) {
     const auto layout = layout_of(datagram);
     if (!layout) return std::nullopt;

@@ -54,7 +54,9 @@ rc=$?
 set -e
 # Each planted difference must be reported by name, and nothing else may be.
 planted=("base64 encode" "stream shared secret" "stream key stream" "stream authentication code" "stream packet code"
-         "stream launch specification" "stream sealed launch specification" "stream opening message")
+         "stream launch specification" "stream sealed launch specification" "stream opening message"
+         "erasure repair units" "erasure repaired units" "media packet header fields" "media frame put together"
+         "media congestion report" "media frames-not-arrived message" "media input state")
 missing=""
 for what in "${planted[@]}"; do
     grep -q "MISMATCH $what" "$dir/plant.log" || missing="$missing [$what]"

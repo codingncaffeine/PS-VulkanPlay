@@ -3,9 +3,11 @@ add_executable(psvp_tests
     unit/test_args.cpp
     unit/test_base64.cpp
     unit/test_discovery.cpp
+    unit/test_erasure.cpp
     unit/test_hex.cpp
     unit/test_import.cpp
     unit/test_json.cpp
+    unit/test_media.cpp
     unit/test_paths.cpp
     unit/test_probe.cpp
     unit/test_regist.cpp
@@ -41,6 +43,7 @@ endfunction()
 psvp_add_fuzz_target(base64)
 psvp_add_fuzz_target(import)
 psvp_add_fuzz_target(json)
+psvp_add_fuzz_target(media)
 psvp_add_fuzz_target(message)
 psvp_add_fuzz_target(regist)
 psvp_add_fuzz_target(session)
@@ -82,6 +85,8 @@ if(PSVP_ORACLE_DIR)
         oracle/main.cpp
         oracle/diff_base64.cpp
         oracle/diff_discovery.cpp
+        oracle/diff_erasure.cpp
+        oracle/diff_media.cpp
         oracle/diff_regist.cpp
         oracle/diff_stream.cpp
         oracle/reference_messages.c)

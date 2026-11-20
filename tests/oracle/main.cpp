@@ -28,6 +28,8 @@ int main(int argc, char** argv) {
     };
     add(psvp::oracle::diff_base64(plant));
     add(psvp::oracle::diff_stream(plant));
+    add(psvp::oracle::diff_erasure(plant));
+    add(psvp::oracle::diff_media(plant));
     if (!plant) {
         add(psvp::oracle::diff_discovery());
         add(psvp::oracle::diff_regist());

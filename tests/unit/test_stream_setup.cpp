@@ -2,6 +2,7 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <format>
 #include <functional>
 #include <optional>
 #include <string>
@@ -630,8 +631,13 @@ PSVP_TEST(stream_setup_completes_on_a_clean_link) {
     // A heartbeat every second.
     link.run(3500ms);
     CHECK(link.client.counters().heartbeats_sent == 3);
-    // Two acknowledgments, three messages and three heartbeats were sealed, each where the one before it ended.
-    CHECK(link.console.summary() == "heartbeats 3 control-rejected 0 before-keys 0 key-positions 8 out-of-step 0");
+    // Two acknowledgments, three messages and three heartbeats were sealed, and a congestion report and an
+    // input state every 200 ms from the set-up's end at 4 ms to here at 3514 ms: seventeen of each. Each of
+    // the 42 sits where the one before it ended. The input states are a resting controller's, in order.
+    CHECK(link.client.counters().congestion_reports == 17 && link.client.counters().input_states == 17);
+    CHECK(link.console.summary() == "heartbeats 3 control-rejected 0 before-keys 0 kind-5-authentic 17 kind-6-authentic 17 "
+                                    "key-positions 42 out-of-step 0 input-states 17 at-rest 17 unreadable 0 out-of-order 0 "
+                                    "frames-sent 0 sound-sent 0 withheld 0 congestion-received 0 congestion-lost 0");
 
     // The goodbye.
     link.post(true, link.client.disconnect(link.now));
@@ -715,8 +721,9 @@ PSVP_TEST(stream_setup_survives_reordering_and_loss) {
         StreamLink link;
         std::vector<std::vector<std::uint8_t>> seen;
         link.lose = [&](bool, const std::vector<std::uint8_t>& datagram) {
-            // Acknowledgments are never sent again; only what is, is lost once.
-            if (parse_control(datagram).value().chunk_type != chunk::kData) return false;
+            // Acknowledgments and congestion reports are never sent again; only what is, is lost once.
+            const auto control = parse_control(datagram);
+            if (!control || control->chunk_type != chunk::kData) return false;
             if (std::ranges::find(seen, datagram) != seen.end()) return false;
             seen.push_back(datagram);
             return true;
@@ -822,6 +829,163 @@ PSVP_TEST(stream_counts_media_packets_by_their_code) {
     CHECK(link.client.on_datagram(early, link.now).empty());
     CHECK(link.client.on_datagram({}, link.now).empty());
     CHECK(link.client.counters().media_before_keys == 1 && link.client.counters().other_datagrams == 1);
+}
+
+// What the client handed on, against what the mock console says it sends for this seed.
+struct Taken {
+    MediaOutput media;
+    int video_wrong = 0;
+    int sound_wrong = 0;
+    std::vector<std::uint16_t> video;
+    std::vector<std::uint16_t> sound;
+    std::vector<std::uint16_t> haptics;
+
+    Taken(StreamLink& link, const ConsoleStream::Options& options) : media(link.client.take_media()) {
+        for (const AssembledFrame& frame : media.video) {
+            video.push_back(frame.index);
+            // A keyframe is told by its fifth byte.
+            const bool keyframe = frame.data.size() > 4 && frame.data[4] == 0x65;
+            if (frame.data != pattern_video_frame(options.seed, frame.index, options.frame_bytes, keyframe)) ++video_wrong;
+        }
+        for (const SoundFrame& frame : media.sound) {
+            (frame.haptics ? haptics : sound).push_back(frame.index);
+            if (frame.data != pattern_sound_frame(options.seed, frame.index, options.sound_bytes, frame.haptics)) ++sound_wrong;
+        }
+    }
+};
+
+std::vector<std::uint16_t> counting(std::uint16_t from, std::uint16_t to) {
+    std::vector<std::uint16_t> out;
+    for (std::uint16_t i = from; i <= to; ++i) out.push_back(i);
+    return out;
+}
+
+ConsoleStream::Options media_options(ConsoleKind kind) {
+    auto options = StreamLink::options(kind);
+    options.frame_every = 16ms;
+    options.frames = 30;
+    options.seed = 77;
+    return options;
+}
+
+PSVP_TEST(stream_hands_on_picture_sound_and_haptics) {
+    for (const ConsoleKind kind : {ConsoleKind::ps5, ConsoleKind::ps4}) {
+        auto options = media_options(kind);
+        options.media_every = 10ms;
+        options.haptics_every = 4;
+        StreamLink link(StreamLink::request(kind, kMtuCeiling), options);
+        link.start();
+        link.run_until_settled();
+        link.run(605ms);
+        const Taken taken(link, options);
+        // Thirty frames, each of them the bytes that were sent, in order; the first one a keyframe.
+        CHECK(taken.video == counting(1, 30) && taken.video_wrong == 0);
+        CHECK(taken.media.video.size() == 30 && taken.media.video[0].data[4] == 0x65 && taken.media.video[1].data[4] == 0x41);
+        CHECK(link.client.video().frames == 30 && link.client.video().frames_repaired == 0 && link.client.video().frames_lost == 0);
+        // A sound frame every 10 ms from 2 ms on; the last one sent at 602 ms arrives at 604 ms.
+        CHECK(taken.sound == counting(1, 60) && taken.sound_wrong == 0);
+        CHECK(link.client.sound().frames == 60 && link.client.sound().frames_recovered == 0 && link.client.sound().frames_lost == 0);
+        // Haptics with every fourth sound packet, from a PS5 only.
+        if (kind == ConsoleKind::ps5) CHECK(taken.haptics == counting(1, 15) && link.client.haptics().frames == 15);
+        else CHECK(taken.haptics.empty() && link.client.haptics().packets == 0);
+        const StreamCounters& counters = link.client.counters();
+        CHECK(counters.media_rejected == 0 && counters.media_unreadable == 0 && counters.loss_reports == 0);
+        CHECK(counters.audio_packets == (kind == ConsoleKind::ps5 ? 75U : 60U));
+        CHECK(link.count("frames ") == 0 && link.count("keyframe requested") == 0);
+        CHECK(link.client.take_media().video.empty());
+        // The congestion reports told the console of packets that arrived and of none that did not.
+        const std::string summary = link.console.summary();
+        CHECK(summary.find("congestion-lost 0") != std::string::npos && summary.find("congestion-received 0 ") == std::string::npos);
+        CHECK(summary.find("out-of-step 0") != std::string::npos);
+    }
+}
+
+PSVP_TEST(stream_restores_what_the_repair_units_cover) {
+    auto options = media_options(ConsoleKind::ps5);
+    options.lose_every = 3;   // frames 3, 6, ... lose their first two packets: as many as they have repair units
+    options.lose_units = 2;
+    options.late_every = 4;   // frames 4, 8, ... : the last packet comes behind the next frame's first
+    StreamLink link(StreamLink::request(ConsoleKind::ps5, kMtuCeiling), options);
+    link.start();
+    link.run_until_settled();
+    link.run(605ms);
+    const Taken taken(link, options);
+    CHECK(taken.video == counting(1, 30) && taken.video_wrong == 0);
+    CHECK(link.client.video().frames_repaired == 10 && link.client.video().units_repaired == 20 && link.client.video().frames_lost == 0);
+    for (const AssembledFrame& frame : taken.media.video) CHECK(frame.repaired == (frame.index % 3 == 0) && frame.lost_before == 0);
+    CHECK(link.client.counters().loss_reports == 0 && link.count("frames ") == 0);
+}
+
+PSVP_TEST(stream_reports_frames_that_cannot_be_restored) {
+    auto options = media_options(ConsoleKind::ps5);
+    options.lose_every = 5;   // frames 5, 10, ... lose three packets: one more than their repair units cover
+    options.lose_units = 3;
+    options.media_every = 10ms;
+    options.lose_sound_every = 7;  // every seventh sound packet is lost: the next one brings its frame again
+    StreamLink link(StreamLink::request(ConsoleKind::ps5, kMtuCeiling), options);
+    link.start();
+    link.run_until_settled();
+    link.run(605ms);
+    const Taken taken(link, options);
+    std::vector<std::uint16_t> expected;
+    for (std::uint16_t i = 1; i <= 30; ++i) {
+        if (i % 5 != 0) expected.push_back(i);
+    }
+    CHECK(taken.video == expected && taken.video_wrong == 0);
+    CHECK(link.client.video().frames == 24 && link.client.video().frames_lost == 6);
+    for (const AssembledFrame& frame : taken.media.video) CHECK(frame.lost_before == (frame.index % 5 == 1 && frame.index > 1 ? 1U : 0U));
+    // The console was told of each, on channel 2, in a sealed message. The last frame of all has no
+    // frame behind it; its own last packet came, so its wait ran out all the same.
+    CHECK(link.client.counters().loss_reports == 6 && link.count("frames ") == 6);
+    for (const int lost : {5, 10, 15, 20, 25, 30}) {
+        CHECK(link.has(std::format("frames {} to {} reported as not arrived (channel 2, authentic)", lost, lost)));
+    }
+    // The sound has no gap, and eight of its frames came from a later packet.
+    CHECK(taken.sound == counting(1, 60) && taken.sound_wrong == 0);
+    CHECK(link.client.sound().frames_recovered == 8 && link.client.sound().frames_lost == 0);
+    // The reports of what did not arrive reached the console.
+    CHECK(link.console.summary().find("congestion-lost 0") == std::string::npos);
+}
+
+PSVP_TEST(stream_asks_for_a_keyframe) {
+    auto options = media_options(ConsoleKind::ps5);
+    options.frames = 0;
+    StreamLink link(StreamLink::request(ConsoleKind::ps5, kMtuCeiling), options);
+    // Not before the stream is set up.
+    CHECK(link.client.request_keyframe(link.now).empty());
+    link.start();
+    link.run_until_settled();
+    link.run(100ms);
+    link.post(true, link.client.request_keyframe(link.now));
+    CHECK(link.client.counters().keyframe_requests == 1);
+    link.run(100ms);
+    CHECK(link.has("keyframe requested (channel 2, authentic)"));
+    const Taken taken(link, options);
+    int keyframes = 0;
+    for (const AssembledFrame& frame : taken.media.video) keyframes += frame.data[4] == 0x65 ? 1 : 0;
+    // The first frame of the stream, and the one after the request.
+    CHECK(keyframes == 2 && taken.video_wrong == 0 && taken.media.video.size() >= 10);
+}
+
+PSVP_TEST(stream_keeps_loss_reports_it_cannot_send_yet) {
+    auto options = media_options(ConsoleKind::ps5);
+    options.frames = 0;
+    options.lose_every = 2;
+    options.lose_units = 3;
+    StreamLink link(StreamLink::request(ConsoleKind::ps5, kMtuCeiling), options);
+    link.start();
+    link.run_until_settled();
+    // Nothing of the client's reaches the console any more, so nothing it sends is acknowledged.
+    link.lose = [](bool to_console, const std::vector<std::uint8_t>&) { return to_console; };
+    link.run(2000ms);
+    // Sixteen messages wait; the stream goes on, and what could not be reported is kept as ranges.
+    CHECK(link.client.state() == ClientStream::State::ready);
+    CHECK(link.client.video().frames_lost > 40);
+    CHECK(link.client.counters().loss_reports + link.client.counters().heartbeats_sent == Messenger::kWindow);
+    // A console that stays silent ends the stream once those messages were sent again often enough.
+    link.run(5000ms);
+    CHECK(link.client.state() == ClientStream::State::failed);
+    CHECK(link.client.reason() == "the console stopped acknowledging the stream's messages");
 }
 
 PSVP_TEST(stream_closes_when_the_console_says_goodbye) {

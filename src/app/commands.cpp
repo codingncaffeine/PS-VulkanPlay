@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <array>
 #include <expected>
+#include <filesystem>
 #include <format>
 #include <fstream>
 #include <functional>
@@ -606,6 +607,91 @@ std::optional<std::uint32_t> parse_number(std::string_view text, std::uint32_t l
     return value;
 }
 
+// Keeps what a stream delivered, for looking at afterwards: the picture as a decoder would be
+// given it (each picture size's header, then its frames), the sound frames, and one line per
+// frame and per packet next to them.
+class StreamDump {
+public:
+    [[nodiscard]] static std::expected<StreamDump, std::string> open(const std::filesystem::path& folder) {
+        std::error_code error;
+        std::filesystem::create_directories(folder, error);
+        if (error) return std::unexpected(std::format("{}: {}", folder.string(), error.message()));
+        StreamDump dump;
+        dump.folder_ = folder;
+        const auto file = [&](std::ofstream& out, const char* name) {
+            out.open(folder / name, std::ios::binary | std::ios::trunc);
+            return out.is_open();
+        };
+        if (!file(dump.video_, "video.bin") || !file(dump.video_list_, "video.tsv") || !file(dump.sound_, "sound.bin") ||
+            !file(dump.sound_list_, "sound.tsv") || !file(dump.packets_, "packets.tsv")) {
+            return std::unexpected(std::format("{}: cannot write there", folder.string()));
+        }
+        dump.video_list_ << "frame\tbytes\trepaired\tlost-before\tpicture-size\theader-bytes\n";
+        dump.sound_list_ << "frame\tbytes\thaptics\tfrom-a-later-packet\tlost-before\n";
+        dump.packets_ << "ms\tkind\tpacket\tframe\tunit\tunits\trepair-or-new\trepeated\tcodec\tpicture-size\tkey-position\tbytes\tword\tlonger-header\n";
+        return dump;
+    }
+
+    // One line per picture or sound packet: its header's fields, nothing of its content.
+    void packet(ConsoleKind kind, std::span<const std::uint8_t> datagram, std::chrono::microseconds since_start) {
+        const auto packet = proto::transport::parse_stream_media(kind, datagram);
+        if (!packet) return;
+        packets_ << std::format("{:.3f}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n", static_cast<double>(since_start.count()) / 1000.0,
+                                packet->video ? "picture" : packet->haptics ? "haptics" : "sound", packet->packet_index, packet->frame_index,
+                                packet->unit_index, packet->units_total, packet->video ? packet->units_repair : packet->source_frames,
+                                packet->repeated_frames, packet->codec, packet->adaptive_stream, packet->key_position, datagram.size(),
+                                packet->video_word, packet->unit_info ? 1 : 0);
+    }
+
+    void take(proto::transport::MediaOutput media, const std::optional<proto::StreamInfo>& info) {
+        for (const auto& frame : media.video) {
+            // A decoder needs the header of a picture size before the first frame in it.
+            std::size_t header_bytes = 0;
+            if (frame.adaptive_stream != picture_size_ && info && frame.adaptive_stream < info->resolutions.size()) {
+                const auto& header = info->resolutions[frame.adaptive_stream].video_header;
+                video_.write(reinterpret_cast<const char*>(header.data()), static_cast<std::streamsize>(header.size()));
+                header_bytes = header.size();
+                picture_size_ = frame.adaptive_stream;
+            }
+            video_.write(reinterpret_cast<const char*>(frame.data.data()), static_cast<std::streamsize>(frame.data.size()));
+            video_list_ << std::format("{}\t{}\t{}\t{}\t{}\t{}\n", frame.index, frame.data.size(), frame.repaired ? 1 : 0, frame.lost_before,
+                                       frame.adaptive_stream, header_bytes);
+            video_bytes_ += header_bytes + frame.data.size();
+        }
+        for (const auto& frame : media.sound) {
+            sound_.write(reinterpret_cast<const char*>(frame.data.data()), static_cast<std::streamsize>(frame.data.size()));
+            sound_list_ << std::format("{}\t{}\t{}\t{}\t{}\n", frame.index, frame.data.size(), frame.haptics ? 1 : 0, frame.recovered ? 1 : 0,
+                                       frame.lost_before);
+            sound_bytes_ += frame.data.size();
+        }
+    }
+
+    // False when something could not be written.
+    [[nodiscard]] bool close() {
+        bool good = true;
+        for (std::ofstream* file : {&video_, &video_list_, &sound_, &sound_list_, &packets_}) {
+            file->flush();
+            good = good && file->good();
+            file->close();
+        }
+        return good;
+    }
+    [[nodiscard]] const std::filesystem::path& folder() const noexcept { return folder_; }
+    [[nodiscard]] std::uint64_t video_bytes() const noexcept { return video_bytes_; }
+    [[nodiscard]] std::uint64_t sound_bytes() const noexcept { return sound_bytes_; }
+
+private:
+    std::filesystem::path folder_;
+    std::ofstream video_;
+    std::ofstream video_list_;
+    std::ofstream sound_;
+    std::ofstream sound_list_;
+    std::ofstream packets_;
+    int picture_size_ = -1;
+    std::uint64_t video_bytes_ = 0;
+    std::uint64_t sound_bytes_ = 0;
+};
+
 template <typename Key> std::string counts_text(const std::map<Key, std::uint64_t>& counts, std::string_view label) {
     std::string text;
     for (const auto& [key, count] : counts) text += std::format("{}{} {} x{}", text.empty() ? "" : ", ", label, +key, count);
@@ -615,12 +701,12 @@ template <typename Key> std::string counts_text(const std::map<Key, std::uint64_
 // Opens a session and sets a stream up, as far as this version goes: the request,
 // the control channel, the session ID, the network probe, then the stream
 // connection with its keys and the stream information. The stream is held for a
-// few seconds, its packets counted and their authentication codes checked;
-// nothing is decoded or shown.
+// few seconds: its packets are checked, its picture frames and sound frames put
+// together and counted, and kept in a folder on request. Nothing is decoded or shown.
 int command_session(std::span<const std::string_view> args) {
     namespace transport = proto::transport;
-    const Parsed parsed = parse(args, {"--host", "--seconds", "--passcode", "--resolution", "--fps", "--bitrate", "--codec", "--session-id"},
-                                {"--rest"}, 1);
+    const Parsed parsed = parse(
+        args, {"--host", "--seconds", "--passcode", "--resolution", "--fps", "--bitrate", "--codec", "--session-id", "--dump"}, {"--rest"}, 1);
     if (!parsed.error.empty()) return usage("session: {}", parsed.error);
     if (parsed.words.empty()) return usage("session: which console? Give its name or hardware address");
     std::chrono::milliseconds hold = 3s;
@@ -654,6 +740,13 @@ int command_session(std::span<const std::string_view> args) {
     }
     const std::string_view id_choice = parsed.option("--session-id").value_or("console");
     if (id_choice != "console" && id_choice != "invented") return usage("session: --session-id is console or invented");
+    std::optional<StreamDump> dump;
+    if (const auto folder = parsed.option("--dump")) {
+        if (folder->empty()) return usage("session: --dump takes a folder");
+        auto opened = StreamDump::open(std::filesystem::path(*folder));
+        if (!opened) return fail("session: --dump: {}", opened.error());
+        dump.emplace(std::move(*opened));
+    }
 
     auto context = load_context();
     if (!context) return fail("session: {}", context.error());
@@ -813,6 +906,17 @@ int command_session(std::span<const std::string_view> args) {
     stream_request.video = video;
     transport::ClientStream stream(link->tag, link->endpoint, std::move(stream_request), proto::KeyExchange::generate(), proto::random_key());
     using State = transport::ClientStream::State;
+    // A keyframe arrives as one burst of packets: room for them while the control channel is looked after.
+    const std::size_t receive_buffer = link->socket.set_receive_buffer(4U << 20);
+    // The frames that are ready leave the stream at once; they are kept only when a dump was asked for.
+    std::uint64_t video_bytes = 0;
+    std::uint64_t sound_bytes = 0;
+    const auto take_media = [&] {
+        transport::MediaOutput media = stream.take_media();
+        for (const auto& frame : media.video) video_bytes += frame.data.size();
+        for (const auto& frame : media.sound) sound_bytes += frame.data.size();
+        if (dump) dump->take(std::move(media), stream.info());
+    };
 
     const auto send_all = [&](const transport::Datagrams& datagrams) {
         for (const auto& datagram : datagrams) (void)link->socket.send_to(link->console, datagram);
@@ -824,10 +928,14 @@ int command_session(std::span<const std::string_view> args) {
             const auto datagram = link->socket.receive(std::min(stream.deadline(), Clock::now() + kServiceEvery));
             if (!datagram) return std::unexpected(datagram.error());
             if (*datagram) {
-                if ((*datagram)->from == link->console) send_all(stream.on_datagram((*datagram)->data, Clock::now()));
-            } else if (Clock::now() >= stream.deadline()) {
-                send_all(stream.on_timeout(Clock::now()));
+                if ((*datagram)->from != link->console) continue;
+                const auto now = Clock::now();
+                if (dump) dump->packet(registration.kind, (*datagram)->data, std::chrono::duration_cast<std::chrono::microseconds>(now - setup_started));
+                send_all(stream.on_datagram((*datagram)->data, now));
             }
+            // A deadline may pass while packets keep coming: it is looked at after every one of them.
+            if (Clock::now() >= stream.deadline()) send_all(stream.on_timeout(Clock::now()));
+            take_media();
         }
         return {};
     };
@@ -868,6 +976,28 @@ int command_session(std::span<const std::string_view> args) {
         "{} before the keys; control packets refused: {}; heartbeats sent: {}.",
         std::chrono::duration_cast<std::chrono::seconds>(hold).count(), counters.video_packets, counters.audio_packets, counters.media_rejected,
         counters.media_before_keys, stream.control_rejected(), counters.heartbeats_sent);
+    {
+        const transport::FrameCounters& frames = stream.video();
+        const transport::SoundCounters& sound = stream.sound();
+        const transport::SoundCounters& haptics = stream.haptics();
+        say("Picture: {} frames put together ({} bytes), {} of them with restored packets ({} packets restored), {} frames lost; "
+            "packets not needed: {}, too late: {}, twice: {}, unusable: {}, unreadable: {}.",
+            frames.frames, video_bytes, frames.frames_repaired, frames.units_repaired, frames.frames_lost, frames.packets_spare,
+            frames.packets_late, frames.packets_duplicate, frames.packets_unusable, counters.media_unreadable);
+        if (frames.packets_odd != 0) say("Picture packets used although their sizes or counts are not their frame's: {}.", frames.packets_odd);
+        say("Sound: {} frames ({} bytes with the haptics), {} of them taken from a later packet, {} lost, {} packets unusable; "
+            "haptics: {} frames, {} lost.",
+            sound.frames, sound_bytes, sound.frames_recovered, sound.frames_lost, sound.packets_unusable + haptics.packets_unusable,
+            haptics.frames, haptics.frames_lost);
+        say("Told the console: {} times of frames that did not arrive, {} congestion reports, {} input states (a resting controller's); "
+            "receive buffer: {} bytes.",
+            counters.loss_reports, counters.congestion_reports, counters.input_states, receive_buffer);
+    }
+    if (dump) {
+        const bool written = dump->close();
+        say("Kept in {}: video.bin ({} bytes), sound.bin ({} bytes), and a line per frame and per packet{}.", dump->folder().string(),
+            dump->video_bytes(), dump->sound_bytes(), written ? "" : "; SOMETHING COULD NOT BE WRITTEN");
+    }
     if (!counters.messages.empty()) say("Messages from the console: {}.", counts_text(counters.messages, "type"));
     if (!counters.other_data.empty()) say("Other data from the console: {}.", counts_text(counters.other_data, "kind"));
     if (counters.split_messages != 0) say("Messages that came in more than one chunk: {}.", counters.split_messages);
@@ -1030,10 +1160,10 @@ std::string commands_help() {
         "      wake a registered console from rest mode\n"
         "  {0} session CONSOLE [--host ADDRESS] [--seconds N] [--passcode DIGITS] [--rest]\n"
         "          [--resolution 360|540|720|1080] [--fps 30|60] [--bitrate KBPS] [--codec h264|hevc|hdr]\n"
-        "          [--session-id console|invented]\n"
+        "          [--session-id console|invented] [--dump FOLDER]\n"
         "      open a session with a console, set a stream up, hold it for N seconds and close it\n"
-        "      (a connection check: the stream's packets are counted and checked, nothing is shown yet);\n"
-        "      --rest then sends the console to rest mode\n"
+        "      (a connection check: the picture's frames and the sound's are put together and counted,\n"
+        "      nothing is shown yet); --dump keeps them in FOLDER; --rest then sends the console to rest mode\n"
         "  {0} consoles [--json]\n"
         "      list the registered consoles\n"
         "  {0} forget CONSOLE\n"

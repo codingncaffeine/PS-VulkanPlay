@@ -172,6 +172,16 @@ bool seal_datagram(const StreamCipher& cipher, std::uint64_t key_position, std::
 // True for a datagram that carries the right code; its key position is then the last accepted one.
 [[nodiscard]] bool verify_datagram(ReceiveKeys& keys, std::span<const std::uint8_t> datagram);
 
+// A congestion report: how many picture and sound packets arrived and how many did not, since the
+// report before. Its code and key position are left zero (seal_datagram writes them).
+inline constexpr std::size_t kCongestionSize = 15;
+[[nodiscard]] std::vector<std::uint8_t> encode_congestion(std::uint16_t received, std::uint16_t lost);
+struct CongestionReport {
+    std::uint16_t received = 0;
+    std::uint16_t lost = 0;
+};
+[[nodiscard]] std::optional<CongestionReport> parse_congestion(std::span<const std::uint8_t> datagram);
+
 // ---- Messages that must arrive -------------------------------------------
 
 namespace data_type {

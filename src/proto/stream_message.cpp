@@ -17,6 +17,7 @@ using wire::Writer;
 constexpr std::uint32_t kFieldType = 1;
 constexpr std::uint32_t kFieldBig = 2;
 constexpr std::uint32_t kFieldBang = 3;
+constexpr std::uint32_t kFieldCorruptFrames = 6;
 constexpr std::uint32_t kFieldDisconnect = 10;
 constexpr std::uint32_t kFieldProbe = 14;
 constexpr std::uint32_t kFieldStreamInfo = 15;
@@ -256,6 +257,18 @@ std::optional<StreamInfo> parse_stream_info(std::span<const std::uint8_t> bytes)
     return ok ? std::optional(std::move(m)) : std::nullopt;
 }
 
+std::optional<CorruptFrames> parse_corrupt_frames(std::span<const std::uint8_t> bytes) {
+    CorruptFrames m;
+    const bool ok = read_fields(bytes, bits({1, 2}), [&](const Field& f) {
+        switch (f.number) {
+        case 1: return number(f, m.start);
+        case 2: return number(f, m.end);
+        default: return true;
+        }
+    });
+    return ok ? std::optional(m) : std::nullopt;
+}
+
 std::optional<ControllerConnection> parse_controller_connection(std::span<const std::uint8_t> bytes) {
     ControllerConnection m;
     const bool ok = read_fields(bytes, 0, [&](const Field& f) {
@@ -362,6 +375,12 @@ struct BodyWriter {
         put_optional(w, 6, m.congestion_control_interval);
         out.message(kFieldStreamInfo, w);
     }
+    void operator()(const CorruptFrames& m) const {
+        Writer w;
+        w.varint(1, m.start);
+        w.varint(2, m.end);
+        out.message(kFieldCorruptFrames, w);
+    }
     void operator()(const ControllerConnection& m) const {
         Writer w;
         put_optional(w, 1, m.controller_id);
@@ -391,6 +410,7 @@ struct TypeOf {
     std::uint32_t operator()(const ProtocolRequestAck&) const { return message_type::kProtocolRequestAck; }
     std::uint32_t operator()(const StreamInfo&) const { return message_type::kStreamInfo; }
     std::uint32_t operator()(const ControllerConnection&) const { return message_type::kControllerConnection; }
+    std::uint32_t operator()(const CorruptFrames&) const { return message_type::kCorruptFrame; }
 };
 
 }  // namespace
@@ -445,6 +465,7 @@ std::optional<StreamMessage> parse_message(std::span<const std::uint8_t> bytes) 
     switch (message.type) {
     case message_type::kBig: ok = take(kFieldBig, parse_big); break;
     case message_type::kBang: ok = take(kFieldBang, parse_bang); break;
+    case message_type::kCorruptFrame: ok = take(kFieldCorruptFrames, parse_corrupt_frames); break;
     case message_type::kDisconnect: ok = take(kFieldDisconnect, parse_disconnect); break;
     case message_type::kProbe:
         if (present[kFieldProbe]) ok = parse_probe(bodies[kFieldProbe], message.body);
