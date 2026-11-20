@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.25)
 
 # The version lives here and nowhere else; the sources read it from the generated version.h.
 project(ps-vulkanplay
-    VERSION 0.0.1
+    VERSION 0.0.3
     DESCRIPTION "PlayStation Remote Play client"
     HOMEPAGE_URL "https://github.com/codingncaffeine/PS-VulkanPlay"
     LANGUAGES CXX)
@@ -15,6 +15,9 @@ set(PSVP_SANITIZE "" CACHE STRING "Sanitizers to build with: empty, address (wit
 set_property(CACHE PSVP_SANITIZE PROPERTY STRINGS "" address thread)
 set(PSVP_ORACLE_DIR "" CACHE PATH
     "A checkout of the reference implementation, for the differential tests only (see tools/oracle)")
+# What a release package is built with (packaging/native/build.sh): the libraries that differ from
+# one distribution to the next are linked into the programs, so one build runs on all of them.
+option(PSVP_STATIC_DEPS "Link FFmpeg, Opus, OpenSSL, SDL and the C++ runtime into the programs" OFF)
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
@@ -32,6 +35,19 @@ include(cmake/CompilerSetup.cmake)
 
 configure_file(src/app/version.h.in generated/psvp/version.h @ONLY)
 
+if(PSVP_STATIC_DEPS)
+    set(OPENSSL_USE_STATIC_LIBS TRUE)
+    # FFmpeg names libatomic whether or not anything uses it: only what is used becomes a need.
+    add_link_options(-static-libstdc++ -static-libgcc -Wl,--as-needed)
+endif()
+# A static library does not bring the libraries it needs itself: pkg-config names them (Libs.private).
+function(psvp_static_needs target prefix)
+    if(PSVP_STATIC_DEPS)
+        set(needs ${${prefix}_STATIC_LIBRARIES})
+        list(REMOVE_ITEM needs ${${prefix}_LIBRARIES})
+        set_property(TARGET ${target} APPEND PROPERTY INTERFACE_LINK_LIBRARIES ${needs})
+    endif()
+endfunction()
 find_package(OpenSSL 3.0 REQUIRED COMPONENTS Crypto)
 
 # The protocol: no sockets, no threads, no clock of its own.
@@ -72,6 +88,8 @@ psvp_setup_target(psvp_net)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(PSVP_FFMPEG REQUIRED IMPORTED_TARGET libavcodec libavutil)
 pkg_check_modules(PSVP_OPUS REQUIRED IMPORTED_TARGET opus)
+psvp_static_needs(PkgConfig::PSVP_FFMPEG PSVP_FFMPEG)
+psvp_static_needs(PkgConfig::PSVP_OPUS PSVP_OPUS)
 add_library(psvp_media STATIC
     src/media/color.cpp
     src/media/frame_pacer.cpp

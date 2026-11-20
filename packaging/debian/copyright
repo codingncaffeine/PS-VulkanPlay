@@ -1,0 +1,27 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: PS VulkanPlay
+Source: https://github.com/codingncaffeine/PS-VulkanPlay
+Comment:
+ This package is built by the project itself from its release files. Besides
+ PS VulkanPlay's own code it carries libraries of others: FFmpeg (LGPL 2.1 or
+ later), Opus (BSD 3-Clause), OpenSSL (Apache 2.0) and SDL 3 (zlib) linked into
+ the stream program, and the .NET runtime, Avalonia, SkiaSharp and HarfBuzzSharp
+ (MIT) with the app. THIRD-PARTY-NOTICES.md beside this file lists them, and
+ LIBRARIES.txt the versions and the addresses of their source archives.
+
+Files: *
+Copyright: 2026 the PS VulkanPlay authors
+License: AGPL-3
+
+License: AGPL-3
+ This program is free software: you can redistribute it and/or modify it under
+ the terms of the GNU Affero General Public License as published by the Free
+ Software Foundation, version 3.
+ .
+ This program is distributed in the hope that it will be useful, but WITHOUT
+ ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+ FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for more
+ details.
+ .
+ The full text of the license is at https://www.gnu.org/licenses/agpl-3.0.txt
+ and in the file LICENSE of the source repository.

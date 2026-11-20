@@ -1,0 +1,14 @@
+# Tags lintian reports for this package that are known and accepted, one per line, each with its
+# reason. packaging/release-check.sh fails on any other error.
+#
+# The package is built by the project for every Debian and Ubuntu release at once: the stream program
+# has FFmpeg, Opus, OpenSSL and SDL3 linked in (Debian 12 and Ubuntu up to 24.04 have no SDL3), and the
+# app carries its .NET runtime with SkiaSharp (which has FreeType, libpng and libjpeg inside). The
+# libraries and their versions are listed in /usr/share/doc/ps-vulkanplay.
+embedded-library
+# libSkiaSharp.so and libHarfBuzzSharp.so are left as their makers ship them.
+unstripped-binary-or-object
+# A client that plays a console's games is a game program; nothing goes into /usr/games.
+package-section-games-but-contains-no-game
+# ps-vulkanplay --help is its manual.
+no-manual-page

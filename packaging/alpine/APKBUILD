@@ -1,0 +1,41 @@
+# Contributor: codingncaffeine <codingncaffeine@users.noreply.github.com>
+# Maintainer: codingncaffeine <codingncaffeine@users.noreply.github.com>
+# Builds PS VulkanPlay from source on Alpine, against Alpine's own libraries.
+# Needs Alpine 3.23 or later (dotnet10-sdk is not in 3.22).
+pkgname=ps-vulkanplay
+pkgver=0.0.3
+pkgrel=0
+pkgdesc="Remote Play client for PS5 and PS4 consoles, with its own Vulkan renderer"
+url="https://github.com/codingncaffeine/PS-VulkanPlay"
+arch="x86_64"
+license="AGPL-3.0-only"
+depends="libstdc++ fontconfig libx11 libice libsm libxrandr libxi libxcursor libxext libxrender libssl3"
+makedepends="cmake samurai pkgconf openssl-dev ffmpeg-dev opus-dev pulseaudio-dev sdl3-dev vulkan-headers
+	vulkan-loader-dev glslang dotnet10-sdk"
+options="!strip net" # .NET's own native files; NuGet packages are restored at build time
+source="$pkgname-$pkgver.tar.gz::https://github.com/codingncaffeine/PS-VulkanPlay/archive/refs/tags/v$pkgver.tar.gz"
+builddir="$srcdir/PS-VulkanPlay-$pkgver"
+
+build() {
+	cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr -DPSVP_BUILD_TESTS=ON
+	cmake --build build
+	DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1 dotnet publish app/PSVulkanPlay/PSVulkanPlay.csproj -c Release \
+		-r linux-musl-x64 --self-contained true -p:DebugType=none -o "$builddir"/app-publish --nologo -v q
+}
+
+check() {
+	ctest --test-dir build --output-on-failure
+	[ "$(build/ps-vulkanplay --version)" = "ps-vulkanplay $pkgver" ]
+}
+
+package() {
+	DESTDIR="$pkgdir" cmake --install build
+	# The app goes where the program looks for it: /usr/lib/ps-vulkanplay/app.
+	install -d "$pkgdir"/usr/lib/$pkgname
+	cp -a app-publish "$pkgdir"/usr/lib/$pkgname/app
+	install -Dm644 packaging/io.github.codingncaffeine.PSVulkanPlay.metainfo.xml -t "$pkgdir"/usr/share/metainfo
+	install -Dm644 NOTICE -t "$pkgdir"/usr/share/doc/$pkgname
+	install -Dm644 LICENSE "$pkgdir"/usr/share/licenses/$pkgname/LICENSE
+}
+
+sha512sums="SKIP"

@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.codingncaffeine.PSVulkanPlay</id>
+  <name>PS VulkanPlay</name>
+  <summary>Play your console on this computer over the network</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>AGPL-3.0-only</project_license>
+  <developer id="io.github.codingncaffeine">
+    <name>codingncaffeine</name>
+  </developer>
+  <description>
+    <p>
+      PS VulkanPlay is a Remote Play client for PS5 and PS4 consoles, written from the ground up: the
+      console's picture in a window drawn with Vulkan, its sound, and a controller with what the console
+      sends back for it.
+    </p>
+    <ul>
+      <li>Your consoles as cards: play, wake one from rest mode, add one step by step</li>
+      <li>Usable with a controller alone, from the couch</li>
+      <li>A DualSense gets haptics, trigger effects and the light bar's color over USB</li>
+      <li>The picture keeps going over lost frames, and a cushion of delay can hide a wireless network's short pauses</li>
+    </ul>
+    <p>
+      This program is not affiliated with, endorsed or certified by the maker of the consoles.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.codingncaffeine.PSVulkanPlay.desktop</launchable>
+  <url type="homepage">https://github.com/codingncaffeine/PS-VulkanPlay</url>
+  <url type="bugtracker">https://github.com/codingncaffeine/PS-VulkanPlay/issues</url>
+  <url type="vcs-browser">https://github.com/codingncaffeine/PS-VulkanPlay</url>
+  <categories>
+    <category>Game</category>
+  </categories>
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+    <control>gamepad</control>
+  </supports>
+  <content_rating type="oars-1.1" />
+  <provides>
+    <binary>ps-vulkanplay</binary>
+  </provides>
+  <releases>
+    <release version="0.0.3" date="2026-11-20">
+      <description>
+        <p>The first pre-release: the app, playing over the home network, DualSense features over USB.</p>
+      </description>
+    </release>
+  </releases>
+</component>

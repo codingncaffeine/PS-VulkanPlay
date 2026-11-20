@@ -8,9 +8,22 @@ An open-source PlayStation Remote Play client for Linux: play your PS5 or PS4 fr
 handheld. It is written from the ground up around a Vulkan renderer, with a small install and a couch-friendly
 interface as goals.
 
-## Status
+## Install
 
-Early development: there is no release yet. What exists so far:
+The first pre-release is on the [Releases](https://github.com/codingncaffeine/PS-VulkanPlay/releases) page.
+
+| System | How |
+|---|---|
+| Debian 12, Ubuntu 22.04, or later | `sudo apt install ./ps-vulkanplay_0.0.3_amd64.deb` |
+| Arch Linux | `ps-vulkanplay-bin` from the AUR |
+| Any other distribution with glibc 2.35 or later | extract `PS-VulkanPlay-0.0.3-linux-x64.tar.gz`, run `./ps-vulkanplay` |
+| Alpine and other musl systems | the same with `PS-VulkanPlay-0.0.3-linux-musl-x64.tar.gz` |
+
+It needs a graphics driver with Vulkan 1.2, and PulseAudio or PipeWire for sound. To add a console: on the
+console open Settings, System, Remote Play, turn Remote Play on and choose Link Device; in the app choose
+Add a console, sign in with PSN and type the eight digits the console shows.
+
+## What it does
 
 - an app (`ps-vulkanplay` with nothing after it): your consoles as cards with Play and Wake, adding a console
   step by step (signing in with PSN gives it your account, so there is no account ID to look up), settings
@@ -20,16 +33,15 @@ Early development: there is no release yet. What exists so far:
 - finding consoles on the network, waking them from rest mode and registering with them
   (`ps-vulkanplay --help` lists the commands)
 - taking over the consoles already registered in Chiaki or chiaki-ng (`ps-vulkanplay import`)
-- playing: `ps-vulkanplay play CONSOLE` shows the console's picture in a window, plays its sound and sends
-  what a controller does (buttons, sticks, triggers, touchpad, motion). The picture keeps going over lost
-  frames and is shown evenly; the sound bridges short stalls of the network, and a cushion of delay can be
-  asked for that hides the short pauses of a wireless network. `--wake` wakes a resting console first
+- playing: the console's picture in a window, its sound, and what a controller does (buttons, sticks,
+  triggers, touchpad, motion). The picture keeps going over lost frames and is shown evenly; the sound bridges
+  short stalls of the network, and a cushion of delay can be asked for that hides the short pauses of a
+  wireless network
 - a DualSense on USB gets what a PS5 sends for it: haptics on the controller's own sound device, the effects
-  of its adaptive triggers, the light bar's color; other controllers get rumble. Pictures are decoded in
-  software for now; the microphone, the controller's speaker and HDR output are not there yet
-- a connection check that counts, keeps or decodes what a console sends (`ps-vulkanplay session`)
+  of its adaptive triggers, the light bar's color; other controllers get rumble
 
-Releases will appear on the Releases page when there is something to play.
+Not there yet: decoding on the graphics card (pictures are decoded in software), HDR output, the microphone,
+a menu over the stream, and play from outside the home network.
 
 ## Building from source
 
@@ -56,7 +68,9 @@ dotnet build app/PSVulkanPlay -c Release      # the app; put its output in a fol
 
 `tools/build.sh` followed by `tools/build-app.sh` does both and leaves the program and the app in `bin/`.
 
-The same build runs on glibc and on musl; both are built and started on every change.
+The same build runs on glibc and on musl; both are built and started on every change. The release packages
+are made by `packaging/build-release.sh` and checked by `packaging/release-check.sh`, which installs each one
+in containers of the distributions it is for and plays a session there against a stand-in console.
 
 ## License
 
