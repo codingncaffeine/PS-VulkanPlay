@@ -181,9 +181,23 @@ a mark keeps the frame's length in bits. In bytes it can grow or shrink by one, 
 breaks a run of two zero bytes in front of a byte of 0 to 3: the byte that keeps such a run from reading as a
 start code is taken out before the change and put back after it.
 
+**[seen]** A PS5's H.264 stream keeps nine frames (max_num_ref_frames 9, the oldest let go as each new one
+comes), its frame numbers have seven bits and go up by one with every frame, and every frame uses one frame:
+the first of the list as it stands, the frame just before it (no reordering, no marking of its own). How a PS5
+repairs an H.264 stream after a loss was not seen: the kept stream lost nothing.
+
+This client reads which frames an H.264 frame uses (its frame number, and the list as its slices reorder it)
+but does not change the frame: the decoder fills the place of a frame it never got with the frame it got last
+(FFmpeg's "Frame num gap"), which is what this client does by hand for HEVC. The pictures built on such a
+place are counted as close to the console's, not the same, and shown; the first frame built only on frames the
+decoder got as sent is exact again. The stand-in console repairs that way, by reordering its list to the last
+frame before the loss, the shape of a PS5's HEVC repair. A repair of another kind, one that uses the frame
+just before it and carries anew every block that differs, is counted as close until the next keyframe: that
+changes the count, not the picture.
+
 A stream of another shape is not read, and says why in the report: its frames are decoded as they are sent,
 and a picture the decoder marks as built on a frame it did not have is not shown; the last whole picture
-stays up until the console's repair. That is also what happens to H.264 streams. **[seen]** On the PS5 stream
+stays up until the console's repair. **[seen]** On the PS5 stream
 above, FFmpeg 9 marked exactly the three frames between the loss and the repair when they were decoded as
 sent; older versions of FFmpeg do not mark them.
 

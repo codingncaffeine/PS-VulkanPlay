@@ -1,6 +1,7 @@
 #include "media/video_decoder.h"
 
 #include "media/frame_refs.h"
+#include "media/h264_refs.h"
 #include "media/gpu_device.h"
 
 #include <algorithm>
@@ -127,8 +128,10 @@ struct VideoDecoder::State {
     unsigned gpu_refusals = 0;  // in a row
     std::string software_reason;
     bool keyframe_wanted = false;
-    // HEVC: which frames the decoder holds, for the frames behind a lost one.
+    // Which frames the decoder holds, for the frames behind a lost one: HEVC's are changed to
+    // use those, H.264's only judged (the decoder fills a lost frame's place itself).
     std::optional<ReferenceTracker> tracker;
+    std::optional<H264Tracker> h264_tracker;
     std::string unfollowed;
 };
 
@@ -206,7 +209,8 @@ std::expected<VideoDecoder, std::string> VideoDecoder::open(VideoCodec codec, st
         state->tracker.emplace(header);
         state->unfollowed = state->tracker->unread_reason();
     } else {
-        state->unfollowed = "an H.264 stream's frames are not read";
+        state->h264_tracker.emplace(header);
+        state->unfollowed = state->h264_tracker->unread_reason();
     }
     return VideoDecoder(std::move(state));
 }
@@ -216,18 +220,19 @@ void VideoDecoder::restart() {
     if (state_->check) avcodec_flush_buffers(state_->check.get());
     state_->header_due = true;
     if (state_->tracker) state_->tracker.emplace(state_->header);
+    if (state_->h264_tracker) state_->h264_tracker.emplace(state_->header);
 }
 
 VideoDecoder::Decoded VideoDecoder::decode(std::uint16_t index, std::span<const std::uint8_t> frame) {
     State& state = *state_;
     Decoded result;
-    if (!state.tracker) {
+    if (!state.tracker && !state.h264_tracker) {
         result.picture = decode(frame);
         result.needs_keyframe = std::exchange(state.keyframe_wanted, false);
         return result;
     }
     using Way = ReferenceTracker::Way;
-    const ReferenceTracker::Verdict verdict = state.tracker->look(index, frame);
+    const ReferenceTracker::Verdict verdict = state.tracker ? state.tracker->look(index, frame) : state.h264_tracker->look(index, frame);
     state.unfollowed = verdict.way == Way::unread ? verdict.why : std::string();
     if (verdict.way == Way::no_reference) {
         ++state.counters.frames;
@@ -236,16 +241,19 @@ VideoDecoder::Decoded VideoDecoder::decode(std::uint16_t index, std::span<const 
         return result;
     }
     if (verdict.way == Way::changed) ++state.counters.changed;
-    result.picture = decode(verdict.way == Way::changed ? std::span<const std::uint8_t>(verdict.changed) : frame);
+    // An H.264 verdict carries no bytes: that frame is decoded as sent.
+    result.picture = decode(verdict.way == Way::changed && !verdict.changed.empty() ? std::span<const std::uint8_t>(verdict.changed) : frame);
     if (std::exchange(state.keyframe_wanted, false)) {
         // The decoder started again in software: nothing before the next keyframe can be decoded.
         result.needs_keyframe = true;
         return result;
     }
-    state.tracker->decoded(index, result.picture.has_value());
+    if (state.tracker) state.tracker->decoded(index, result.picture.has_value());
+    else state.h264_tracker->decoded(index, result.picture.has_value());
     if (result.picture && verdict.way != Way::unread) {
-        // The decoder was asked for frames it holds only: what it thinks of the stream's own
-        // list, which still names the lost frame, does not count.
+        // The frame was decoded from frames the decoder holds only (an HEVC frame changed so; for
+        // H.264 the decoder put the frame it got last in a lost frame's place): what the decoder
+        // thinks of the stream's own list, which still names the lost frame, does not count.
         if (result.picture->damaged) --state.counters.damaged;
         result.picture->damaged = false;
         result.picture->approximate = !verdict.exact;
@@ -393,6 +401,7 @@ std::optional<Picture> VideoDecoder::decode(std::span<const std::uint8_t> frame)
                 state.on_gpu = false;
                 state.header_due = true;
                 if (state.tracker) state.tracker.emplace(state.header);
+                if (state.h264_tracker) state.h264_tracker.emplace(state.header);
                 state.keyframe_wanted = true;
                 state.software_reason = std::format("the graphics card stopped giving pictures after {} frames{}", state.counters.frames,
                                                     error.empty() ? std::string() : ": " + error);

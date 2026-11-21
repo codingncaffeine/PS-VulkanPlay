@@ -50,45 +50,73 @@ struct PlanesView {
 // How many samples of a picture are not what the clip's frame `counter` shows.
 [[nodiscard]] std::size_t clip_differences(const PlanesView& picture, std::uint32_t counter, bool mark = false);
 
-// Writes the clip, one frame after another. The first frame and every frame asked
-// for as a keyframe stand alone; the others carry only the blocks that changed
-// since the frame the decoder is taken to have.
-class ClipWriter {
+// Writes the clip in one codec, one frame after another, in the shape a PS5's streams
+// were seen to have (docs/protocol/video.md): every frame keeps the frames before it, up
+// to kKept, and is predicted from one of them: the frame just before it, or, after a loss
+// report, the last frame before the loss. The first frame and every frame asked for as a
+// keyframe stand alone; the others carry only the blocks that differ from the frame they
+// are predicted from.
+class ClipEncoder {
 public:
-    // Width and height in samples, both even, at least kClipMinWidth x kClipMinHeight.
-    ClipWriter(unsigned width, unsigned height);
+    virtual ~ClipEncoder() = default;
 
     [[nodiscard]] unsigned width() const noexcept { return width_; }
     [[nodiscard]] unsigned height() const noexcept { return height_; }
-    // What a decoder needs before the first frame: the two parameter sets, each behind a start code.
-    [[nodiscard]] std::vector<std::uint8_t> parameter_sets() const;
+    // What a decoder needs before the first frame: the parameter sets, each behind a start code.
+    [[nodiscard]] virtual std::vector<std::uint8_t> parameter_sets() const = 0;
     // The next frame, showing `counter`.
-    [[nodiscard]] std::vector<std::uint8_t> frame(std::uint32_t counter, bool keyframe);
-    // The decoder did not get the frames that showed `first` to `last`. It still shows, where
-    // those frames changed something, what it had before them: the next frame carries every
-    // block that is not what it should be by then. (What a console does after a loss report,
-    // without a keyframe.) Frames older than the last kHistory ones cannot be named.
+    [[nodiscard]] virtual std::vector<std::uint8_t> frame(std::uint32_t counter, bool keyframe) = 0;
+    // The decoder did not get the frames that showed `first` to `last` (counted in sixteen bits,
+    // as a stream counts its frames). The next frame is predicted from the newest frame kept
+    // that is neither lost nor built on a lost one, so the picture is right again without a
+    // keyframe (what a console does after a loss report); when none is kept, it is a keyframe.
     void decoder_lost(std::uint32_t first, std::uint32_t last);
-    static constexpr std::size_t kHistory = 64;
     // The frames written from now on show the mark (clip_block) or do not.
     void set_mark(bool mark) noexcept { mark_ = mark; }
     [[nodiscard]] bool mark() const noexcept { return mark_; }
 
-private:
+    static constexpr std::size_t kKept = 9;  // as a PS5 keeps, in H.264 and in HEVC
+
+protected:
+    // Width and height in samples, both even, at least kClipMinWidth x kClipMinHeight.
+    ClipEncoder(unsigned width, unsigned height);
+    // Every block of frame `counter`, row after row.
     [[nodiscard]] std::vector<ClipBlock> blocks(std::uint32_t counter) const;
+    // How many frames back the frame to predict the next one from is; 0: the next is a keyframe.
+    [[nodiscard]] std::size_t reference_back() const;
+    // The picture of `back` frames back (1: the last frame written).
+    [[nodiscard]] const std::vector<ClipBlock>& shown(std::size_t back) const { return kept_[kept_.size() - back].shown; }
+    // After writing a frame: what it shows and how many frames back it was predicted from (0: a keyframe).
+    void keep(std::uint32_t counter, std::vector<ClipBlock> shown, std::size_t used);
+    [[nodiscard]] std::size_t kept() const noexcept { return kept_.size(); }
 
     unsigned width_, height_, columns_, rows_;
-    // A frame that was written: what the decoder showed before it, and the blocks it carried.
-    struct Written {
+
+private:
+    struct Kept {
         std::uint32_t counter = 0;
-        std::vector<ClipBlock> before;
-        std::vector<std::pair<std::uint32_t, ClipBlock>> carried;
+        std::vector<ClipBlock> shown;  // the picture, as a decoder with every frame shows it
+        bool lost = false;             // the client said it did not get it
+        bool built_on_lost = false;    // predicted from a lost frame, or from one built on one
+        std::size_t used = 0;          // how many frames back the frame it is predicted from was
     };
-    std::optional<std::vector<ClipBlock>> decoder_;  // what the decoder shows after the last frame written
-    std::deque<Written> history_;
-    unsigned frame_number_ = 0;                       // of the next frame, counted from the last keyframe
-    unsigned keyframes_ = 0;
+    void mark_built_on_lost();
+
+    std::deque<Kept> kept_;  // newest last
     bool mark_ = false;
+};
+
+// The clip as H.264.
+class ClipWriter final : public ClipEncoder {
+public:
+    ClipWriter(unsigned width, unsigned height) : ClipEncoder(width, height) {}
+
+    [[nodiscard]] std::vector<std::uint8_t> parameter_sets() const override;
+    [[nodiscard]] std::vector<std::uint8_t> frame(std::uint32_t counter, bool keyframe) override;
+
+private:
+    unsigned frame_number_ = 0;  // of the next frame, counted from the last keyframe
+    unsigned keyframes_ = 0;
 };
 
 }  // namespace psvp::media

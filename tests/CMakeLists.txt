@@ -11,7 +11,9 @@ add_executable(psvp_tests
     unit/test_erasure.cpp
     unit/test_frame_pacer.cpp
     unit/test_frame_refs.cpp
+    unit/test_h264_refs.cpp
     unit/test_haptics.cpp
+    unit/test_hevc_clip.cpp
     unit/test_hex.cpp
     unit/test_import.cpp
     unit/test_input.cpp
@@ -62,6 +64,7 @@ psvp_add_fuzz_target(import)
 psvp_add_fuzz_target(json)
 psvp_add_fuzz_target(media)
 psvp_add_fuzz_target(refs)
+psvp_add_fuzz_target(h264refs)
 psvp_add_fuzz_target(message)
 psvp_add_fuzz_target(regist)
 psvp_add_fuzz_target(session)

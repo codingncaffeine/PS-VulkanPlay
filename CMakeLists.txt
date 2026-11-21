@@ -96,11 +96,13 @@ add_library(psvp_media STATIC
     src/media/delta_e.cpp
     src/media/frame_pacer.cpp
     src/media/frame_refs.cpp
+    src/media/h264_refs.cpp
     src/media/gpu_device.cpp
     src/media/haptics.cpp
     src/media/sound_decoder.cpp
     src/media/sound_buffer.cpp
     src/media/test_clip.cpp
+    src/media/hevc_clip.cpp
     src/media/video_decoder.cpp)
 target_include_directories(psvp_media PUBLIC src)
 target_link_libraries(psvp_media PRIVATE PkgConfig::PSVP_FFMPEG PkgConfig::PSVP_OPUS)

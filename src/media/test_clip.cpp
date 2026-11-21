@@ -1,5 +1,7 @@
 #include "media/test_clip.h"
 
+#include "media/bit_writer.h"
+
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -18,55 +20,10 @@ constexpr std::array<ClipBlock, 8> kPatches{{
     {63, 193, 204}, {51, 109, 212}, {28, 212, 120}, {16, 128, 128},
 }};
 
-// Bits, highest first, as H.264 writes them (ITU-T H.264, clause 7.2 and 9.1).
-class BitWriter {
-public:
-    void bits(std::uint32_t value, unsigned count) {
-        for (unsigned i = count; i-- > 0;) {
-            if (used_ == 0) bytes_.push_back(0);
-            if (((value >> i) & 1U) != 0) bytes_.back() |= static_cast<std::uint8_t>(0x80U >> used_);
-            used_ = (used_ + 1) % 8;
-        }
-    }
-    // An unsigned number in the exponential Golomb code: ue(v).
-    void ue(std::uint32_t value) {
-        const std::uint32_t coded = value + 1;
-        const auto width = static_cast<unsigned>(std::bit_width(coded));
-        bits(0, width - 1);
-        bits(coded, width);
-    }
-    // A signed one: se(v).
-    void se(std::int32_t value) { ue(value > 0 ? static_cast<std::uint32_t>(2 * value - 1) : static_cast<std::uint32_t>(-2 * value)); }
-    void align() { used_ = 0; }  // the bits left of the last byte stay zero
-    void byte(std::uint8_t value) { bytes_.push_back(value); }  // only when aligned
-    // rbsp_trailing_bits: a one, then zeros to the end of the byte.
-    void finish() {
-        bits(1, 1);
-        align();
-    }
-    [[nodiscard]] const std::vector<std::uint8_t>& bytes() const noexcept { return bytes_; }
+using detail::append_unit;
+using detail::BitWriter;
 
-private:
-    std::vector<std::uint8_t> bytes_;
-    unsigned used_ = 0;  // bits used of the last byte; 0: none begun
-};
-
-// A NAL unit behind a four-byte start code. Inside it, two zero bytes are never followed
-// by a byte below four: a 3 is put in between (clause 7.4.1).
-void append_unit(std::vector<std::uint8_t>& out, std::uint8_t header, const std::vector<std::uint8_t>& payload) {
-    out.insert(out.end(), {0, 0, 0, 1, header});
-    unsigned zeros = 0;
-    for (const std::uint8_t byte : payload) {
-        if (zeros >= 2 && byte <= 3) {
-            out.push_back(3);
-            zeros = 0;
-        }
-        out.push_back(byte);
-        zeros = byte == 0 ? zeros + 1 : 0;
-    }
-}
-
-constexpr unsigned kFrameNumberBits = 8;
+constexpr unsigned kFrameNumberBits = 7;  // as a PS5's
 constexpr std::uint8_t kUnitSequenceSet = 0x67, kUnitPictureSet = 0x68, kUnitKeySlice = 0x65, kUnitSlice = 0x41;
 constexpr std::uint32_t kPcmInKeySlice = 25, kPcmInOtherSlice = 30;  // mb_type of I_PCM (tables 7-11, 7-13)
 
@@ -125,14 +82,14 @@ std::size_t clip_differences(const PlanesView& picture, std::uint32_t counter, b
     return differences;
 }
 
-ClipWriter::ClipWriter(unsigned width, unsigned height)
+ClipEncoder::ClipEncoder(unsigned width, unsigned height)
     : width_(width), height_(height), columns_((width + kClipBlock - 1) / kClipBlock), rows_((height + kClipBlock - 1) / kClipBlock) {
     if (width < kClipMinWidth || height < kClipMinHeight || width % 2 != 0 || height % 2 != 0 || width > 4096 || height > 2304) {
         throw std::invalid_argument("a test clip of this size cannot be written");
     }
 }
 
-std::vector<ClipBlock> ClipWriter::blocks(std::uint32_t counter) const {
+std::vector<ClipBlock> ClipEncoder::blocks(std::uint32_t counter) const {
     std::vector<ClipBlock> all;
     all.reserve(static_cast<std::size_t>(columns_) * rows_);
     for (unsigned row = 0; row < rows_; ++row) {
@@ -142,7 +99,8 @@ std::vector<ClipBlock> ClipWriter::blocks(std::uint32_t counter) const {
 }
 
 std::vector<std::uint8_t> ClipWriter::parameter_sets() const {
-    // seq_parameter_set_data (clause 7.3.2.1.1) with the picture's colors and the promise of no reordering.
+    // seq_parameter_set_data (clause 7.3.2.1.1) with the picture's colors, nine frames kept as a PS5 keeps them,
+    // and the promise of no reordering.
     BitWriter sequence;
     sequence.bits(66, 8);    // profile_idc: Baseline
     sequence.bits(0xc0, 8);  // constraint_set0_flag and constraint_set1_flag
@@ -150,7 +108,7 @@ std::vector<std::uint8_t> ClipWriter::parameter_sets() const {
     sequence.ue(0);          // seq_parameter_set_id
     sequence.ue(kFrameNumberBits - 4);  // log2_max_frame_num_minus4
     sequence.ue(2);          // pic_order_cnt_type: pictures are shown in the order they are decoded
-    sequence.ue(1);          // max_num_ref_frames
+    sequence.ue(static_cast<std::uint32_t>(kKept));  // max_num_ref_frames
     sequence.bits(0, 1);     // gaps_in_frame_num_value_allowed_flag
     sequence.ue(columns_ - 1);
     sequence.ue(rows_ - 1);
@@ -187,7 +145,7 @@ std::vector<std::uint8_t> ClipWriter::parameter_sets() const {
     sequence.ue(10);         // log2_max_mv_length_horizontal
     sequence.ue(10);         // log2_max_mv_length_vertical
     sequence.ue(0);          // max_num_reorder_frames
-    sequence.ue(1);          // max_dec_frame_buffering
+    sequence.ue(static_cast<std::uint32_t>(kKept));  // max_dec_frame_buffering
     sequence.finish();
 
     // pic_parameter_set_rbsp (clause 7.3.2.2).
@@ -210,34 +168,52 @@ std::vector<std::uint8_t> ClipWriter::parameter_sets() const {
     picture.finish();
 
     std::vector<std::uint8_t> out;
-    append_unit(out, kUnitSequenceSet, sequence.bytes());
-    append_unit(out, kUnitPictureSet, picture.bytes());
+    append_unit(out, {kUnitSequenceSet}, sequence.bytes());
+    append_unit(out, {kUnitPictureSet}, picture.bytes());
     return out;
 }
 
-void ClipWriter::decoder_lost(std::uint32_t first, std::uint32_t last) {
-    // In sixteen bits, as a stream counts its frames: the count may have started again in between.
-    const auto lost = [&](const Written& written) {
-        return static_cast<std::uint16_t>(written.counter - first) <= static_cast<std::uint16_t>(last - first);
-    };
-    const auto begin = std::ranges::find_if(history_, lost);
-    if (begin == history_.end()) return;
-    // From what the decoder showed before the first lost frame, go through the frames since
-    // again: a lost one changed nothing, every other one put its blocks where they belong.
-    std::vector<ClipBlock> shown = begin->before;
-    for (auto written = begin; written != history_.end(); ++written) {
-        written->before = shown;
-        if (lost(*written)) {
-            written->carried.clear();
-            continue;
-        }
-        for (const auto& [index, block] : written->carried) shown[index] = block;
+std::size_t ClipEncoder::reference_back() const {
+    for (std::size_t i = kept_.size(); i-- > 0;) {
+        if (!kept_[i].lost && !kept_[i].built_on_lost) return kept_.size() - i;
     }
-    decoder_ = std::move(shown);
+    return 0;
+}
+
+void ClipEncoder::keep(std::uint32_t counter, std::vector<ClipBlock> shown, std::size_t used) {
+    if (used == 0) kept_.clear();  // nothing before a keyframe matters to the decoder any more
+    Kept kept;
+    kept.counter = counter;
+    kept.shown = std::move(shown);
+    kept.used = used;
+    kept_.push_back(std::move(kept));
+    if (kept_.size() > kKept) kept_.pop_front();
+}
+
+void ClipEncoder::mark_built_on_lost() {
+    for (std::size_t i = 0; i < kept_.size(); ++i) {
+        Kept& frame = kept_[i];
+        if (frame.used == 0) {
+            frame.built_on_lost = false;  // a keyframe
+        } else if (frame.used <= i) {
+            const Kept& from = kept_[i - frame.used];
+            frame.built_on_lost = from.lost || from.built_on_lost;
+        }
+        // Built on a frame no longer kept: as it was.
+    }
+}
+
+void ClipEncoder::decoder_lost(std::uint32_t first, std::uint32_t last) {
+    // In sixteen bits, as a stream counts its frames: the count may have started again in between.
+    for (Kept& frame : kept_) {
+        if (static_cast<std::uint16_t>(frame.counter - first) <= static_cast<std::uint16_t>(last - first)) frame.lost = true;
+    }
+    mark_built_on_lost();
 }
 
 std::vector<std::uint8_t> ClipWriter::frame(std::uint32_t counter, bool keyframe) {
-    if (!decoder_) keyframe = true;
+    const std::size_t back = keyframe ? 0 : reference_back();
+    keyframe = back == 0;
     const std::vector<ClipBlock> wanted = blocks(counter);
     if (keyframe) frame_number_ = 0;
 
@@ -249,8 +225,14 @@ std::vector<std::uint8_t> ClipWriter::frame(std::uint32_t counter, bool keyframe
     slice.bits(frame_number_ % (1U << kFrameNumberBits), kFrameNumberBits);
     if (keyframe) slice.ue(keyframes_++ % 2);  // idr_pic_id: two keyframes in a row differ in it
     if (!keyframe) {
-        slice.bits(0, 1);        // num_ref_idx_active_override_flag
-        slice.bits(0, 1);        // ref_pic_list_modification_flag_l0
+        slice.bits(0, 1);        // num_ref_idx_active_override_flag: one frame used
+        // ref_pic_list_modification (7.3.3.1): the frame just before needs none; another is put first.
+        slice.bits(back > 1 ? 1 : 0, 1);
+        if (back > 1) {
+            slice.ue(0);         // modification_of_pic_nums_idc: a frame number below the frame's own
+            slice.ue(static_cast<std::uint32_t>(back - 1));  // abs_diff_pic_num_minus1
+            slice.ue(3);         // the end of the list's changes
+        }
     }
     if (keyframe) {
         slice.bits(0, 1);        // no_output_of_prior_pics_flag
@@ -261,38 +243,29 @@ std::vector<std::uint8_t> ClipWriter::frame(std::uint32_t counter, bool keyframe
     slice.se(0);                 // slice_qp_delta
     slice.ue(1);                 // disable_deblocking_filter_idc: no filter, the samples stay as written
 
-    Written written;
-    written.counter = counter;
-    if (decoder_) written.before = *decoder_;
     if (keyframe) {
         for (const ClipBlock& block : wanted) pcm_block(slice, kPcmInKeySlice, block);
-        // Nothing before a keyframe matters to the decoder any more.
-        history_.clear();
     } else {
-        // Blocks that did not change are skipped: the decoder keeps what it has there.
+        // Blocks the same as in the frame used are skipped: the decoder takes them from there.
+        const std::vector<ClipBlock>& from = shown(back);
         std::uint32_t skipped = 0;
         for (std::size_t i = 0; i < wanted.size(); ++i) {
-            if (wanted[i] == (*decoder_)[i]) {
+            if (wanted[i] == from[i]) {
                 ++skipped;
                 continue;
             }
             slice.ue(skipped);   // mb_skip_run
             skipped = 0;
             pcm_block(slice, kPcmInOtherSlice, wanted[i]);
-            written.carried.emplace_back(static_cast<std::uint32_t>(i), wanted[i]);
         }
         if (skipped != 0) slice.ue(skipped);
     }
     slice.finish();
 
-    decoder_ = wanted;
-    if (!keyframe) {
-        history_.push_back(std::move(written));
-        if (history_.size() > kHistory) history_.pop_front();
-    }
+    keep(counter, wanted, back);
     ++frame_number_;
     std::vector<std::uint8_t> out;
-    append_unit(out, keyframe ? kUnitKeySlice : kUnitSlice, slice.bytes());
+    append_unit(out, {keyframe ? kUnitKeySlice : kUnitSlice}, slice.bytes());
     return out;
 }
 

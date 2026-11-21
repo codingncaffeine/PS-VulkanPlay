@@ -45,6 +45,8 @@
 //     --clip WIDTHxHEIGHT     send the generated clip instead of the pattern: H.264 pictures that show
 //                             their frame's number (src/media/test_clip.h) and a tone as Opus sound;
 //                             after a loss report the next frame repairs the picture, as a console's does
+//     --clip-codec h264|hevc  with --clip: the clip's codec (default h264); HEVC is written in the shape of a
+//                             PS5's stream (src/media/hevc_clip.h)
 //     --timing-log FILE       with --clip: one line per picture frame as it is sent ("frame INDEX NS MARK")
 //                             and per button the client pressed as it is read ("press BUTTON NS"), NS on
 //                             the steady clock in nanoseconds; every press turns the clip's mark over
@@ -84,6 +86,7 @@
 #include "proto/discovery.h"
 #include "proto/hex.h"
 #include "media/sound_decoder.h"
+#include "media/hevc_clip.h"
 #include "media/test_clip.h"
 #include "proto/regist.h"
 #include "proto/rp_cipher.h"
@@ -139,6 +142,7 @@ struct Options {
     std::chrono::nanoseconds frame_every{0};
     std::string check_dump;
     unsigned clip_width = 0, clip_height = 0;  // 0: the pattern, not the clip
+    bool clip_hevc = false;
     std::string timing_log;
 };
 
@@ -605,6 +609,9 @@ int main(int argc, char** argv) {
             options.check_dump = *text;
         } else if (arg == "--timing-log") {
             options.timing_log = *text;
+        } else if (arg == "--clip-codec") {
+            if (*text != "h264" && *text != "hevc") return usage("--clip-codec takes h264 or hevc");
+            options.clip_hevc = *text == "hevc";
         } else if (arg == "--clip") {
             const std::size_t by = text->find('x');
             const auto number = [&](std::string_view part, unsigned& into) {
@@ -674,6 +681,7 @@ int main(int argc, char** argv) {
     };
     // When each picture frame went out and each press came in, for a reader of the screen (--timing-log).
     std::shared_ptr<std::ofstream> timing;
+    if (options.clip_hevc && options.clip_width == 0) return usage("--clip-codec needs --clip");
     if (!options.timing_log.empty()) {
         if (options.clip_width == 0) return usage("--timing-log needs --clip: only the clip shows a press");
         timing = std::make_shared<std::ofstream>(options.timing_log, std::ios::trunc);
@@ -755,10 +763,12 @@ int main(int argc, char** argv) {
                 stream_options.resolutions.push_back(psvp::proto::StreamResolution{1280, 720, {kPictureHeader.begin(), kPictureHeader.end()}});
                 if (options.clip_width != 0) {
                     // The clip: pictures a decoder gives back sample for sample, and a tone.
-                    auto clip = std::make_shared<psvp::media::ClipWriter>(options.clip_width, options.clip_height);
+                    std::shared_ptr<psvp::media::ClipEncoder> clip;
+                    if (options.clip_hevc) clip = std::make_shared<psvp::media::HevcClipWriter>(options.clip_width, options.clip_height);
+                    else clip = std::make_shared<psvp::media::ClipWriter>(options.clip_width, options.clip_height);
                     auto tone = std::make_shared<psvp::media::ToneWriter>();
                     stream_options.resolutions.front() = psvp::proto::StreamResolution{options.clip_width, options.clip_height, clip->parameter_sets()};
-                    stream_options.picture_codec = 3;  // what a PS5 writes for H.264
+                    stream_options.picture_codec = options.clip_hevc ? 6 : 3;  // what a PS5 writes for HEVC, for H.264
                     stream_options.picture_source = [clip, timing](std::uint16_t index, bool keyframe) {
                         auto frame = clip->frame(index, keyframe);
                         // Stamped as it is made: it goes out within microseconds, in the same pass.

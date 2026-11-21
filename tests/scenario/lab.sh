@@ -108,6 +108,34 @@ between "$never" 4 20 && ok "$never frames never showed as themselves (about one
 # The control of the damage check: with losses it must see damage (an H.264 frame built on a lost one is shown
 # until the console's repair: PLAN §13, 2026-11-21), without them it saw none (above).
 [ -n "$damaged" ] && [ "$damaged" -ge 1 ] && ok "the reader saw $damaged damaged pictures behind the losses" || fail "damaged pictures behind losses: '$damaged'"
+# This client's own report must know of every damaged picture the screen showed (src/media/h264_refs.h).
+changed=$(number "$work/loss.out" 'Behind lost frames: ([0-9]+) frames were decoded from the nearest frame held')
+approximate=$(number "$work/loss.out" '([0-9]+) pictures shown were built on those')
+[ -n "$changed" ] && [ "$changed" -ge 1 ] && ok "the frame reader followed the stream: $changed frames decoded from a frame held" || fail "frames behind losses: '$changed' ($(grep -a 'Behind lost' "$work/loss.out"))"
+[ -n "$approximate" ] && [ -n "$damaged" ] && [ "$approximate" -ge "$damaged" ] && ok "the report counted $approximate pictures built on them, the screen saw $damaged" || fail "report '$approximate' vs screen '$damaged'"
+
+echo "HEVC in the shape of a PS5's stream (src/media/hevc_clip.h), nothing lost"
+lab_run hevc --codec hevc -- --clip-codec hevc
+s="$work/hevc.score"
+sent=$(number "$s" 'Lab: ([0-9]+) frames sent after the first second')
+reached=$(number "$s" 'frames sent after the first second, ([0-9]+) reached the screen')
+check "the session was HEVC" has "$work/hevc.play.log" "HEVC"
+[ -n "$reached" ] && [ -n "$sent" ] && [ $((reached * 10)) -ge $((sent * 8)) ] && ok "$reached of $sent frames reached the screen" || fail "reached: '$reached' of '$sent'"
+check "no damaged picture came on the screen without a loss" grep -aq "came on the screen 0 times" "$s"
+
+echo "HEVC with lost frames: every 90th frame lost whole"
+lab_run hevc-loss --codec hevc -- --clip-codec hevc --lose-every 90 --lose-units 999
+s="$work/hevc-loss.score"
+never=$(number "$s" 'reached the screen, ([0-9]+) never did')
+damaged=$(number "$s" 'came on the screen ([0-9]+) times')
+between "$never" 4 20 && ok "$never frames never showed as themselves" || fail "never shown: '$never'"
+[ -n "$damaged" ] && [ "$damaged" -ge 1 ] && ok "the reader saw $damaged damaged pictures behind the losses" || fail "damaged pictures behind losses: '$damaged'"
+# This client's own report must know of every damaged picture the screen showed: frames behind a loss
+# are decoded from the nearest frame held (docs/protocol/video.md) and their pictures counted as such.
+changed=$(number "$work/hevc-loss.out" 'Behind lost frames: ([0-9]+) frames were decoded from the nearest frame held')
+approximate=$(number "$work/hevc-loss.out" '([0-9]+) pictures shown were built on those')
+[ -n "$changed" ] && [ "$changed" -ge 1 ] && ok "the frame reader followed the stream: $changed frames decoded from a frame held" || fail "frames changed behind losses: '$changed' ($(grep -a 'Behind lost' "$work/hevc-loss.out"))"
+[ -n "$approximate" ] && [ -n "$damaged" ] && [ "$approximate" -ge "$damaged" ] && ok "the report counted $approximate pictures built on them, the screen saw $damaged" || fail "report '$approximate' vs screen '$damaged'"
 
 [ $failed -eq 0 ] && echo "LAB PASSED" || echo "LAB FAILED"
 exit $failed

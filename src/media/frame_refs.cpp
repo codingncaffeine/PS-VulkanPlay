@@ -1,5 +1,7 @@
 #include "media/frame_refs.h"
 
+#include "media/bit_reader.h"
+
 #include <algorithm>
 #include <bit>
 #include <utility>
@@ -7,6 +9,11 @@
 namespace psvp::media {
 
 namespace {
+
+using detail::Bits;
+using detail::split_units;
+using detail::unescape;
+using detail::Unit;
 
 // NAL unit types of H.265, table 7-1.
 constexpr unsigned kLastOrdinaryPicture = 9;   // 0 to 9: pictures that follow others
@@ -19,50 +26,8 @@ constexpr unsigned kSequenceSet = 33, kPictureSet = 34;
 constexpr std::size_t kSliceBeginning = 128;
 constexpr unsigned kMaxNamed = 16;
 
-// One NAL unit of a byte stream: its header and payload, between the start codes.
-struct Unit {
-    std::size_t begin = 0;
-    std::size_t end = 0;
-};
-
-std::vector<Unit> split_units(std::span<const std::uint8_t> bytes) {
-    std::vector<Unit> units;
-    const auto next_start = [&](std::size_t from) {
-        for (std::size_t i = from; i + 2 < bytes.size(); ++i) {
-            if (bytes[i] == 0 && bytes[i + 1] == 0 && bytes[i + 2] == 1) return i;
-        }
-        return bytes.size();
-    };
-    for (std::size_t start = next_start(0); start < bytes.size();) {
-        const std::size_t begin = start + 3;
-        const std::size_t following = next_start(begin);
-        // Zero bytes before the next start code, or at the end, are filling: a unit never ends in one.
-        std::size_t end = following;
-        while (end > begin && bytes[end - 1] == 0) --end;
-        units.push_back(Unit{begin, end});
-        start = following;
-    }
-    return units;
-}
-
 unsigned unit_type(std::span<const std::uint8_t> unit) noexcept { return (unit[0] >> 1) & 0x3fU; }
 unsigned unit_layer(std::span<const std::uint8_t> unit) noexcept { return ((unit[0] & 1U) << 5) | (unit[1] >> 3); }
-
-// A unit's bytes without the bytes that keep start codes from showing up inside it (a 3 after two zeros).
-std::vector<std::uint8_t> unescape(std::span<const std::uint8_t> unit) {
-    std::vector<std::uint8_t> out;
-    out.reserve(unit.size());
-    unsigned zeros = 0;
-    for (const std::uint8_t byte : unit) {
-        if (zeros >= 2 && byte == 3) {
-            zeros = 0;
-            continue;
-        }
-        out.push_back(byte);
-        zeros = byte == 0 ? zeros + 1 : 0;
-    }
-    return out;
-}
 
 // The other way round (H.265, 7.4.2): a 3 goes in before any byte of 0 to 3 that follows two zeros, and after a last zero.
 std::vector<std::uint8_t> escape(std::span<const std::uint8_t> payload) {
@@ -80,50 +45,6 @@ std::vector<std::uint8_t> escape(std::span<const std::uint8_t> payload) {
     if (!payload.empty() && payload.back() == 0) out.push_back(3);
     return out;
 }
-
-// Reads bits, the first bit of a byte being its highest. Past the end it reads zeros and remembers.
-class Bits {
-public:
-    explicit Bits(std::span<const std::uint8_t> data) : data_(data) {}
-    std::uint32_t u(unsigned count) {
-        std::uint32_t value = 0;
-        for (unsigned i = 0; i < count; ++i) {
-            if (at_ >= data_.size() * 8) {
-                failed_ = true;
-                return 0;
-            }
-            value = (value << 1) | ((static_cast<std::uint32_t>(data_[at_ >> 3]) >> (7 - (at_ & 7))) & 1U);
-            ++at_;
-        }
-        return value;
-    }
-    bool flag() { return u(1) != 0; }
-    void skip(std::size_t count) {
-        if (count > data_.size() * 8 - at_) {
-            failed_ = true;
-            at_ = data_.size() * 8;
-        } else {
-            at_ += count;
-        }
-    }
-    // An unsigned number of the variable-length kind, ue(v): so many zeros, a one, as many more bits.
-    std::uint32_t ue() {
-        unsigned zeros = 0;
-        while (!failed_ && u(1) == 0) {
-            if (++zeros > 31) failed_ = true;
-        }
-        if (failed_) return 0;
-        return ((std::uint32_t{1} << zeros) - 1U) + u(zeros);
-    }
-    void se() { (void)ue(); }  // a signed one takes the same bits
-    [[nodiscard]] std::size_t position() const noexcept { return at_; }
-    [[nodiscard]] bool failed() const noexcept { return failed_; }
-
-private:
-    std::span<const std::uint8_t> data_;
-    std::size_t at_ = 0;
-    bool failed_ = false;
-};
 
 std::unexpected<std::string> refuse(std::string why) { return std::unexpected(std::move(why)); }
 
