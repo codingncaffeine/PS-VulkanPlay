@@ -273,7 +273,7 @@ public:
         std::chrono::milliseconds media_every{0};  // send a sound packet this often; 0: none
         bool corrupt_media = false;                // change a byte of each packet after sealing it
         // The picture and what goes wrong with it. Frames count from 1; every frame is fixed by seed and index.
-        std::chrono::milliseconds frame_every{0};  // send a picture frame this often; 0: none
+        std::chrono::nanoseconds frame_every{0};   // send a picture frame this often; 0: none
         unsigned frames = 0;                       // stop after this many; 0: go on
         std::uint64_t seed = 1;
         std::size_t frame_bytes = 6000;            // a frame is half to one and a half times this
@@ -298,6 +298,8 @@ public:
         // The haptics frames, when they are not the fixed pattern: asked by index, also for a frame again.
         std::function<std::vector<std::uint8_t>(std::uint16_t index)> haptics_source;
         std::uint8_t picture_codec = 0;            // the codec byte of picture packets (a PS5: 3 for H.264, 6 for HEVC)
+        // Hears every input event the client sent that was not seen before, oldest first, as it is read.
+        std::function<void(const ReadEvent& event)> input_event;
         // What a PS5 was seen to send on its own once a stream is set up; 0: not sent.
         std::chrono::milliseconds heartbeat_every{0};  // its heartbeats (a PS5: about three a second)
         std::chrono::milliseconds quality_every{0};    // its view of the connection (a PS5: every 1.2 s or so)

@@ -659,6 +659,7 @@ Datagrams ConsoleStream::on_datagram(std::span<const std::uint8_t> datagram, Tim
                             if (!is_new) continue;
                             ++history_events_;
                             events_.push_back(std::format("input {}: {}", number, describe((*events)[j])));
+                            if (options_.input_event) options_.input_event((*events)[j]);
                         }
                         if (!history_sequence_ || static_cast<std::uint16_t>(sequence - *history_sequence_) < 0x8000U) history_sequence_ = sequence;
                     }

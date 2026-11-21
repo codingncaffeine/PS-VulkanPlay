@@ -76,6 +76,10 @@ lane app-play          scenario phase5a build/release &
 # Memory errors only, as for the other window runs.
 lane play-asan         env ASAN_OPTIONS=detect_leaks=0 tools/wall.sh tests/scenario/phase3b.sh build/san &
 wait
+# The lab's clock on the screen (PLAN I3): frames from sent to shown, presses to their picture, and its control.
+# ALONE: on a busy machine the virtual screen's software presentation adds up to 25 ms of its own (seen
+# 2026-11-21 with eight busy loops beside it), which would be scored as ours.
+lane lab               scenario lab build/release
 
 if [ "$scope" = all ]; then
     # The four CI jobs, in the same containers, at once: each on a quarter of this machine's share.

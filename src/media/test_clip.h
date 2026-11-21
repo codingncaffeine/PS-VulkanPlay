@@ -29,9 +29,11 @@ inline constexpr unsigned kClipMinHeight = kClipBlock * 4;
 // What frame `counter` shows in the block at (column, row) of a clip of columns x rows blocks:
 //   row 0      the counter's sixteen bits, the highest first: white for one, black for zero
 //   row 1      the same bits the other way round, so that a reader can tell a real frame from a blank one
-//   row 2      eight color patches that never change
+//   row 2      eight color patches that never change; its last block is the mark: white while
+//              `mark` is set, gray otherwise (a console stand-in sets it to answer a button)
 //   below      one white block on gray that moves on by one place with every frame
-[[nodiscard]] ClipBlock clip_block(std::uint32_t counter, unsigned column, unsigned row, unsigned columns, unsigned rows);
+[[nodiscard]] ClipBlock clip_block(std::uint32_t counter, unsigned column, unsigned row, unsigned columns, unsigned rows, bool mark = false);
+inline constexpr unsigned kClipMarkRow = 2;
 
 // A decoded picture, or any picture, as three planes of 8-bit samples, the color planes at half size.
 struct PlanesView {
@@ -46,7 +48,7 @@ struct PlanesView {
 // first two rows; nothing when the two rows do not agree.
 [[nodiscard]] std::optional<std::uint16_t> read_clip_counter(const PlanesView& picture);
 // How many samples of a picture are not what the clip's frame `counter` shows.
-[[nodiscard]] std::size_t clip_differences(const PlanesView& picture, std::uint32_t counter);
+[[nodiscard]] std::size_t clip_differences(const PlanesView& picture, std::uint32_t counter, bool mark = false);
 
 // Writes the clip, one frame after another. The first frame and every frame asked
 // for as a keyframe stand alone; the others carry only the blocks that changed
@@ -68,6 +70,9 @@ public:
     // without a keyframe.) Frames older than the last kHistory ones cannot be named.
     void decoder_lost(std::uint32_t first, std::uint32_t last);
     static constexpr std::size_t kHistory = 64;
+    // The frames written from now on show the mark (clip_block) or do not.
+    void set_mark(bool mark) noexcept { mark_ = mark; }
+    [[nodiscard]] bool mark() const noexcept { return mark_; }
 
 private:
     [[nodiscard]] std::vector<ClipBlock> blocks(std::uint32_t counter) const;
@@ -83,6 +88,7 @@ private:
     std::deque<Written> history_;
     unsigned frame_number_ = 0;                       // of the next frame, counted from the last keyframe
     unsigned keyframes_ = 0;
+    bool mark_ = false;
 };
 
 }  // namespace psvp::media

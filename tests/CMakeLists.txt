@@ -31,8 +31,10 @@ add_executable(psvp_tests
     unit/test_stream_menu.cpp
     unit/test_stream_setup.cpp
     unit/test_text_message.cpp
-    unit/test_transport.cpp)
-target_include_directories(psvp_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    unit/test_transport.cpp
+    unit/test_screen_clock.cpp
+    ../tools/screen-clock/timing.cpp)
+target_include_directories(psvp_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/../tools/screen-clock")
 target_compile_definitions(psvp_tests PRIVATE "PSVP_TEST_FIXTURES=\"${CMAKE_CURRENT_SOURCE_DIR}/scenario/fixtures\""
     "PSVP_TEST_DATA=\"${CMAKE_CURRENT_SOURCE_DIR}/data\"")
 target_link_libraries(psvp_tests PRIVATE psvp_proto psvp_core)
@@ -78,6 +80,12 @@ if(TARGET psvp_render)
     target_link_libraries(psvp_render_check PRIVATE psvp_render psvp_media Vulkan::Vulkan)
     psvp_setup_target(psvp_render_check)
 endif()
+
+# The lab's clock on the screen (PLAN I3): when each frame of the clip reached a virtual screen, scored
+# against when the console stand-in sent it (tests/scenario/lab.sh).
+add_executable(psvp_screen_clock ../tools/screen-clock/screen_clock.cpp ../tools/screen-clock/timing.cpp)
+target_link_libraries(psvp_screen_clock PRIVATE psvp_media)
+psvp_setup_target(psvp_screen_clock)
 
 # Stands in for a console in the scenario tests (tests/scenario).
 add_executable(psvp-mock-console ../tools/mock-console/mock_console.cpp)

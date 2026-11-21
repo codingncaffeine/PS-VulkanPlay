@@ -3,6 +3,7 @@
 #pragma once
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
@@ -12,6 +13,8 @@
 #include <vector>
 
 #include <SDL3/SDL.h>
+
+#include "app/log.h"
 
 namespace psvp::app {
 
@@ -55,6 +58,11 @@ public:
                 }
             } else if (const int button = button_named(rest); button >= 0 && (verb == "tap" || verb == "down" || verb == "up")) {
                 SDL_SetJoystickVirtualButton(joystick, button, verb != "up");
+                // When, on the steady clock: where a reader of the screen starts the time from a press to its picture.
+                if (verb != "up") {
+                    const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+                    log::debug("pretend: pressed {} at {} ns", rest, ns);
+                }
                 if (verb == "tap") lifts_.push_back(Lift{now_ms + 40, button});
                 continue;
             }

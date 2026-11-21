@@ -33,6 +33,7 @@
 //     --feedback-ms N         N ms into the stream, send what a console sends for the controller: rumble,
 //                             trigger effects and controller information; 400 ms later, rumble that is still
 //     --frame-ms N            send a picture frame every N ms
+//     --fps N                 send N picture frames a second (60: as a PS5 does, which --frame-ms cannot say)
 //     --frames N              stop after N picture frames (default: go on)
 //     --media-seed N          what the frames hold follows from this number and their index
 //     --frame-bytes N         a picture frame is half to one and a half times this (default 6000)
@@ -44,6 +45,10 @@
 //     --clip WIDTHxHEIGHT     send the generated clip instead of the pattern: H.264 pictures that show
 //                             their frame's number (src/media/test_clip.h) and a tone as Opus sound;
 //                             after a loss report the next frame repairs the picture, as a console's does
+//     --timing-log FILE       with --clip: one line per picture frame as it is sent ("frame INDEX NS MARK")
+//                             and per button the client pressed as it is read ("press BUTTON NS"), NS on
+//                             the steady clock in nanoseconds; every press turns the clip's mark over
+//                             (src/media/test_clip.h), so that a reader of the screen can see the answer
 //
 //   psvp-mock-console --check-dump FOLDER [--media-seed N] [--frame-bytes N]
 //     compares what 'session --dump FOLDER' kept with what a mock with these options sends;
@@ -72,6 +77,7 @@
 #include <vector>
 
 #include <poll.h>
+#include <time.h>
 
 #include "net/socket.h"
 #include "proto/base64.h"
@@ -130,10 +136,14 @@ struct Options {
     int media_ms = 0;
     bool corrupt_media = false;
     psvp::proto::transport::ConsoleStream::Options media;  // the picture and sound it sends
-    int frame_ms = 0;
+    std::chrono::nanoseconds frame_every{0};
     std::string check_dump;
     unsigned clip_width = 0, clip_height = 0;  // 0: the pattern, not the clip
+    std::string timing_log;
 };
+
+// Nanoseconds on the steady clock: the clock every process of a check reads alike.
+long long steady_ns(Clock::time_point at) { return std::chrono::duration_cast<std::chrono::nanoseconds>(at.time_since_epoch()).count(); }
 
 // The header of the one picture size the mock offers: a placeholder, not a decoder's.
 constexpr std::array<std::uint8_t, 8> kPictureHeader{0x00, 0x00, 0x00, 0x01, 0x4d, 0x4f, 0x43, 0x4b};
@@ -593,6 +603,8 @@ int main(int argc, char** argv) {
             }
         } else if (arg == "--check-dump") {
             options.check_dump = *text;
+        } else if (arg == "--timing-log") {
+            options.timing_log = *text;
         } else if (arg == "--clip") {
             const std::size_t by = text->find('x');
             const auto number = [&](std::string_view part, unsigned& into) {
@@ -607,12 +619,12 @@ int main(int argc, char** argv) {
             }
         } else if (arg == "--frame-ms" || arg == "--frames" || arg == "--media-seed" || arg == "--frame-bytes" || arg == "--repair-units" ||
                    arg == "--lose-every" || arg == "--lose-units" || arg == "--late-every" || arg == "--lose-sound-every" ||
-                   arg == "--haptics-every" || arg == "--feedback-ms") {
+                   arg == "--haptics-every" || arg == "--feedback-ms" || arg == "--fps") {
             std::uint64_t number = 0;
             const auto [end, error] = std::from_chars(text->data(), text->data() + text->size(), number);
             if (error != std::errc{} || end != text->data() + text->size() || number > 1000000) return usage(std::format("{} is a number", arg));
             const auto count = static_cast<unsigned>(number);
-            if (arg == "--frame-ms") options.frame_ms = static_cast<int>(number);
+            if (arg == "--frame-ms") options.frame_every = std::chrono::milliseconds(number);
             else if (arg == "--frames") options.media.frames = count;
             else if (arg == "--media-seed") options.media.seed = number;
             else if (arg == "--frame-bytes") options.media.frame_bytes = number;
@@ -622,6 +634,10 @@ int main(int argc, char** argv) {
             else if (arg == "--late-every") options.media.late_every = count;
             else if (arg == "--lose-sound-every") options.media.lose_sound_every = count;
             else if (arg == "--feedback-ms") options.media.feedback_at = std::chrono::milliseconds(number);
+            else if (arg == "--fps") {
+                if (number < 1 || number > 1000) return usage("--fps is a number from 1 to 1000");
+                options.frame_every = std::chrono::nanoseconds(1'000'000'000 / number);
+            }
             else options.media.haptics_every = count;
         } else {
             return usage(std::format("unknown option {}", arg));
@@ -656,6 +672,13 @@ int main(int argc, char** argv) {
     const auto log_probe = [&](Probe& probe) {
         for (const std::string& line : probe.probe.take_events()) event("probe {}", line);
     };
+    // When each picture frame went out and each press came in, for a reader of the screen (--timing-log).
+    std::shared_ptr<std::ofstream> timing;
+    if (!options.timing_log.empty()) {
+        if (options.clip_width == 0) return usage("--timing-log needs --clip: only the clip shows a press");
+        timing = std::make_shared<std::ofstream>(options.timing_log, std::ios::trunc);
+        if (!*timing) return usage("--timing-log: the file cannot be written");
+    }
     // The stream of each client that finished the handshake on the stream port.
     struct Stream {
         psvp::net::Address client;
@@ -721,7 +744,7 @@ int main(int argc, char** argv) {
             }
             if (transport_port == psvp::proto::transport::kStreamPort && options.stream && session_cipher) {
                 psvp::proto::transport::ConsoleStream::Options stream_options = options.media;
-                stream_options.frame_every = std::chrono::milliseconds(options.frame_ms);
+                stream_options.frame_every = options.frame_every;
                 // As a PS5 was seen to: heartbeats of its own, and its view of the connection.
                 stream_options.heartbeat_every = 330ms;
                 stream_options.quality_every = 1200ms;
@@ -736,7 +759,19 @@ int main(int argc, char** argv) {
                     auto tone = std::make_shared<psvp::media::ToneWriter>();
                     stream_options.resolutions.front() = psvp::proto::StreamResolution{options.clip_width, options.clip_height, clip->parameter_sets()};
                     stream_options.picture_codec = 3;  // what a PS5 writes for H.264
-                    stream_options.picture_source = [clip](std::uint16_t index, bool keyframe) { return clip->frame(index, keyframe); };
+                    stream_options.picture_source = [clip, timing](std::uint16_t index, bool keyframe) {
+                        auto frame = clip->frame(index, keyframe);
+                        // Stamped as it is made: it goes out within microseconds, in the same pass.
+                        if (timing) *timing << std::format("frame {} {} {}\n", index, steady_ns(Clock::now()), clip->mark() ? 1 : 0) << std::flush;
+                        return frame;
+                    };
+                    if (timing) {
+                        stream_options.input_event = [clip, timing](const psvp::proto::transport::ReadEvent& read) {
+                            if (read.what != psvp::proto::transport::ReadEvent::What::button || !read.pressed) return;
+                            *timing << std::format("press {} {}\n", psvp::proto::transport::button_name(read.button), steady_ns(Clock::now())) << std::flush;
+                            clip->set_mark(!clip->mark());
+                        };
+                    }
                     stream_options.picture_lost = [clip](std::uint16_t first, std::uint16_t last) { clip->decoder_lost(first, last); };
                     stream_options.sound_source = [tone](std::uint16_t) { return tone->frame(); };
                     // Haptics as a console sends them: 30 samples for each of two actuators, 16 bits, at 3000 a
@@ -785,8 +820,15 @@ int main(int argc, char** argv) {
         pollfd waits[6] = {{discovery->fd(), POLLIN, 0}, {search->fd(), POLLIN, 0}, {listener->fd(), POLLIN, 0},
                            {control.stream.open() && !control.silent ? control.stream.fd() : -1, POLLIN, 0},
                            {probe_port->fd(), POLLIN, 0}, {stream_port->fd(), POLLIN, 0}};
-        // Short waits while a stream sends on a timer of its own.
-        const int ready = ::poll(waits, 6, streams.empty() ? 50 : 10);
+        // Short waits while a stream sends on a timer of its own, and none past the moment its next
+        // frame or packet is due: a frame goes out on its time, as a console's does, not up to a wait late.
+        auto wake = Clock::now() + (streams.empty() ? 50ms : 10ms);
+        for (const auto& [client, stream] : streams) {
+            if (const auto due = stream.stream.deadline(); due && !stream.silent) wake = std::min(wake, *due);
+        }
+        const auto wait_ns = std::max<long long>(0, std::chrono::duration_cast<std::chrono::nanoseconds>(wake - Clock::now()).count());
+        const timespec wait_for{static_cast<time_t>(wait_ns / 1'000'000'000), static_cast<long>(wait_ns % 1'000'000'000)};
+        const int ready = ::ppoll(waits, 6, &wait_for, nullptr);
         if (ready > 0 && (waits[4].revents & POLLIN) != 0) serve_transport(*probe_port, psvp::proto::transport::kProbePort);
         if (ready > 0 && (waits[5].revents & POLLIN) != 0) serve_transport(*stream_port, psvp::proto::transport::kStreamPort);
         for (auto& [client, probe] : probes) {

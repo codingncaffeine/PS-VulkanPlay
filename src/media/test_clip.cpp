@@ -81,12 +81,13 @@ void pcm_block(BitWriter& writer, std::uint32_t type, const ClipBlock& block) {
 
 }  // namespace
 
-ClipBlock clip_block(std::uint32_t counter, unsigned column, unsigned row, unsigned columns, unsigned rows) {
+ClipBlock clip_block(std::uint32_t counter, unsigned column, unsigned row, unsigned columns, unsigned rows, bool mark) {
     if (row <= 1 && column < kClipCounterBits) {
         const bool bit = ((counter >> (kClipCounterBits - 1 - column)) & 1U) != 0;
         return bit == (row == 0) ? kWhite : kBlack;
     }
     if (row == 2 && column < kPatches.size()) return kPatches[column];
+    if (row == kClipMarkRow && column + 1 == columns) return mark ? kWhite : kGray;
     if (row >= 3 && rows > 3) {
         const unsigned places = columns * (rows - 3);
         if ((row - 3) * columns + column == counter % places) return kWhite;
@@ -107,13 +108,13 @@ std::optional<std::uint16_t> read_clip_counter(const PlanesView& picture) {
     return counter;
 }
 
-std::size_t clip_differences(const PlanesView& picture, std::uint32_t counter) {
+std::size_t clip_differences(const PlanesView& picture, std::uint32_t counter, bool mark) {
     const unsigned columns = (picture.width + kClipBlock - 1) / kClipBlock;
     const unsigned rows = (picture.height + kClipBlock - 1) / kClipBlock;
     std::size_t differences = 0;
     for (unsigned y = 0; y < picture.height; ++y) {
         for (unsigned x = 0; x < picture.width; ++x) {
-            const ClipBlock block = clip_block(counter, x / kClipBlock, y / kClipBlock, columns, rows);
+            const ClipBlock block = clip_block(counter, x / kClipBlock, y / kClipBlock, columns, rows, mark);
             if (picture.y[y * picture.y_stride + x] != block.y) ++differences;
             if (x % 2 == 0 && y % 2 == 0) {
                 if (picture.cb[(y / 2) * picture.cb_stride + x / 2] != block.cb) ++differences;
@@ -135,7 +136,7 @@ std::vector<ClipBlock> ClipWriter::blocks(std::uint32_t counter) const {
     std::vector<ClipBlock> all;
     all.reserve(static_cast<std::size_t>(columns_) * rows_);
     for (unsigned row = 0; row < rows_; ++row) {
-        for (unsigned column = 0; column < columns_; ++column) all.push_back(clip_block(counter, column, row, columns_, rows_));
+        for (unsigned column = 0; column < columns_; ++column) all.push_back(clip_block(counter, column, row, columns_, rows_, mark_));
     }
     return all;
 }
