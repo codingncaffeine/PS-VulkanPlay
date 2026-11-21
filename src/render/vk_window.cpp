@@ -102,6 +102,9 @@ private:
     int open(const WindowOptions& options);
     bool create_instance();
     bool pick_device();
+    // Says in the log whether the device and this window's surface can tell when each picture reached
+    // the screen (VK_EXT_present_timing): what pacing to the display's own refresh will need.
+    void report_present_timing() const;
     bool create_device();
     void share_with_decoder();
     bool create_frame_objects();
@@ -128,6 +131,7 @@ private:
     std::uint32_t device_api_ = 0;
     std::uint32_t instance_api_ = 0;
     std::vector<std::string> instance_extensions_;
+    bool surface_capabilities2_ = false;  // VK_KHR_get_surface_capabilities2 is enabled
     VkDevice device_ = VK_NULL_HANDLE;
     VkQueue queue_ = VK_NULL_HANDLE;
 
@@ -196,13 +200,25 @@ bool Window::create_instance() {
     // still draws (it is only not lent to the decoder).
     instance_api_ = loader_version >= kVideoApi ? kVideoApi : kMinimumApi;
     app.apiVersion = instance_api_;
-    for (std::uint32_t i = 0; i < extension_count; ++i) instance_extensions_.emplace_back(extensions[i]);
+    std::vector<const char*> enabled(extensions, extensions + extension_count);
+    // Asking a surface what it can do beyond the basics (whether it says when pictures reached the
+    // screen) takes the second form of the surface query, where the loader offers it.
+    std::uint32_t offered_count = 0;
+    vkEnumerateInstanceExtensionProperties(nullptr, &offered_count, nullptr);
+    std::vector<VkExtensionProperties> offered(offered_count);
+    vkEnumerateInstanceExtensionProperties(nullptr, &offered_count, offered.data());
+    const std::string_view capabilities2 = VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME;
+    surface_capabilities2_ = std::ranges::any_of(offered, [&](const VkExtensionProperties& e) { return e.extensionName == capabilities2; });
+    if (surface_capabilities2_ && std::ranges::none_of(enabled, [&](const char* name) { return name == capabilities2; })) {
+        enabled.push_back(VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME);
+    }
+    for (const char* name : enabled) instance_extensions_.emplace_back(name);
 
     VkInstanceCreateInfo info{};
     info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     info.pApplicationInfo = &app;
-    info.enabledExtensionCount = extension_count;
-    info.ppEnabledExtensionNames = extensions;
+    info.enabledExtensionCount = static_cast<std::uint32_t>(enabled.size());
+    info.ppEnabledExtensionNames = enabled.data();
     if (!check(vkCreateInstance(&info, nullptr, &instance_), "vkCreateInstance")) return false;
     log::info("render: Vulkan loader {}", version_text(loader_version));
     return true;
@@ -275,6 +291,61 @@ bool Window::pick_device() {
         return false;
     }
     return true;
+}
+
+void Window::report_present_timing() const {
+#ifdef VK_EXT_present_timing
+    std::uint32_t count = 0;
+    vkEnumerateDeviceExtensionProperties(physical_, nullptr, &count, nullptr);
+    std::vector<VkExtensionProperties> extensions(count);
+    vkEnumerateDeviceExtensionProperties(physical_, nullptr, &count, extensions.data());
+    const auto has = [&](std::string_view name) {
+        return std::ranges::any_of(extensions, [&](const VkExtensionProperties& e) { return e.extensionName == name; });
+    };
+    if (!has(VK_EXT_PRESENT_TIMING_EXTENSION_NAME)) {
+        log::info("render: present timing: the device does not offer it");
+        return;
+    }
+    const auto query = surface_capabilities2_ ? reinterpret_cast<PFN_vkGetPhysicalDeviceSurfaceCapabilities2KHR>(
+                                                    vkGetInstanceProcAddr(instance_, "vkGetPhysicalDeviceSurfaceCapabilities2KHR"))
+                                              : nullptr;
+    if (query == nullptr) {
+        log::info("render: present timing: the device offers it, but the surface cannot be asked (no {})", VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME);
+        return;
+    }
+    VkPresentTimingSurfaceCapabilitiesEXT timing{};
+    timing.sType = VK_STRUCTURE_TYPE_PRESENT_TIMING_SURFACE_CAPABILITIES_EXT;
+    VkSurfaceCapabilities2KHR capabilities{};
+    capabilities.sType = VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_2_KHR;
+    capabilities.pNext = &timing;
+    VkPhysicalDeviceSurfaceInfo2KHR surface{};
+    surface.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SURFACE_INFO_2_KHR;
+    surface.surface = surface_;
+    if (const VkResult result = query(physical_, &surface, &capabilities); result != VK_SUCCESS) {
+        log::info("render: present timing: the device offers it; asking the surface failed with code {}", static_cast<int>(result));
+        return;
+    }
+    if (timing.presentTimingSupported != VK_TRUE) {
+        log::info("render: present timing: the device offers it, this window's surface does not");
+        return;
+    }
+    std::string stages;
+    const auto stage = [&](VkPresentStageFlagsEXT bit, std::string_view name) {
+        if ((timing.presentStageQueries & bit) == 0) return;
+        if (!stages.empty()) stages += ", ";
+        stages += name;
+    };
+    stage(VK_PRESENT_STAGE_QUEUE_OPERATIONS_END_BIT_EXT, "queue done");
+    stage(VK_PRESENT_STAGE_REQUEST_DEQUEUED_BIT_EXT, "taken by the presentation engine");
+    stage(VK_PRESENT_STAGE_IMAGE_FIRST_PIXEL_OUT_BIT_EXT, "first pixel out");
+    stage(VK_PRESENT_STAGE_IMAGE_FIRST_PIXEL_VISIBLE_BIT_EXT, "first pixel visible");
+    log::info("render: present timing: offered by the device and this window's surface; at an absolute time: {}, at a relative time: {}; "
+              "it reports: {}",
+              timing.presentAtAbsoluteTimeSupported == VK_TRUE ? "yes" : "no", timing.presentAtRelativeTimeSupported == VK_TRUE ? "yes" : "no",
+              stages.empty() ? "no stage" : stages);
+#else
+    log::info("render: present timing: this build's Vulkan headers do not know it");
+#endif
 }
 
 bool Window::create_device() {
@@ -769,6 +840,7 @@ int Window::open(const WindowOptions& options) {
                                 "an updated graphics driver usually provides it.",
                                 PSVP_NAME, version_text(kMinimumApi)));
     }
+    report_present_timing();
     if (!create_device() || !create_frame_objects() || !video_.create(physical_, device_, gpu_why_not_.empty()) || !overlay_.create(physical_, device_)) {
         return fail(kExitVulkanFailed, PSVP_NAME " cannot start",
                     std::format("The graphics device {} could not be set up. The log has the details.", device_name_));
