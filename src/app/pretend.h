@@ -25,13 +25,16 @@ void only_pretended_controllers();
 
 // For checks: presses the buttons of the pretended controller as a file says, line by line as
 // the lines are added to it. "tap NAME" (down, and up a moment later), "down NAME", "up NAME",
-// "stick X Y" (the left stick, each from -32768 to 32767).
+// "stick X Y" and "right-stick X Y" (each from -32768 to 32767), "touch X Y" (the first finger
+// down on the touchpad, each from 0 to 1), "lift" (and up again), "gyro X Y Z" (a reading of the
+// motion sensor, radians a second).
 class Taps {
 public:
     explicit Taps(std::string file) : file_(std::move(file)) {}
 
     void follow(SDL_Joystick* joystick, std::uint64_t now_ms) {
         if (joystick == nullptr) return;
+        bool lifted = false;
         for (auto due = lifts_.begin(); due != lifts_.end();) {
             if (due->at > now_ms) {
                 ++due;
@@ -39,7 +42,11 @@ public:
             }
             SDL_SetJoystickVirtualButton(joystick, due->button, false);
             due = lifts_.erase(due);
+            lifted = true;
         }
+        // A tap is whole before the next line is read, and its lift is seen by the window's loop on its
+        // own: lines read sooner would put a button down again before it was seen to come up.
+        if (lifted || !lifts_.empty()) return;
         std::ifstream in(file_, std::ios::binary);
         if (!in) return;
         in.seekg(read_);
@@ -49,11 +56,24 @@ public:
             read_ = in.tellg();
             const auto space = line.find(' ');
             const std::string verb = line.substr(0, space), rest = space == std::string::npos ? "" : line.substr(space + 1);
-            if (verb == "stick") {
+            if (verb == "stick" || verb == "right-stick") {
                 int x = 0, y = 0;
                 if (std::sscanf(rest.c_str(), "%d %d", &x, &y) == 2) {
-                    SDL_SetJoystickVirtualAxis(joystick, SDL_GAMEPAD_AXIS_LEFTX, static_cast<Sint16>(std::clamp(x, -32768, 32767)));
-                    SDL_SetJoystickVirtualAxis(joystick, SDL_GAMEPAD_AXIS_LEFTY, static_cast<Sint16>(std::clamp(y, -32768, 32767)));
+                    const bool right = verb == "right-stick";
+                    SDL_SetJoystickVirtualAxis(joystick, right ? SDL_GAMEPAD_AXIS_RIGHTX : SDL_GAMEPAD_AXIS_LEFTX, static_cast<Sint16>(std::clamp(x, -32768, 32767)));
+                    SDL_SetJoystickVirtualAxis(joystick, right ? SDL_GAMEPAD_AXIS_RIGHTY : SDL_GAMEPAD_AXIS_LEFTY, static_cast<Sint16>(std::clamp(y, -32768, 32767)));
+                    continue;
+                }
+            } else if (verb == "touch" || verb == "lift") {
+                float x = 0.5F, y = 0.5F;
+                if (verb == "lift" || std::sscanf(rest.c_str(), "%f %f", &x, &y) == 2) {
+                    SDL_SetJoystickVirtualTouchpad(joystick, 0, 0, verb == "touch", std::clamp(x, 0.0F, 1.0F), std::clamp(y, 0.0F, 1.0F), verb == "touch" ? 1.0F : 0.0F);
+                    continue;
+                }
+            } else if (verb == "gyro") {
+                float data[3] = {};
+                if (std::sscanf(rest.c_str(), "%f %f %f", &data[0], &data[1], &data[2]) == 3) {
+                    SDL_SendJoystickVirtualSensorData(joystick, SDL_SENSOR_GYRO, SDL_GetTicksNS(), data, 3);
                     continue;
                 }
             } else if (const int button = button_named(rest); button >= 0 && (verb == "tap" || verb == "down" || verb == "up")) {
@@ -63,7 +83,10 @@ public:
                     const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
                     log::debug("pretend: pressed {} at {} ns", rest, ns);
                 }
-                if (verb == "tap") lifts_.push_back(Lift{now_ms + 40, button});
+                if (verb == "tap") {
+                    lifts_.push_back(Lift{now_ms + 40, button});
+                    break;  // the rest waits for its lift (above)
+                }
                 continue;
             }
             std::fprintf(stderr, "--pretend-taps: not understood: %s\n", line.c_str());
@@ -77,6 +100,8 @@ private:
             {"right", SDL_GAMEPAD_BUTTON_DPAD_RIGHT}, {"south", SDL_GAMEPAD_BUTTON_SOUTH}, {"east", SDL_GAMEPAD_BUTTON_EAST},
             {"west", SDL_GAMEPAD_BUTTON_WEST}, {"north", SDL_GAMEPAD_BUTTON_NORTH}, {"left-shoulder", SDL_GAMEPAD_BUTTON_LEFT_SHOULDER},
             {"right-shoulder", SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER}, {"start", SDL_GAMEPAD_BUTTON_START},
+            {"left-paddle1", SDL_GAMEPAD_BUTTON_LEFT_PADDLE1}, {"right-paddle1", SDL_GAMEPAD_BUTTON_RIGHT_PADDLE1},
+            {"left-paddle2", SDL_GAMEPAD_BUTTON_LEFT_PADDLE2}, {"right-paddle2", SDL_GAMEPAD_BUTTON_RIGHT_PADDLE2},
         };
         for (const auto& one : kNames) {
             if (one.name == name) return one.button;

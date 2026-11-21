@@ -140,6 +140,7 @@ private:
     std::uint32_t instance_api_ = 0;
     std::vector<std::string> instance_extensions_;
     bool surface_capabilities2_ = false;  // VK_KHR_get_surface_capabilities2 is enabled
+    bool software_device_ = false;        // the device draws on the processor (llvmpipe and the like)
     VkDevice device_ = VK_NULL_HANDLE;
     VkQueue queue_ = VK_NULL_HANDLE;
 
@@ -306,6 +307,7 @@ bool Window::pick_device() {
             queue_family_ = *family;
             device_api_ = properties.apiVersion;
             device_name_ = std::format("{} ({})", name, kind);
+            software_device_ = properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU;
         }
     }
     if (physical_ == VK_NULL_HANDLE) {
@@ -1084,8 +1086,12 @@ int Window::run(const WindowOptions& options) {
     options_ = &options;
     if (const int code = open(options); code != 0) return code;
     video_.set_hdr_peak(options.hdr_peak_nits);
-    video_.set_scaler(options.scaler);
-    video_.set_deband(options.deband);
+    video_.set_scaler(options.scaler.value_or(software_device_ ? media::Scaler::bilinear : media::kDefaultScaler));
+    video_.set_deband(options.deband.value_or(!software_device_));
+    if (software_device_ && (!options.scaler || !options.deband)) {
+        log::info("render: a software device: the picture is scaled by the tent and not debanded unless asked for (the sharper scalers cost each picture "
+                  "more than the processor has to spare)");
+    }
     if (wake_event.load() == 0) wake_event.store(SDL_RegisterEvents(1));
 
     std::uint64_t frames = 0;

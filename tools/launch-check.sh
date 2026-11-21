@@ -148,7 +148,8 @@ else
     wait $pid; rc=$?
     fail "exited by itself with code $rc"; sed 's/^/           | /' "$PSVP_TEST_TMP/clip.out" | head -20
 fi
-# The same frame with what a user gets unless they choose otherwise: EWA Lanczos and debanding. Its
+# The same frame by what a graphics card gets unless chosen otherwise, asked for here (this software
+# device would draw it by the tent unless asked): EWA Lanczos and debanding. Its
 # kernel reaches 3.24 samples (about 10 screen pixels here), so a block's own color is exact only
 # further in, and the grain moves it by up to a step: a patch's color within 2 fills 24x24 to 48x48.
 # (Whether the scaler draws right is psvp_render_check --scaling's to say; this is the window using it.)
@@ -156,7 +157,7 @@ if grep -q ' ERROR ' "$log" 2>/dev/null; then
     fail "the application logged an error with the clip:"; grep ' ERROR ' "$log" | sed 's/^/           | /' | head -5
 fi
 : > "$log"
-"$app" --test-clip-frame 23130 > "$PSVP_TEST_TMP/clip-default.out" 2>&1 &
+"$app" --test-clip-frame 23130 --scaler ewa-lanczos --deband on > "$PSVP_TEST_TMP/clip-default.out" 2>&1 &
 pid=$!
 for _ in $(seq 150); do
     [ -n "$(line 'render: first picture shown.*')" ] && break
@@ -164,7 +165,7 @@ for _ in $(seq 150); do
     sleep 0.1
 done
 l=$(line 'render: first picture shown.*')
-case "$l" in *"drawn at 1248x720 by ewa-lanczos, debanded"*) ok "by default: $l" ;; *) fail "by default the picture is not drawn by EWA Lanczos, debanded: '$l'" ;; esac
+case "$l" in *"drawn at 1248x720 by ewa-lanczos, debanded"*) ok "asked for: $l" ;; *) fail "asked for, the picture is not drawn by EWA Lanczos, debanded: '$l'" ;; esac
 if kill -0 $pid 2>/dev/null; then
     sleep 0.7
     for patch in "red 191 0 1" "green 0 191 0" "blue 0 0 191"; do

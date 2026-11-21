@@ -52,9 +52,11 @@ struct WindowOptions {
     // How bright an HDR picture is taken to be at its brightest, in cd/m² (VideoPass::set_hdr_peak).
     double hdr_peak_nits = 1000.0;
     // How the picture is brought to the window's size, and whether banding is smoothed out of it
-    // (VideoPass::set_scaler, set_deband).
-    media::Scaler scaler = media::kDefaultScaler;
-    bool deband = true;
+    // (VideoPass::set_scaler, set_deband). Not chosen: EWA Lanczos and debanding on a graphics card;
+    // the tent without debanding on a software device (Vulkan on the processor), where the sharper
+    // kernels cost each picture more than it has.
+    std::optional<media::Scaler> scaler;
+    std::optional<bool> deband;
     // Lend the window's Vulkan device to FFmpeg for decoding on the graphics card, where the device
     // can (a video decode queue for H.264 or HEVC, Vulkan 1.3).
     bool gpu_decoding = true;

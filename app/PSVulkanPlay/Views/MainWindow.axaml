@@ -257,12 +257,52 @@
                         <Border Classes="rule" />
                         <Grid ColumnDefinitions="*,Auto">
                             <StackPanel VerticalAlignment="Center"><TextBlock Text="Left back button" /><TextBlock Classes="secondary small" Text="On a DualSense Edge: the console's button it presses." /></StackPanel>
-                            <ComboBox Grid.Column="1" ItemsSource="{Binding Buttons}" SelectedItem="{Binding BackLeft}" />
+                            <ComboBox Grid.Column="1" ItemsSource="{Binding Buttons}" SelectedItem="{Binding BackLeft}" MinWidth="260" />
                         </Grid>
                         <Border Classes="rule" />
                         <Grid ColumnDefinitions="*,Auto">
                             <TextBlock Text="Right back button" VerticalAlignment="Center" />
-                            <ComboBox Grid.Column="1" ItemsSource="{Binding Buttons}" SelectedItem="{Binding BackRight}" />
+                            <ComboBox Grid.Column="1" ItemsSource="{Binding Buttons}" SelectedItem="{Binding BackRight}" MinWidth="260" />
+                        </Grid>
+                        <Border Classes="rule" />
+                        <Grid ColumnDefinitions="*,Auto">
+                            <StackPanel VerticalAlignment="Center"><TextBlock Text="Left Fn button" /><TextBlock Classes="secondary small" Text="On a DualSense Edge: what it does while playing." /></StackPanel>
+                            <ComboBox Grid.Column="1" ItemsSource="{Binding FnActions}" SelectedItem="{Binding FnLeft}" MinWidth="260" />
+                        </Grid>
+                        <Border Classes="rule" />
+                        <Grid ColumnDefinitions="*,Auto">
+                            <TextBlock Text="Right Fn button" VerticalAlignment="Center" />
+                            <ComboBox Grid.Column="1" ItemsSource="{Binding FnActions}" SelectedItem="{Binding FnRight}" MinWidth="260" />
+                        </Grid>
+                        <Border Classes="rule" />
+                        <Grid ColumnDefinitions="*,Auto">
+                            <StackPanel VerticalAlignment="Center" Margin="0,0,20,0"><TextBlock Text="Adaptive trigger effects" /><TextBlock Classes="secondary small" TextWrapping="Wrap" Text="The resistance a game puts on a DualSense's triggers." /></StackPanel>
+                            <ToggleSwitch Grid.Column="1" IsChecked="{Binding TriggerEffects}" OnContent="" OffContent="" MinWidth="0" />
+                        </Grid>
+                        <Border Classes="rule" />
+                        <Grid ColumnDefinitions="*,Auto">
+                            <StackPanel VerticalAlignment="Center"><TextBlock Text="Light bar" /><TextBlock Classes="secondary small" Text="Its color while playing." /></StackPanel>
+                            <ComboBox Grid.Column="1" ItemsSource="{Binding LightBars}" SelectedItem="{Binding LightBar}" MinWidth="260" />
+                        </Grid>
+                        <Border Classes="rule" />
+                        <Grid ColumnDefinitions="*,Auto">
+                            <StackPanel VerticalAlignment="Center"><TextBlock Text="Player lights" /><TextBlock Classes="secondary small" Text="The lights under the touchpad that show which player you are." /></StackPanel>
+                            <ToggleSwitch Grid.Column="1" IsChecked="{Binding PlayerLights}" OnContent="" OffContent="" MinWidth="0" />
+                        </Grid>
+                        <Border Classes="rule" />
+                        <Grid ColumnDefinitions="*,Auto">
+                            <StackPanel VerticalAlignment="Center"><TextBlock Text="Motion" /><TextBlock Classes="secondary small" Text="Tilting and turning the controller, for games that steer or aim with it." /></StackPanel>
+                            <ToggleSwitch Grid.Column="1" IsChecked="{Binding Motion}" OnContent="" OffContent="" MinWidth="0" />
+                        </Grid>
+                        <Border Classes="rule" />
+                        <Grid ColumnDefinitions="*,Auto">
+                            <StackPanel VerticalAlignment="Center"><TextBlock Text="Touchpad" /><TextBlock Classes="secondary small" Text="Touches on it; pressing it stays a button." /></StackPanel>
+                            <ToggleSwitch Grid.Column="1" IsChecked="{Binding Touchpad}" OnContent="" OffContent="" MinWidth="0" />
+                        </Grid>
+                        <Border Classes="rule" />
+                        <Grid ColumnDefinitions="*,Auto">
+                            <StackPanel VerticalAlignment="Center" Margin="0,0,20,0"><TextBlock Text="Stick dead zone" /><TextBlock Classes="secondary small" Text="{Binding DeadZoneText}" /></StackPanel>
+                            <Slider Grid.Column="1" Minimum="0" Maximum="30" TickFrequency="1" IsSnapToTickEnabled="True" Value="{Binding DeadZone}" />
                         </Grid>
                     </StackPanel>
                 </Border>

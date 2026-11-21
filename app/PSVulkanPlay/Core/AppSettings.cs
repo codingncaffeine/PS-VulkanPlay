@@ -39,6 +39,14 @@ public sealed class AppSettings
     public int HapticsVolume { get; set; } = 100;       // 0 to 100
     public string BackLeft { get; set; } = "";          // a button's name, or nothing
     public string BackRight { get; set; } = "";
+    public bool TriggerEffects { get; set; } = true;    // the console's adaptive trigger effects reach a DualSense
+    public string LightBar { get; set; } = "console";   // "console", "off", or a color as six hexadecimal digits
+    public bool PlayerLights { get; set; } = true;
+    public bool Motion { get; set; } = true;            // the motion sensors are told to the console
+    public bool Touchpad { get; set; } = true;          // touches are told to the console
+    public int DeadZone { get; set; }                   // percent of a stick's throw that counts as rest, 0 to 30
+    public string FnLeft { get; set; } = "none";        // a DualSense Edge's Fn buttons: none, menu, stats, fullscreen
+    public string FnRight { get; set; } = "none";
     public bool WakeFirst { get; set; } = true;
     public bool RestAfter { get; set; }
     public bool ShowStats { get; set; }                 // the statistics over the picture from the start (F3 at any time)
@@ -55,6 +63,12 @@ public sealed class AppSettings
     public const string DefaultScaler = "ewa-lanczos";
     public static readonly string[] Scalers = ["bilinear", "catmull-rom", "lanczos", "ewa-lanczos", "ewa-lanczos-sharp"];
     public static readonly string[] Controllers = ["auto", "dualsense", "dualshock4"];
+    public static readonly string[] FnActions = ["none", "menu", "stats", "fullscreen"];
+    public const int MostDeadZone = 30;
+
+    /// <summary>"console", "off", or six hexadecimal digits, as the program takes them.</summary>
+    public static bool IsLightBar(string text) =>
+        text is "console" or "off" || (text.Length == 6 && text.All(Uri.IsHexDigit));
     public static readonly int[] Scales = [100, 125, 150, 175, 200];
 
     /// <summary>The console's buttons a back button can be, by the names the program takes; the first is "nothing".</summary>
@@ -82,6 +96,14 @@ public sealed class AppSettings
             HapticsVolume = Math.Clamp(HapticsVolume, 0, 100),
             BackLeft = Buttons.Contains(BackLeft) ? BackLeft : "",
             BackRight = Buttons.Contains(BackRight) ? BackRight : "",
+            TriggerEffects = TriggerEffects,
+            LightBar = IsLightBar(LightBar ?? "") ? LightBar!.ToLowerInvariant() : "console",
+            PlayerLights = PlayerLights,
+            Motion = Motion,
+            Touchpad = Touchpad,
+            DeadZone = Math.Clamp(DeadZone, 0, MostDeadZone),
+            FnLeft = FnActions.Contains(FnLeft) ? FnLeft : "none",
+            FnRight = FnActions.Contains(FnRight) ? FnRight : "none",
             WakeFirst = WakeFirst,
             RestAfter = RestAfter,
             ShowStats = ShowStats,
@@ -120,6 +142,14 @@ public sealed class AppSettings
         arguments.AddRange(["--haptics-volume", s.HapticsVolume.ToString()]);
         if (s.BackLeft.Length > 0) arguments.AddRange(["--back-left", s.BackLeft]);
         if (s.BackRight.Length > 0) arguments.AddRange(["--back-right", s.BackRight]);
+        if (!s.TriggerEffects) arguments.AddRange(["--trigger-effects", "off"]);
+        if (s.LightBar != "console") arguments.AddRange(["--light-bar", s.LightBar]);
+        if (!s.PlayerLights) arguments.AddRange(["--player-lights", "off"]);
+        if (!s.Motion) arguments.AddRange(["--motion", "off"]);
+        if (!s.Touchpad) arguments.AddRange(["--touchpad", "off"]);
+        if (s.DeadZone != 0) arguments.AddRange(["--dead-zone", s.DeadZone.ToString()]);
+        if (s.FnLeft != "none") arguments.AddRange(["--fn-left", s.FnLeft]);
+        if (s.FnRight != "none") arguments.AddRange(["--fn-right", s.FnRight]);
         if (s.ShowStats) arguments.Add("--stats");
         if (s.RestAfter) arguments.Add("--rest");
         return arguments;

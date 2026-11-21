@@ -110,6 +110,8 @@ public:
         jobs_wake_.notify_all();
     }
     // Before the window's device goes: decoding ends, and every picture decoded on it is let go.
+    // What the user chose for the controller; before the session starts.
+    void set_controller_settings(const ControllerSettings& settings) { settings_ = settings; }
     // The window's line about when pictures reached the screen (the driver's own times), on its thread
     // before the report is made on the same one.
     void set_screen_times(const std::string& line) { screen_times_ = line; }
@@ -216,7 +218,7 @@ public:
                 ++feedback_.infos;
                 if (info->reset_motion) ++feedback_.motion_resets;
                 // The player lights under the touchpad: the console's number is the one SDL takes (0 = the first player).
-                if (feedback_.infos == 1 || feedback_.player != info->player) {
+                if ((feedback_.infos == 1 || feedback_.player != info->player) && settings_.player_lights) {
                     log::debug("play: the console sets the player lights to player {}", info->player + 1);
                     if (pad_ != nullptr) SDL_SetGamepadPlayerIndex(pad_, info->player);
                 }
@@ -227,15 +229,20 @@ public:
                     feedback_.light = info->light;
                     ++feedback_.lights;
                     log::debug("play: the console sets the light bar to {}, {}, {} (player {})", info->light[0], info->light[1], info->light[2], info->player);
-                    if (pad_ != nullptr && SDL_SetGamepadLED(pad_, info->light[0], info->light[1], info->light[2])) ++feedback_.lights_passed;
+                    // Unless the user chose the light bar themselves.
+                    if (settings_.light_bar == LightBar::console && pad_ != nullptr && SDL_SetGamepadLED(pad_, info->light[0], info->light[1], info->light[2])) {
+                        ++feedback_.lights_passed;
+                    }
                 }
             } else if (item.kind == transport::data_type::kTriggerEffects) {
                 const auto effects = transport::parse_trigger_effects(item.bytes);
                 if (!effects) continue;
                 ++feedback_.trigger_effects;
                 log::debug("play: the console sets the triggers' effects: left type {:#04x}, right type {:#04x}", effects->left_type, effects->right_type);
-                // Only a DualSense has triggers that take them.
-                if (pad_ != nullptr && pad_is_dualsense_) {
+                // Only a DualSense has triggers that take them; and only while the user has them on.
+                if (!settings_.trigger_effects) {
+                    ++triggers_held_back_;
+                } else if (pad_ != nullptr && pad_is_dualsense_) {
                     const auto report = media::dualsense_trigger_effects(effects->left_type, effects->left, effects->right_type, effects->right);
                     if (SDL_SendGamepadEffect(pad_, report.data(), static_cast<int>(report.size()))) {
                         ++feedback_.trigger_effects_passed;
@@ -380,7 +387,10 @@ private:
     bool late_before_ = false;
     std::uint64_t late_on_the_way_ = 0, late_sent_ = 0;
     Spacing handed_spacing_;                         // on the decode thread, until it has ended
-    std::string screen_times_;                       // the driver's own times of the pictures on the screen, when the window closed
+    std::string screen_times_;
+    ControllerSettings settings_;
+    std::int16_t raw_left_x_ = 0, raw_left_y_ = 0, raw_right_x_ = 0, raw_right_y_ = 0;  // the sticks before the dead zone
+    std::uint64_t triggers_held_back_ = 0, fn_presses_ = 0;                       // the driver's own times of the pictures on the screen, when the window closed
     std::optional<Clock::time_point> last_keyframe_ask_;
     std::atomic<bool> keyframe_needed_{false};
 
@@ -984,6 +994,27 @@ void Player::on_event(const SDL_Event& event) {
         else open_menu();
         return;
     }
+    // A DualSense Edge's Fn buttons: what the user chose (nothing unless they did). Before the menu:
+    // the one that opens it closes it too.
+    if (event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && event.gbutton.which == pad_id_ &&
+        (event.gbutton.button == SDL_GAMEPAD_BUTTON_LEFT_PADDLE2 || event.gbutton.button == SDL_GAMEPAD_BUTTON_RIGHT_PADDLE2)) {
+        const FnAction action = event.gbutton.button == SDL_GAMEPAD_BUTTON_LEFT_PADDLE2 ? settings_.fn_left : settings_.fn_right;
+        if (action != FnAction::none) ++fn_presses_;
+        switch (action) {
+        case FnAction::menu:
+            if (menu_.is_open()) menu_act(menu_.press(Press::back));
+            else open_menu();
+            return;
+        case FnAction::stats:
+            stats_shown_.store(!stats_shown_.load());
+            render::wake_window();
+            return;
+        case FnAction::fullscreen:
+            if (SDL_Window* window = SDL_GetWindowFromID(window_id_)) SDL_SetWindowFullscreen(window, (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN) == 0);
+            return;
+        case FnAction::none: break;
+        }
+    }
     if ((event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN || event.type == SDL_EVENT_GAMEPAD_BUTTON_UP) && event.gbutton.which == pad_id_) {
         if (event.gbutton.button == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) chord_l1_ = event.gbutton.down;
         if (event.gbutton.button == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) chord_r1_ = event.gbutton.down;
@@ -1016,18 +1047,22 @@ void Player::on_event(const SDL_Event& event) {
             pad_ = SDL_OpenGamepad(event.gdevice.which);
             if (pad_ != nullptr) {
                 pad_is_dualsense_ = SDL_GetGamepadType(pad_) == SDL_GAMEPAD_TYPE_PS5;
-                // The light bar's color, if the console named one before the controller was there.
-                if (feedback_.light && SDL_SetGamepadLED(pad_, (*feedback_.light)[0], (*feedback_.light)[1], (*feedback_.light)[2])) ++feedback_.lights_passed;
-                // And the player lights, if it named a player.
-                if (feedback_.infos != 0) SDL_SetGamepadPlayerIndex(pad_, feedback_.player);
+                // The light bar: the user's color, off, or the console's if it named one before the controller was there.
+                if (settings_.light_bar == LightBar::fixed) SDL_SetGamepadLED(pad_, settings_.light_color[0], settings_.light_color[1], settings_.light_color[2]);
+                else if (settings_.light_bar == LightBar::off) SDL_SetGamepadLED(pad_, 0, 0, 0);
+                else if (feedback_.light && SDL_SetGamepadLED(pad_, (*feedback_.light)[0], (*feedback_.light)[1], (*feedback_.light)[2])) ++feedback_.lights_passed;
+                // And the player lights, if it named a player; none when the user turned them off.
+                if (!settings_.player_lights) SDL_SetGamepadPlayerIndex(pad_, -1);
+                else if (feedback_.infos != 0) SDL_SetGamepadPlayerIndex(pad_, feedback_.player);
                 pad_id_ = event.gdevice.which;
                 const char* name = SDL_GetGamepadName(pad_);
                 pad_name_ = name != nullptr ? name : "a controller";
-                // Motion, where the controller has it.
-                const bool gyro = SDL_SetGamepadSensorEnabled(pad_, SDL_SENSOR_GYRO, true);
-                const bool accel = SDL_SetGamepadSensorEnabled(pad_, SDL_SENSOR_ACCEL, true);
-                log::info("play: controller: {}{}{}", pad_name_, SDL_GetNumGamepadTouchpads(pad_) > 0 ? ", with a touchpad" : "",
-                          gyro && accel ? ", with motion sensors" : "");
+                // Motion, where the controller has it and the user did not turn it off.
+                const bool gyro = settings_.motion && SDL_SetGamepadSensorEnabled(pad_, SDL_SENSOR_GYRO, true);
+                const bool accel = settings_.motion && SDL_SetGamepadSensorEnabled(pad_, SDL_SENSOR_ACCEL, true);
+                const std::string chosen = describe(settings_);
+                log::info("play: controller: {}{}{}{}", pad_name_, SDL_GetNumGamepadTouchpads(pad_) > 0 ? ", with a touchpad" : "",
+                          gyro && accel ? ", with motion sensors" : "", chosen.empty() ? std::string() : "; chosen: " + chosen);
                 note_battery();
                 if (!battery_text_.empty()) log::info("play: the controller's battery: {}", battery_text_);
             }
@@ -1093,11 +1128,12 @@ void Player::on_event(const SDL_Event& event) {
         const std::int16_t value = event.gaxis.value;
         // A trigger goes from 0 to 32767; the console takes 0 to 255.
         const auto pull = static_cast<std::uint8_t>(std::clamp(static_cast<int>(value), 0, 32767) >> 7);
+        // The sticks through the dead zone the user chose (both axes of a stick together: it is round).
         switch (event.gaxis.axis) {
-        case SDL_GAMEPAD_AXIS_LEFTX: state_.left_x = value; break;
-        case SDL_GAMEPAD_AXIS_LEFTY: state_.left_y = value; break;
-        case SDL_GAMEPAD_AXIS_RIGHTX: state_.right_x = value; break;
-        case SDL_GAMEPAD_AXIS_RIGHTY: state_.right_y = value; break;
+        case SDL_GAMEPAD_AXIS_LEFTX: raw_left_x_ = value; std::tie(state_.left_x, state_.left_y) = apply_dead_zone(raw_left_x_, raw_left_y_, settings_.dead_zone); break;
+        case SDL_GAMEPAD_AXIS_LEFTY: raw_left_y_ = value; std::tie(state_.left_x, state_.left_y) = apply_dead_zone(raw_left_x_, raw_left_y_, settings_.dead_zone); break;
+        case SDL_GAMEPAD_AXIS_RIGHTX: raw_right_x_ = value; std::tie(state_.right_x, state_.right_y) = apply_dead_zone(raw_right_x_, raw_right_y_, settings_.dead_zone); break;
+        case SDL_GAMEPAD_AXIS_RIGHTY: raw_right_y_ = value; std::tie(state_.right_x, state_.right_y) = apply_dead_zone(raw_right_x_, raw_right_y_, settings_.dead_zone); break;
         case SDL_GAMEPAD_AXIS_LEFT_TRIGGER: buttons_.l2 = pull; break;
         case SDL_GAMEPAD_AXIS_RIGHT_TRIGGER: buttons_.r2 = pull; break;
         default: break;
@@ -1108,7 +1144,7 @@ void Player::on_event(const SDL_Event& event) {
     case SDL_EVENT_GAMEPAD_TOUCHPAD_DOWN:
     case SDL_EVENT_GAMEPAD_TOUCHPAD_MOTION:
     case SDL_EVENT_GAMEPAD_TOUCHPAD_UP: {
-        if (event.gtouchpad.which != pad_id_ || event.gtouchpad.finger < 0 || event.gtouchpad.finger > 1) break;
+        if (event.gtouchpad.which != pad_id_ || event.gtouchpad.finger < 0 || event.gtouchpad.finger > 1 || !settings_.touchpad) break;
         const std::lock_guard lock(input_mutex_);
         transport::Touch& touch = buttons_.touches[static_cast<std::size_t>(event.gtouchpad.finger)];
         if (event.type == SDL_EVENT_GAMEPAD_TOUCHPAD_DOWN) {
@@ -1238,6 +1274,10 @@ std::vector<std::string> Player::report() {
     }
     lines.push_back(pad_name_.empty() ? std::string("Controller: none was connected (the keyboard's arrow keys, Enter and Backspace stood in).")
                                       : std::format("Controller: {}{}{}.", pad_name_, battery_text_.empty() ? "" : "; battery: ", battery_text_));
+    if (const std::string chosen = describe(settings_); !chosen.empty()) {
+        lines.push_back(std::format("Controller settings: {}; trigger effects held back by them {} times, Fn buttons pressed {} times.", chosen,
+                                    triggers_held_back_, fn_presses_));
+    }
     if (back_left_ || back_right_ || back_presses_ != 0) {
         lines.push_back(std::format("Back buttons: the left one is {}, the right one is {}; they were pressed {} times.",
                                     back_left_ ? transport::button_name(*back_left_) : std::string_view("nothing"),
@@ -1293,6 +1333,7 @@ int run_player(SessionPlan plan, const PlayOptions& options) {
     {
         Player player(static_cast<double>(plan.video.max_fps), options.pacing, options.cushion_ms, options.haptics_volume, options.back_left, options.back_right,
                       options.decoder == PlayOptions::Decoder::automatic);
+        player.set_controller_settings(options.controller_settings);
         std::atomic<bool> stop{false};
         std::atomic<bool> done{false};
         plan.on_media = [&](transport::MediaOutput& media, const std::optional<proto::StreamInfo>& info) { player.on_media(media, info); };

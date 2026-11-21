@@ -2,6 +2,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Media;
 using Avalonia.Styling;
+using Avalonia.VisualTree;
 using PSVulkanPlay.Core;
 using PSVulkanPlay.ViewModels;
 using PSVulkanPlay.Views;
@@ -276,6 +277,13 @@ public class WindowTests : IDisposable
         model.Settings.Cushion = 20;
         Ui.Until(() => Ui.Shows(window, "20 ms of added delay"), "the cushion says what it costs");
         Ui.Capture(window, "settings-dark");
+        // The controller's card, its rows from the Fn buttons to the dead zone in view.
+        model.Settings.DeadZone = 12;
+        Ui.Until(() => Ui.Shows(window, "12% of a stick's throw counts as rest"), "the dead zone says what it does");
+        window.GetVisualDescendants().OfType<TextBlock>().First(block => block.Text == "Stick dead zone").BringIntoView();
+        Ui.Settle();
+        Ui.Capture(window, "settings-controller-dark");
+        model.Settings.DeadZone = 0;
 
         // The looks are at the end of the page: each is a small picture of itself, and one press puts it on.
         var cards = window.FindControl<ItemsControl>("ThemeCards")!;

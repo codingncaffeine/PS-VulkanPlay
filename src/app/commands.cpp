@@ -1420,7 +1420,7 @@ PlayRunner play_runner = nullptr;
 
 // The stream in a window, with its sound and a controller: what the program is for.
 int command_play(std::span<const std::string_view> args) {
-    const Parsed parsed = parse(args, {"--host", "--seconds", "--passcode", "--resolution", "--fps", "--bitrate", "--codec", "--tap", "--frames", "--controller", "--pacing", "--cushion", "--haptics-volume", "--back-left", "--back-right", "--loss-ceiling", "--ack-copies", "--decoder", "--pretend", "--pretend-taps", "--reconnect", "--hdr-peak", "--scaler", "--deband"},
+    const Parsed parsed = parse(args, {"--host", "--seconds", "--passcode", "--resolution", "--fps", "--bitrate", "--codec", "--tap", "--frames", "--controller", "--pacing", "--cushion", "--haptics-volume", "--back-left", "--back-right", "--loss-ceiling", "--ack-copies", "--decoder", "--pretend", "--pretend-taps", "--reconnect", "--hdr-peak", "--scaler", "--deband", "--trigger-effects", "--light-bar", "--player-lights", "--motion", "--touchpad", "--dead-zone", "--fn-left", "--fn-right"},
                                 {"--rest", "--wake", "--stats"}, 1);
     if (!parsed.error.empty()) return usage("play: {}", parsed.error);
     SessionPlan plan;
@@ -1494,6 +1494,32 @@ int command_play(std::span<const std::string_view> args) {
     if (const auto text = parsed.option("--deband")) {
         if (*text != "on" && *text != "off") return usage("play: --deband takes on or off");
         options.deband = *text == "on";
+    }
+    ControllerSettings& pad = options.controller_settings;
+    for (const auto& [name, field] : {std::pair{"--trigger-effects", &pad.trigger_effects}, std::pair{"--player-lights", &pad.player_lights},
+                                      std::pair{"--motion", &pad.motion}, std::pair{"--touchpad", &pad.touchpad}}) {
+        if (const auto text = parsed.option(name)) {
+            if (*text != "on" && *text != "off") return usage("play: {} takes on or off", name);
+            *field = *text == "on";
+        }
+    }
+    if (const auto text = parsed.option("--light-bar")) {
+        const auto light = parse_light_bar(*text);
+        if (!light) return usage("play: --light-bar takes console, off or a color as six hexadecimal digits (ff8000)");
+        pad.light_bar = light->first;
+        pad.light_color = light->second;
+    }
+    if (const auto text = parsed.option("--dead-zone")) {
+        const auto percent = parse_number(*text, 0, ControllerSettings::kMostDeadZone);
+        if (!percent && *text != "0") return usage("play: --dead-zone takes a percent of a stick's throw from 0 to {}", ControllerSettings::kMostDeadZone);
+        pad.dead_zone = percent ? static_cast<int>(*percent) : 0;
+    }
+    for (const auto& [name, field] : {std::pair{"--fn-left", &pad.fn_left}, std::pair{"--fn-right", &pad.fn_right}}) {
+        if (const auto text = parsed.option(name)) {
+            const auto action = parse_fn_action(*text);
+            if (!action) return usage("play: {} takes none, menu, stats or fullscreen", name);
+            *field = *action;
+        }
     }
     // A PS4 streams H.264 only: for one, the codec nobody chose is that.
     if (!parsed.option("--codec")) {
@@ -1822,6 +1848,8 @@ std::string commands_help() {
         "          [--pacing on|off] [--cushion 0-50] [--haptics-volume 0-100] [--back-left BUTTON]\n"
         "          [--back-right BUTTON] [--loss-ceiling PERCENT] [--ack-copies 0-2] [--decoder auto|software]\n"
         "          [--reconnect SECONDS] [--hdr-peak 400-10000] [--scaler NAME] [--deband on|off]\n"
+        "          [--trigger-effects on|off] [--light-bar console|off|RRGGBB] [--player-lights on|off]\n"
+        "          [--motion on|off] [--touchpad on|off] [--dead-zone 0-30] [--fn-left ACTION] [--fn-right ACTION]\n"
         "          [--stats] [--wake] [--rest]\n"
         "      play: the console's picture in a window, its sound, and a controller that is plugged in\n"
         "      or paired; closing the window ends the session (--rest then sends the console to rest mode).\n"
@@ -1851,7 +1879,14 @@ std::string commands_help() {
         "      what is brighter fitted between that and white (ITU-R BT.2390, BT.2408); --scaler says how\n"
         "      the picture is brought to the window's size: bilinear (soft, the least work), catmull-rom,\n"
         "      lanczos, ewa-lanczos (unless said) or ewa-lanczos-sharp; --deband off leaves the bands a\n"
-        "      low bitrate cuts smooth areas such as skies into (smoothed out unless said)\n"
+        "      low bitrate cuts smooth areas such as skies into (smoothed out unless said); on a software\n"
+        "      Vulkan device (no graphics card) bilinear and no debanding unless said;\n"
+        "      for the controller (each as the console wants it unless said): --trigger-effects off keeps\n"
+        "      the console's adaptive trigger effects off a DualSense, --light-bar off or a color (ff8000)\n"
+        "      instead of the console's, --player-lights off, --motion off and --touchpad off do not tell\n"
+        "      the console the motion or the touches, --dead-zone is the percent of a stick's throw that\n"
+        "      counts as rest (0 unless said), --fn-left and --fn-right say what a DualSense Edge's Fn\n"
+        "      buttons do: none (unless said), menu (the menu over the stream), stats, fullscreen\n"
         "  {0} decode FOLDER [--lose FRAMES] [--decoder software|gpu]\n"
         "      decode the picture and the sound that 'session --dump FOLDER' kept, and say what came out;\n"
         "      --lose 100,250-255 leaves those frames out, as if they had not arrived, and compares the\n"

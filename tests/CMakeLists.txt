@@ -24,6 +24,7 @@ add_executable(psvp_tests
     unit/test_overlay.cpp
     unit/test_controller_list.cpp
     unit/test_controller_presses.cpp
+    unit/test_controller_settings.cpp
     unit/test_paths.cpp
     unit/test_probe.cpp
     unit/test_regist.cpp

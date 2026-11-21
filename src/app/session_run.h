@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "app/controller_settings.h"
 #include "media/scaler.h"
 #include "proto/console.h"
 #include "proto/input.h"
@@ -108,8 +109,11 @@ struct PlayOptions {
     int hdr_peak_nits = 1000;
     // How the picture is brought to the window's size (media/scaler.h), and whether banding is
     // smoothed out of it first.
-    media::Scaler scaler = media::kDefaultScaler;
-    bool deband = true;
+    // Nothing: as render::WindowOptions decides by the device.
+    std::optional<media::Scaler> scaler;
+    std::optional<bool> deband;
+    // What the user chose for the controller (trigger effects, lights, motion, touchpad, dead zone, Fn buttons).
+    ControllerSettings controller_settings;
     // With --wake: while the connection is made again, a console that answers as resting is woken,
     // waiting at most the time given; `on_waking` is called once it is known to rest. Returns 0 when
     // it is on (or did not answer at all).

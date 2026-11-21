@@ -143,6 +143,7 @@ add_library(psvp_core STATIC
     src/app/paths.cpp
     src/app/controller_list.cpp
     src/app/controller_presses.cpp
+    src/app/controller_settings.cpp
     src/app/stream_menu.cpp
     src/app/window_place.cpp
     src/overlay/text.cpp)

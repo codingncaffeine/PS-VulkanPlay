@@ -151,7 +151,10 @@ between "$through" 15 500 && ok "with it a picture was $through ms behind its fr
 check "the back buttons are what was asked for" has "$out" "Back buttons: the left one is cross, the right one is r3; they were pressed 0 times."
 check "the controller information says player 2, and strengths 1 and 2" has "$out" "(player 2, haptics strength 1, trigger strength 2, 1 asked to take the controller's position as its rest)"
 check "no error was logged" lacks "$work/feedback.err" " ERROR "
-check "unless said otherwise the picture is scaled by EWA Lanczos and debanded" has "$work/feedback.err" "drawn at 1248x720 by ewa-lanczos, debanded"
+# On the wall's software Vulkan nothing chosen is the tent, not debanded (a graphics card gets EWA Lanczos and debanding).
+check "unless said otherwise, on a software device, the picture is scaled by the tent and not debanded" \
+    sh -c "grep -aqE 'first picture shown, .*drawn at 1248x720 by bilinear$' '$work/feedback.err'"
+check "and the log says why" has "$work/feedback.err" "render: a software device: the picture is scaled by the tent"
 check "a scaler is one of the five" sh -c "! '$app' play 'Living Room' --scaler nearest > /dev/null 2>&1"
 check "debanding is on or off" sh -c "! '$app' play 'Living Room' --deband maybe > /dev/null 2>&1"
 check "what does not go with the option is refused" sh -c "! '$app' play 'Living Room' --controller wheel > /dev/null 2>&1"
@@ -218,6 +221,48 @@ menu_run menu-rest 4
 check "the console was asked to go to rest mode" has "$work/menu-rest.log" "rest mode requested"
 check "and the report says so" has "$work/menu-rest.out" "chosen in it last: quit and put the console to rest."
 check "--pretend-taps needs --pretend" sh -c "! '$app' play 'Living Room' --pretend-taps /dev/null > /dev/null 2>&1"
+
+echo "the controller as the user chose it (a pretended DualSense Edge; the mock sends a light, trigger effects and a player)"
+pad_run() {   # pad_run NAME [PLAY_OPTIONS...]: a touch, a turn, the right Fn button, the left stick a little off rest
+    local name="$1" taps="$work/$1.taps"; shift
+    : > "$taps"
+    start_mock "$name" --kind ps5 --clip 416x240 --frame-ms 16 --media-ms 10 --feedback-ms 800
+    "$app" play "Living Room" --seconds 5 --pretend 054c:0df2 --pretend-taps "$taps" "$@" > "$work/$name.out" 2> "$work/$name.err" &
+    pid=$!
+    for _ in $(seq 80); do grep -aq "first picture shown" "$work/$name.err" 2>/dev/null && break; kill -0 $pid 2>/dev/null || break; sleep 0.1; done
+    sleep 1.2   # past the mock's feedback
+    printf 'touch 0.25 0.5\n' >> "$taps"; sleep 0.2
+    printf 'lift\n' >> "$taps"; sleep 0.2
+    printf 'gyro 0.5 0 0\n' >> "$taps"
+    printf 'tap right-paddle2\n' >> "$taps"; sleep 0.5
+    wait $pid; rc=$?
+    sleep 0.3; stop_mock
+    # What the pretended controller was asked, in the program's log (its DEBUG lines).
+    cp "$own_log" "$work/$name.play.log"
+}
+pad_run pad-defaults --fn-right menu
+[ "$rc" -eq 0 ] && ok "defaults: exit 0" || fail "defaults: exit $rc: $(tail -3 "$work/pad-defaults.out")"
+check "the console's light bar color reached the controller" has "$work/pad-defaults.play.log" "pretend: light bar set to 0, 64, 255"
+check "its player lights too (player 3: index 2)" has "$work/pad-defaults.play.log" "pretend: player lights set to player index 2"
+check "its trigger effects too (the effect report)" has "$work/pad-defaults.play.log" "pretend: an effect report of 47 bytes"
+check "the motion sensors were turned on" has "$work/pad-defaults.play.log" "pretend: motion sensors on"
+check "the touch reached the console" grep -aqE "stream input [0-9]+: touch [0-9]+ down at" "$work/pad-defaults.log"
+check "the right Fn button opened the menu" has "$work/pad-defaults.out" "The menu over the stream was opened 1 times"
+check "and the report names that setting" has "$work/pad-defaults.out" "Controller settings: right Fn: menu; trigger effects held back by them 0 times, Fn buttons pressed 1 times."
+pad_run pad-chosen --trigger-effects off --light-bar ff8000 --player-lights off --motion off --touchpad off --dead-zone 10
+[ "$rc" -eq 0 ] && ok "chosen: exit 0" || fail "chosen: exit $rc: $(tail -3 "$work/pad-chosen.out")"
+check "the light bar is the user's color" has "$work/pad-chosen.play.log" "pretend: light bar set to 255, 128, 0"
+check "and never the console's" lacks "$work/pad-chosen.play.log" "pretend: light bar set to 0, 64, 255"
+check "the player lights are off (index -1), never the console's" sh -c "grep -aq 'pretend: player lights set to player index -1' '$work/pad-chosen.play.log' && ! grep -aq 'player index 2' '$work/pad-chosen.play.log'"
+check "no trigger effect reached the controller" lacks "$work/pad-chosen.play.log" "pretend: an effect report"
+check "the motion sensors stayed off" lacks "$work/pad-chosen.play.log" "pretend: motion sensors on"
+check "no touch reached the console" sh -c "! grep -aqE 'stream input [0-9]+: touch' '$work/pad-chosen.log'"
+check "the right Fn button did nothing (none chosen)" lacks "$work/pad-chosen.out" "The menu over the stream was opened"
+check "the report names every setting and the effects held back" \
+    has "$work/pad-chosen.out" "Controller settings: trigger effects off, light bar ff8000, player lights off, motion off, touchpad off, dead zone 10%; trigger effects held back by them 1 times, Fn buttons pressed 0 times."
+check "a light bar is console, off or six hexadecimal digits" sh -c "! '$app' play 'Living Room' --light-bar blue > /dev/null 2>&1"
+check "a dead zone is 30% at most" sh -c "! '$app' play 'Living Room' --dead-zone 31 > /dev/null 2>&1"
+check "an Fn button does none, menu, stats or fullscreen" sh -c "! '$app' play 'Living Room' --fn-left screenshot > /dev/null 2>&1"
 
 echo "a connection that drops while playing is made again: the mock goes silent 2 s into the first stream"
 start_mock reconnect --kind ps5 --clip 416x240 --frame-ms 16 --media-ms 10 --drop-after-ms 2000

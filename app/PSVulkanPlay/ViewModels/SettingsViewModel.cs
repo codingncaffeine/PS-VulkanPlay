@@ -77,6 +77,11 @@ public sealed class SettingsViewModel : Observable
     public IReadOnlyList<Choice> Scalers { get; } =
         [new("EWA Lanczos (the default)", "ewa-lanczos"), new("EWA Lanczos, sharper", "ewa-lanczos-sharp"), new("Lanczos", "lanczos"),
          new("Catmull-Rom", "catmull-rom"), new("Bilinear (soft, the least work)", "bilinear")];
+    public IReadOnlyList<Choice> LightBars { get; } =
+        [new("As the console sets it", "console"), new("Off", "off"), new("Orange", "ff6a00"), new("Blue", "0050ff"), new("Purple", "8a2be2"),
+         new("Green", "00c853"), new("Red", "ff1a1a"), new("White", "ffffff")];
+    public IReadOnlyList<Choice> FnActions { get; } =
+        [new("Nothing", "none"), new("The menu over the stream", "menu"), new("Statistics", "stats"), new("Full screen", "fullscreen")];
     public IReadOnlyList<Choice> Controllers { get; } =
         [new("Whatever is connected", "auto"), new("A DualSense (haptics, trigger effects)", "dualsense"), new("A DualShock 4", "dualshock4")];
     public IReadOnlyList<Choice> Scales { get; } = AppSettings.Scales.Select(percent => new Choice($"{percent}%", percent.ToString())).ToList();
@@ -165,6 +170,26 @@ public sealed class SettingsViewModel : Observable
     public bool Deband { get => _settings.Deband; set => Keep(() => _settings.Deband = value, nameof(Deband)); }
     public Choice Controller { get => Pick(Controllers, _settings.Controller); set { if (value is not null) Keep(() => _settings.Controller = value.Value, nameof(Controller)); } }
     public Choice BackLeft { get => Pick(Buttons, _settings.BackLeft); set { if (value is not null) Keep(() => _settings.BackLeft = value.Value, nameof(BackLeft)); } }
+    public bool TriggerEffects { get => _settings.TriggerEffects; set => Keep(() => _settings.TriggerEffects = value, nameof(TriggerEffects)); }
+    public Choice LightBar { get => Pick(LightBars, _settings.LightBar); set { if (value is not null) Keep(() => _settings.LightBar = value.Value, nameof(LightBar)); } }
+    public bool PlayerLights { get => _settings.PlayerLights; set => Keep(() => _settings.PlayerLights = value, nameof(PlayerLights)); }
+    public bool Motion { get => _settings.Motion; set => Keep(() => _settings.Motion = value, nameof(Motion)); }
+    public bool Touchpad { get => _settings.Touchpad; set => Keep(() => _settings.Touchpad = value, nameof(Touchpad)); }
+    public Choice FnLeft { get => Pick(FnActions, _settings.FnLeft); set { if (value is not null) Keep(() => _settings.FnLeft = value.Value, nameof(FnLeft)); } }
+    public Choice FnRight { get => Pick(FnActions, _settings.FnRight); set { if (value is not null) Keep(() => _settings.FnRight = value.Value, nameof(FnRight)); } }
+
+    public double DeadZone
+    {
+        get => _settings.DeadZone;
+        set
+        {
+            Keep(() => _settings.DeadZone = (int)Math.Round(value), nameof(DeadZone));
+            Changed(nameof(DeadZoneText));
+        }
+    }
+
+    public string DeadZoneText => _settings.DeadZone == 0 ? "None: every movement counts (the console has its own)" : $"{_settings.DeadZone}% of a stick's throw counts as rest";
+
     public Choice BackRight { get => Pick(Buttons, _settings.BackRight); set { if (value is not null) Keep(() => _settings.BackRight = value.Value, nameof(BackRight)); } }
 
     /// <summary>The size of everything in the window, text and controls alike, as a factor of the designed size.</summary>
