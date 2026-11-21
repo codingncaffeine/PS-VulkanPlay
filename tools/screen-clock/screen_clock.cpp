@@ -6,8 +6,10 @@
 //     SCREEN is the screen of a virtual X server kept in a file (Xvfb -fbdir DIR: DIR/Xvfb_screen0).
 //     Finds the generated clip on it by its color patches, then reads the frame number the clip
 //     shows and its mark (src/media/test_clip.h) every quarter of a millisecond, for N seconds or
-//     until it is stopped. Writes one line per change, "seen COUNTER NS MARK", NS on the steady
-//     clock. --ready names a file made once the clip was found.
+//     until it is stopped. Writes one line per change, "seen COUNTER NS MARK DAMAGED", NS on the
+//     steady clock. DAMAGED is 1 when the picture is not the frame its number says: the clip has one
+//     white block that moves on by a place with every frame, and a picture built on a frame that
+//     never arrived has it twice, or in the wrong place. --ready names a file made once the clip was found.
 //
 //   psvp_screen_clock score FILE...
 //     Reads the stand-in's --timing-log, the watcher's lines and the client's log (any order) and
@@ -15,7 +17,9 @@
 //     cannot be trusted (said in a "PROBLEM" line), 2 when nothing could be scored.
 //
 // A reading counts only when the clip's first row and its second, which shows the same bits the
-// other way round, agree: a screen caught while it is being written is not read.
+// other way round, agree, and a change only when the next reading, a quarter of a millisecond later,
+// finds the same: a screen caught while it is being written is not read. A change is stamped with the
+// time of its first reading.
 #include <algorithm>
 #include <cerrno>
 #include <charconv>
@@ -252,6 +256,18 @@ int watch(int argc, char** argv) {
     for (unsigned column = 0; column < psvp::media::kClipCounterBits; ++column) bit_x.push_back(screen_x(column * 16.0 + 8.0));
     const unsigned row0_y = screen_y(8.0), row1_y = screen_y(24.0);
     const unsigned mark_x = screen_x(((columns - 1) * 16.0 + clip_width) / 2.0), mark_y = screen_y(psvp::media::kClipMarkRow * 16.0 + 8.0);
+    // The places of the moving white block (rows 3 on), as test_clip.cpp counts them, each read in its middle.
+    const unsigned rows = (clip_height + psvp::media::kClipBlock - 1) / psvp::media::kClipBlock;
+    std::vector<std::pair<unsigned, unsigned>> places;
+    for (unsigned row = 3; row < rows; ++row) {
+        for (unsigned column = 0; column < columns; ++column) {
+            places.emplace_back(screen_x(column * 16.0 + 8.0), screen_y(row * 16.0 + 8.0));
+        }
+    }
+    // A place whose middle the clip cuts off is never read: it counts as gray.
+    const auto inside = [&](std::size_t i) {
+        return (i % columns) * 16 + 8 < clip_width && (3 + i / columns) * 16 + 8 < clip_height;
+    };
     if (mark_x >= screen.width() || mark_y >= screen.height() || bit_x.back() >= screen.width()) {
         std::fprintf(stderr, "screen clock: the clip found does not fit the screen\n");
         return 2;
@@ -265,7 +281,14 @@ int watch(int argc, char** argv) {
     };
     std::vector<psvp::lab::Seen> seen;
     seen.reserve(1 << 16);
-    std::optional<std::pair<std::uint16_t, bool>> last;
+    struct Key {
+        std::uint16_t counter = 0;
+        bool mark = false;
+        std::size_t white = 0, white_at = 0;
+        bool operator==(const Key&) const = default;
+    };
+    std::optional<Key> last;
+    std::optional<std::pair<Key, std::int64_t>> pending;  // a change read once, and when
     std::uint64_t readings = 0, torn = 0;
     timespec next{};
     clock_gettime(CLOCK_MONOTONIC, &next);
@@ -295,13 +318,31 @@ int watch(int argc, char** argv) {
         }
         // White against the clip's gray (64: about 56 in RGB): halfway is about 155.
         const bool mark = light(mark_x, mark_y) >= 3 * 155;
-        if (last && last->first == counter && last->second == mark) continue;
-        last = std::pair(counter, mark);
-        seen.push_back({counter, now, mark});
+        Key key{counter, mark};
+        if (!places.empty()) {
+            for (std::size_t i = 0; i < places.size(); ++i) {
+                if (!inside(i) || light(places[i].first, places[i].second) < 3 * 155) continue;
+                if (key.white++ == 0) key.white_at = i;
+            }
+        }
+        if (last && *last == key) {
+            pending.reset();
+            continue;
+        }
+        if (!pending || !(pending->first == key)) {
+            pending = std::pair(key, now);
+            continue;
+        }
+        const std::int64_t first_read = pending->second;
+        pending.reset();
+        last = key;
+        const std::size_t expected = places.empty() ? 0 : static_cast<std::size_t>(counter) % places.size();
+        const bool damaged = !places.empty() && (inside(expected) ? key.white != 1 || key.white_at != expected : key.white != 0);
+        seen.push_back({counter, first_read, mark, damaged});
     }
 
     std::ofstream out(out_path, std::ios::trunc);
-    for (const auto& one : seen) out << "seen " << one.counter << ' ' << one.ns << ' ' << (one.mark ? 1 : 0) << '\n';
+    for (const auto& one : seen) out << "seen " << one.counter << ' ' << one.ns << ' ' << (one.mark ? 1 : 0) << ' ' << (one.damaged ? 1 : 0) << '\n';
     out.flush();
     std::fprintf(stderr, "screen clock: %zu changes in %llu readings (%llu not whole)\n", seen.size(), static_cast<unsigned long long>(readings),
                  static_cast<unsigned long long>(torn));

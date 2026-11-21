@@ -29,7 +29,7 @@ std::string session() {
         text += std::format("frame {} {} {}\n", n, sent_at(n), mark ? 1 : 0);
         if (n == 150) continue;
         const std::int64_t shown = sent_at(n) + (n == 200 ? 40 : n == 201 ? 24 : 12) * kMs;
-        text += std::format("seen {} {} {}\n", n, shown, mark ? 1 : 0);
+        text += std::format("seen {} {} {} 0\n", n, shown, mark ? 1 : 0);
     }
     return text;
 }
@@ -68,7 +68,7 @@ PSVP_TEST(screen_clock_takes_a_press_apart) {
 PSVP_TEST(screen_clock_says_when_a_score_cannot_be_trusted) {
     Timing timing;
     // A press the client made that the console never read, and a frame shown that was never sent.
-    read_lines(session() + "seen 999 99999999999 1\n" + std::format("x DEBUG pretend: pressed east at {} ns\n", sent_at(10)) + "frame what\n", timing);
+    read_lines(session() + "seen 999 99999999999 1 0\n" + std::format("x DEBUG pretend: pressed east at {} ns\n", sent_at(10)) + "frame what\n", timing);
     const Score s = score(timing);
     CHECK(timing.unread == 1);
     CHECK(s.problems.size() == 3);
@@ -95,4 +95,20 @@ PSVP_TEST(clip_mark_is_the_last_block_of_the_patch_row) {
             CHECK(clip_block(5, column, row, 26, 15, true) == clip_block(5, column, row, 26, 15, false));
         }
     }
+}
+
+PSVP_TEST(screen_clock_counts_damaged_pictures_and_their_time) {
+    Timing timing;
+    std::string text = session();
+    // After the first second: frame 151 damaged for 10 ms, then again for 6 ms; frame 152 too, right behind.
+    text += std::format("seen 151 {} 1 1\n", sent_at(151) + 13 * kMs);
+    text += std::format("seen 151 {} 1 0\n", sent_at(151) + 23 * kMs);
+    read_lines(text, timing);
+    const Score s = score(timing);
+    CHECK(s.damaged == 1);
+    CHECK(near(s.damaged_ms, 10.0));
+    CHECK(describe(s).find("Lab: Damaged pictures (not the frame their number says) came on the screen 1 times, up for 10.0 ms in all.") != std::string::npos);
+    Timing clean;
+    read_lines(session(), clean);
+    CHECK(score(clean).damaged == 0);
 }

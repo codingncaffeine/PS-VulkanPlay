@@ -46,14 +46,16 @@ void read_lines(std::string_view text, Timing& into) {
         const auto w = words(line);
         if (w.empty()) continue;
         if (w[0] == "frame" || w[0] == "seen") {
-            unsigned index = 0, mark = 0;
+            unsigned index = 0, mark = 0, damaged = 0;
             std::int64_t ns = 0;
-            if (w.size() != 4 || !number(w[1], index) || index > 0xffff || !number(w[2], ns) || !number(w[3], mark) || mark > 1) {
+            const std::size_t size = w[0] == "frame" ? 4 : 5;
+            if (w.size() != size || !number(w[1], index) || index > 0xffff || !number(w[2], ns) || !number(w[3], mark) || mark > 1 ||
+                (size == 5 && (!number(w[4], damaged) || damaged > 1))) {
                 ++into.unread;
                 continue;
             }
             if (w[0] == "frame") into.sent.push_back(Sent{static_cast<std::uint16_t>(index), ns, mark == 1});
-            else into.seen.push_back(Seen{static_cast<std::uint16_t>(index), ns, mark == 1});
+            else into.seen.push_back(Seen{static_cast<std::uint16_t>(index), ns, mark == 1, damaged == 1});
         } else if (w[0] == "press") {
             std::int64_t ns = 0;
             if (w.size() != 3 || !number(w[2], ns)) {
@@ -115,7 +117,8 @@ Score score(const Timing& timing) {
     std::vector<std::int64_t> changes;                // when the screen went to another frame
     std::optional<std::uint16_t> showing;
     for (const Seen& seen : timing.seen) {
-        if (showing == seen.counter) continue;
+        // A damaged picture's number is whatever bits it was left with: it is not that frame shown.
+        if (seen.damaged || showing == seen.counter) continue;
         showing = seen.counter;
         changes.push_back(seen.ns);
         const auto places = by_index.find(seen.counter);
@@ -136,6 +139,13 @@ Score score(const Timing& timing) {
     if (first_seen.empty()) return out;
 
     const std::int64_t settled = timing.seen.front().ns + kSettleNs;
+    // Damaged pictures: each time one came on the screen, and for how long until the next change.
+    for (std::size_t i = 0; i < timing.seen.size(); ++i) {
+        const Seen& seen = timing.seen[i];
+        if (!seen.damaged || seen.ns < settled) continue;
+        if (i == 0 || !timing.seen[i - 1].damaged) ++out.damaged;
+        if (i + 1 < timing.seen.size()) out.damaged_ms += ms(timing.seen[i + 1].ns - seen.ns);
+    }
     const std::size_t first = first_seen.begin()->first, last = first_seen.rbegin()->first;
     std::vector<double> latency;
     for (std::size_t p = first; p <= last; ++p) {
@@ -215,6 +225,8 @@ std::string describe(const Score& score) {
         line(std::format("Between pictures on the screen: {:.1f}% 13-21 ms apart; {} times over 30 ms.",
                          100.0 * static_cast<double>(score.even) / static_cast<double>(score.gaps), score.stood));
     }
+    line(std::format("Damaged pictures (not the frame their number says) came on the screen {} times, up for {:.1f} ms in all.", score.damaged,
+                     score.damaged_ms));
     if (score.console_wait.count != 0) {
         std::string body = std::format("{} presses", score.console_wait.count);
         if (score.press_to_picture.count != 0) {

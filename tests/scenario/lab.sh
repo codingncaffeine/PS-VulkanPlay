@@ -49,11 +49,15 @@ check "registered with the mock" has "$work/register.out" "Registered with Livin
 stop_mock
 
 presses=8
-lab_run() {   # lab_run NAME PLAY_OPTIONS...: eight seconds of the clip, eight presses of Cross on a pretended pad
+lab_run() {   # lab_run NAME [PLAY_OPTIONS...] [-- MOCK_OPTIONS...]: eight seconds of the clip, eight presses of Cross on a pretended pad
     local name="$1"; shift
-    local taps="$work/$name.taps"
+    local taps="$work/$name.taps" play_options=() mock_options=()
+    while [ $# -gt 0 ] && [ "$1" != "--" ]; do play_options+=("$1"); shift; done
+    [ $# -gt 0 ] && shift
+    mock_options=("$@")
+    set -- "${play_options[@]}"
     : > "$taps"; rm -f "$work/$name.found"
-    start_mock "$name-mock" --kind ps5 --clip 416x240 --fps 60 --media-ms 10 --timing-log "$work/$name.timing" || return
+    start_mock "$name-mock" --kind ps5 --clip 416x240 --fps 60 --media-ms 10 --timing-log "$work/$name.timing" "${mock_options[@]}" || return
     "$clock" watch "$PSVP_TEST_FB" --clip 416x240 --seconds 11 --out "$work/$name.seen" --ready "$work/$name.found" 2> "$work/$name.clock" &
     local clock_pid=$!
     "$app" play "Living Room" --seconds 8 --pretend 045e:028e --pretend-taps "$taps" "$@" > "$work/$name.out" 2> "$work/$name.err" &
@@ -92,6 +96,18 @@ lab_run cushion --cushion 20
 cushioned=$(number "$work/cushion.score" 'From sent to on the screen: median ([0-9.]+) ms')
 added=$(awk -v a="$cushioned" -v b="$plain" 'BEGIN { if (a == "" || b == "") print ""; else printf "%.1f", a - b }')
 between "$added" 14 26 && ok "the cushion added $added ms (median $plain -> $cushioned ms)" || fail "the cushion added '$added' ms (median '$plain' -> '$cushioned')"
+
+check "no damaged picture came on the screen without a loss" grep -aq "came on the screen 0 times" "$work/plain.score"
+
+echo "lost frames: the mock loses every 90th frame whole; the reader must see what that does to the picture"
+lab_run loss -- --lose-every 90 --lose-units 999
+s="$work/loss.score"
+never=$(number "$s" 'reached the screen, ([0-9]+) never did')
+damaged=$(number "$s" 'came on the screen ([0-9]+) times')
+between "$never" 4 20 && ok "$never frames never showed as themselves (about one in 90 lost, and what was built on it)" || fail "never shown: '$never'"
+# The control of the damage check: with losses it must see damage (an H.264 frame built on a lost one is shown
+# until the console's repair: PLAN §13, 2026-11-21), without them it saw none (above).
+[ -n "$damaged" ] && [ "$damaged" -ge 1 ] && ok "the reader saw $damaged damaged pictures behind the losses" || fail "damaged pictures behind losses: '$damaged'"
 
 [ $failed -eq 0 ] && echo "LAB PASSED" || echo "LAB FAILED"
 exit $failed

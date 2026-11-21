@@ -18,11 +18,12 @@ struct Sent {
     std::int64_t ns = 0;
     bool mark = false;
 };
-// What the screen showed from a moment on ("seen COUNTER NS MARK"): a line per change.
+// What the screen showed from a moment on ("seen COUNTER NS MARK DAMAGED"): a line per change.
 struct Seen {
     std::uint16_t counter = 0;
     std::int64_t ns = 0;
     bool mark = false;
+    bool damaged = false;  // not the frame its number says: built on a frame that never arrived
 };
 
 struct Timing {
@@ -56,6 +57,8 @@ struct Score {
     // frame, that frame to the screen. Presses are paired in their order: a check presses seldom.
     Spread press_to_picture, press_to_console, console_wait, frame_to_screen;
     std::size_t presses_unanswered = 0;  // presses the screen never showed an answer to
+    std::size_t damaged = 0;             // times a damaged picture came on the screen (after the first second)
+    double damaged_ms = 0;               // and how long such pictures were up in all
     std::vector<std::string> problems;   // what makes the score untrustworthy, if anything
 };
 [[nodiscard]] Score score(const Timing& timing);
