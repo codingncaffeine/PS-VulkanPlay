@@ -50,6 +50,9 @@ std::string help_text() {
         "{} {}\n"
         "\n"
         "Usage: {} [options]\n"
+        "       {} --play CONSOLE         a session with the app's settings, as its Play button starts one\n"
+        "       {} ps-vulkanplay://play/CONSOLE   the same, from a link\n"
+        "       {} COMMAND ...            one of the commands below\n"
         "\n"
         "  --version      print the version and exit\n"
         "  --help, -h     print this help and exit\n"
@@ -58,7 +61,7 @@ std::string help_text() {
         "  --test-clip    show a generated clip instead of a console's picture: moving blocks,\n"
         "                 color patches (a check that pictures are decoded and drawn right)\n"
         "  --test-clip-frame N   show only frame N of that clip, standing still\n",
-        PSVP_NAME, PSVP_VERSION, PSVP_BINARY);
+        PSVP_NAME, PSVP_VERSION, PSVP_BINARY, PSVP_BINARY, PSVP_BINARY, PSVP_BINARY);
 }
 
 }  // namespace psvp::app

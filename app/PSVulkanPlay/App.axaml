@@ -9,7 +9,7 @@
             <!-- The theme's own controls (sliders, switches, check boxes, focus) in the app's orange. -->
             <FluentTheme.Palettes>
                 <ColorPaletteResources x:Key="Dark" Accent="#FFF0702D" />
-                <ColorPaletteResources x:Key="Light" Accent="#FFD95B1A" />
+                <ColorPaletteResources x:Key="Light" Accent="#FFC4501A" />
             </FluentTheme.Palettes>
         </FluentTheme>
         <StyleInclude Source="avares://PSVulkanPlay/Themes/Couch.axaml" />

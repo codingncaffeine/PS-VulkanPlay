@@ -8,7 +8,7 @@ public sealed class ConsoleCard : Observable
     private readonly MainViewModel _main;
     private ConsoleState _state = ConsoleState.Looking;
     private string _address, _runningApp = "";
-    private bool _confirmForget;
+    private bool _confirmForget, _hasShortcut;
 
     public ConsoleCard(MainViewModel main, RegisteredConsole console)
     {
@@ -20,6 +20,7 @@ public sealed class ConsoleCard : Observable
         AskForget = new Command(() => ConfirmForget = true);
         CancelForget = new Command(() => ConfirmForget = false);
         Forget = new Command(() => _main.Forget(this));
+        ToggleShortcut = new Command(() => _main.ToggleShortcut(this));
     }
 
     public RegisteredConsole Console { get; }
@@ -32,6 +33,16 @@ public sealed class ConsoleCard : Observable
     public Command AskForget { get; }
     public Command CancelForget { get; }
     public Command Forget { get; }
+    public Command ToggleShortcut { get; }
+
+    /// <summary>The console has its own entry in the desktop's application menu.</summary>
+    public bool HasShortcut
+    {
+        get => _hasShortcut;
+        set { if (Set(ref _hasShortcut, value)) Changed(nameof(ShortcutText)); }
+    }
+
+    public string ShortcutText => HasShortcut ? "Remove from the app menu" : "Add to the app menu";
 
     public ConsoleState State
     {

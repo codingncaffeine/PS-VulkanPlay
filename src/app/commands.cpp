@@ -495,15 +495,16 @@ int command_wake(std::span<const std::string_view> args) {
 }
 
 // For 'play --wake': a console that rests is woken first. One that does not answer at all is sent
-// the wake-up too: a console that is off the network's reach will not start a session either, and
-// the wake-up's own message says what to look at.
-int wake_if_resting(const SessionPlan& plan) {
+// the wake-up too (unless `wake_when_silent` is false): a console that is off the network's reach
+// will not start a session either, and the wake-up's own message says what to look at.
+int wake_if_resting(const std::string& name, const std::optional<std::string>& host_given, std::chrono::seconds wait = 60s, bool wake_when_silent = true,
+                    const std::function<void()>& on_waking = {}) {
     auto context = load_context();
     if (!context) return fail("play: {}", context.error());
-    StoredConsole* console = context->store.find(plan.console);
+    StoredConsole* console = context->store.find(name);
     if (console == nullptr) return kDone;  // the session says so, in its own words
     std::vector<std::uint32_t> targets = broadcast_targets();
-    if (const std::string host(plan.host.value_or(console->last_address)); !host.empty()) {
+    if (const std::string host(host_given.value_or(console->last_address)); !host.empty()) {
         const auto address = net::resolve_ipv4(host);
         if (!address) return fail("play: {}", address.error());
         targets = {*address};
@@ -514,10 +515,12 @@ int wake_if_resting(const SessionPlan& plan) {
         if (!same_host(console->registration, candidate.reply)) continue;
         if (candidate.reply.state == proto::ConsoleState::ready) return kDone;
         say("{} is in rest mode: waking it.", console->registration.nickname);
-        return wake_console(*context, *console, plan.host, 60s, false);
+        if (on_waking) on_waking();
+        return wake_console(*context, *console, host_given, wait, false);
     }
+    if (!wake_when_silent) return kDone;
     say("{} did not answer: sending it a wake-up.", console->registration.nickname);
-    return wake_console(*context, *console, plan.host, 60s, false);
+    return wake_console(*context, *console, host_given, wait, false);
 }
 
 // The form of a payload without its content: its length, its first byte and
@@ -1502,7 +1505,14 @@ int command_play(std::span<const std::string_view> args) {
     // With --wake a resting console is woken first, and one that takes no session yet (it is still
     // starting, or closing the session before) is asked again for a minute and a half.
     const bool wake = parsed.flag("--wake");
-    int code = wake ? wake_if_resting(plan) : kDone;
+    int code = wake ? wake_if_resting(plan.console, plan.host) : kDone;
+    // A console that went to rest while the connection was down (it slept on its own, or lost
+    // power) is woken again by the reconnecting; one that does not answer is only tried again.
+    if (wake) {
+        options.wake_resting = [console = plan.console, host = plan.host](std::chrono::seconds wait, const std::function<void()>& on_waking) {
+            return wake_if_resting(console, host, wait, false, on_waking);
+        };
+    }
     if (code == kDone) {
         const auto give_up = Clock::now() + 95s;
         for (;;) {

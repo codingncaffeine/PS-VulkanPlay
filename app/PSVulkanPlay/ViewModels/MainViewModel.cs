@@ -28,9 +28,12 @@ public sealed class MainViewModel : Observable
 
     /// <param name="post">Runs an action on the UI thread.</param>
     /// <param name="signIn">The PSN sign-in; tests give one that asks a stand-in service.</param>
-    public MainViewModel(IProgramRunner runner, SettingsStore store, Action<Action> post, PsnSignIn? signIn = null)
+    /// <param name="shortcuts">Where the consoles' menu shortcuts go; none given, a folder beside the settings file (for tests: never the desktop's).</param>
+    public MainViewModel(IProgramRunner runner, SettingsStore store, Action<Action> post, PsnSignIn? signIn = null, Shortcuts? shortcuts = null)
     {
         _runner = runner;
+        Shortcuts = shortcuts ?? new Shortcuts(Path.Combine(Path.GetDirectoryName(Path.GetFullPath(store.File))!, "applications"),
+                                               Shortcuts.ProgramForEntries(runner.Location));
         _directory = new ConsoleDirectory(runner);
         _store = store;
         _post = post;
@@ -48,6 +51,7 @@ public sealed class MainViewModel : Observable
     }
 
     public ObservableCollection<ConsoleCard> Consoles { get; } = [];
+    public Shortcuts Shortcuts { get; }
     public SettingsViewModel Settings { get; }
     public AddConsoleViewModel AddConsole { get; }
     public DiagnosticsViewModel Diagnostics { get; }
@@ -288,7 +292,7 @@ public sealed class MainViewModel : Observable
         for (int i = Consoles.Count - 1; i >= 0; --i)
             if (registered.All(console => console.Mac != Consoles[i].Console.Mac)) Consoles.RemoveAt(i);
         foreach (RegisteredConsole console in registered)
-            if (Consoles.All(card => card.Console.Mac != console.Mac)) Consoles.Add(new ConsoleCard(this, console));
+            if (Consoles.All(card => card.Console.Mac != console.Mac)) Consoles.Add(new ConsoleCard(this, console) { HasShortcut = Shortcuts.Has(console) });
         Changed(nameof(ShowEmpty));
         Settings.SetConsoles(Consoles.Select(card => card.Console.Name));
     }
@@ -382,12 +386,25 @@ public sealed class MainViewModel : Observable
         }), TaskScheduler.Default);
     }
 
+    /// <summary>Adds the console's own entry to the desktop's application menu, or takes it away.</summary>
+    public void ToggleShortcut(ConsoleCard card)
+    {
+        bool had = Shortcuts.Has(card.Console);
+        string problem = had ? Shortcuts.Remove(card.Console) : Shortcuts.Add(card.Console);
+        card.HasShortcut = Shortcuts.Has(card.Console);
+        if (problem.Length > 0) Notify(problem, true);
+        else Notify(had ? $"{card.Name} is no longer in the application menu."
+                        : $"{card.Name} is in the application menu now: it starts a session with these settings straight away.", false);
+    }
+
     public void Forget(ConsoleCard card)
     {
         if (Busy) return;
         _ = _runner.RunAsync(["forget", card.Console.Name]).ContinueWith(done => _post(() =>
         {
             RunResult result = done.Result;
+            // A shortcut to a console that is no longer registered would only fail.
+            if (result.Ok && Shortcuts.Has(card.Console)) _ = Shortcuts.Remove(card.Console);
             Notify(result.Ok ? $"{card.Name} is no longer registered here." : result.Reason, !result.Ok);
             _ = RefreshAsync();
         }), TaskScheduler.Default);

@@ -15,6 +15,7 @@ public sealed class App : Application
     public static IProgramRunner? RunnerOverride { get; set; }
     public static string? SettingsFileOverride { get; set; }
     public static PsnSignIn? SignInOverride { get; set; }
+    public static Shortcuts? ShortcutsOverride { get; set; }
 
     private string _theme = Themes.FollowDesktop;
 
@@ -42,8 +43,11 @@ public sealed class App : Application
 
     public MainViewModel CreateModel()
     {
-        var model = new MainViewModel(RunnerOverride ?? new ProgramRunner(), new SettingsStore(SettingsFileOverride ?? SettingsStore.DefaultFile()),
-                                      action => Dispatcher.UIThread.Post(action), SignInOverride);
+        IProgramRunner runner = RunnerOverride ?? new ProgramRunner();
+        // The desktop's own applications folder only for the real app: a test's settings file has its shortcuts beside it.
+        Shortcuts? shortcuts = ShortcutsOverride ?? (SettingsFileOverride is null ? new Shortcuts(Shortcuts.DefaultFolder(), Shortcuts.ProgramForEntries(runner.Location)) : null);
+        var model = new MainViewModel(runner, new SettingsStore(SettingsFileOverride ?? SettingsStore.DefaultFile()),
+                                      action => Dispatcher.UIThread.Post(action), SignInOverride, shortcuts);
         ApplyTheme(model.Settings.Current.Theme);
         model.Settings.ThemeChanged += ApplyTheme;
         return model;

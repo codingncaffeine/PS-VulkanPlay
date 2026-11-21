@@ -109,5 +109,37 @@ left() { for exe in /proc/[0-9]*/exe; do [ "$(readlink "$exe" 2>/dev/null)" = "$
 for _ in $(seq 40); do [ -z "$(left)" ] && break; sleep 0.1; done
 [ -z "$(left)" ] && ok "what it started ended with it: no stream program is left" || fail "left running after the app: $(left | tr '\n' ' ')"
 
+echo "a session asked for by a shortcut or a link: the program hands it to the app, which plays with its settings and no window of its own"
+printf '{ "theme": "slate", "resolution": 720, "wakeFirst": false }\n' > "$XDG_CONFIG_HOME/ps-vulkanplay/app.json"
+quick_run() {   # quick_run NAME ARGUMENT...: plays until the first picture, then ends it as a launcher's "stop" does
+    local name="$1"; shift
+    start_mock "$name" --kind ps5 --clip 416x240 --frame-ms 16 --media-ms 10
+    "$work/install/ps-vulkanplay" "$@" > "$work/$name.out" 2>&1 &
+    pid=$!
+    for _ in $(seq 200); do grep -aq "render: first picture shown" "$work/$name.out" 2>/dev/null && break; kill -0 $pid 2>/dev/null || break; sleep 0.1; done
+    sleep 0.5
+    app_window=$(count 20 23 28)
+    kill -TERM $pid 2>/dev/null
+    for _ in $(seq 100); do kill -0 $pid 2>/dev/null || break; sleep 0.1; done
+    kill -0 $pid 2>/dev/null && { fail "$name: it did not end within ten seconds of being asked"; kill -KILL $pid; }
+    wait $pid 2>/dev/null; rc=$?
+    sleep 0.3; stop_mock
+}
+quick_run quick --play "Living Room"
+check "--play: the picture came" has "$work/quick.out" "render: first picture shown"
+check "--play: the process was the app (the program handed over)" sh -c "! grep -aq 'needs the app' '$work/quick.out'"
+check "--play: the session has the app's settings (720p asked for)" grep -aq '"width":1280,"height":720' "$work/quick.log"
+check "--play: ended from outside, it said goodbye to the console" grep -aqi "goodbye\|disconnect" "$work/quick.log"
+[ "${app_window:-1}" -lt 20000 ] && ok "--play: no window of the app's was on the screen ($app_window pixels of its background)" || fail "--play: the app's window showed: $app_window pixels"
+quick_run quick-link "ps-vulkanplay://play/02%3A00%3A5e%3A10%3A20%3A30"
+check "a link naming the console by its hardware address: the picture came" has "$work/quick-link.out" "render: first picture shown"
+"$work/install/ps-vulkanplay" --play "Attic" > "$work/quick-none.out" 2>&1; rc=$?
+[ $rc -eq 1 ] && has "$work/quick-none.out" "No console called Attic is registered here" && ok "a console that is not registered: exit 1 and why" || fail "--play Attic: exit $rc: $(head -3 "$work/quick-none.out")"
+"$work/install/ps-vulkanplay" "ps-vulkanplay://rest/Living%20Room" > "$work/quick-bad.out" 2>&1; rc=$?
+[ $rc -eq 64 ] && has "$work/quick-bad.out" "does not name a console" && ok "a link that does not ask to play: exit 64 and why" || fail "a wrong link: exit $rc: $(head -3 "$work/quick-bad.out")"
+mkdir -p "$work/alone" && cp "$native" "$work/alone/ps-vulkanplay"
+"$work/alone/ps-vulkanplay" --play "Living Room" > "$work/quick-alone.out" 2>&1; rc=$?
+[ $rc -eq 64 ] && has "$work/quick-alone.out" "needs the app" && ok "the program without the app beside it says what --play needs: exit 64" || fail "--play without the app: exit $rc: $(head -3 "$work/quick-alone.out")"
+
 [ $failed -eq 0 ] && echo "PHASE 5A PASSED" || echo "PHASE 5A FAILED"
 exit $failed

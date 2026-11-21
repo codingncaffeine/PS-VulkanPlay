@@ -8,6 +8,11 @@
         Icon="avares://PSVulkanPlay/Assets/icon.png"
         Width="1120" Height="720" MinWidth="820" MinHeight="560"
         WindowStartupLocation="CenterScreen">
+    <!-- The size setting scales everything, as a browser's zoom does: text, controls and spacing keep their proportions. -->
+    <LayoutTransformControl x:Name="Scaler">
+        <LayoutTransformControl.LayoutTransform>
+            <ScaleTransform ScaleX="{Binding Settings.ScaleFactor}" ScaleY="{Binding Settings.ScaleFactor}" />
+        </LayoutTransformControl.LayoutTransform>
     <Grid RowDefinitions="Auto,*,Auto,Auto,Auto">
 
         <!-- ===== The top: what this is, and its pages ===== -->
@@ -66,6 +71,8 @@
                                         <Button Grid.Column="1" Content="Wake" Command="{Binding Wake}" IsVisible="{Binding !IsReady}" Margin="10,0,0,0" Padding="16,11" />
                                         <Button Grid.Column="3" Classes="quiet" Content="Forget" Command="{Binding AskForget}" />
                                     </Grid>
+                                    <Button Classes="quiet" FontSize="13" Content="{Binding ShortcutText}" Command="{Binding ToggleShortcut}" Margin="-8,8,0,0" HorizontalAlignment="Left"
+                                            IsVisible="{Binding !ConfirmForget}" ToolTip.Tip="An entry of its own in the desktop's application menu that starts a session with this console straight away, with these settings" />
                                     <StackPanel Margin="0,14,0,0" IsVisible="{Binding ConfirmForget}">
                                         <TextBlock Classes="secondary small" Text="Forget this console? To play on it again you would register with its PIN once more." />
                                         <StackPanel Orientation="Horizontal" Spacing="10" Margin="0,10,0,0">
@@ -253,6 +260,10 @@
                     <StackPanel>
                         <TextBlock Classes="section" Text="Look" />
                         <TextBlock Classes="secondary small" Text="Changes at once, for the whole app." Margin="0,4,0,14" />
+                        <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,14">
+                            <StackPanel VerticalAlignment="Center"><TextBlock Text="Size of everything" /><TextBlock Classes="secondary small" Text="Text and controls together, for reading from the couch." /></StackPanel>
+                            <ComboBox x:Name="ScaleChoice" Grid.Column="1" ItemsSource="{Binding Scales}" SelectedItem="{Binding Scale}" />
+                        </Grid>
                         <ItemsControl x:Name="ThemeCards" ItemsSource="{Binding ThemeChoices}">
                             <ItemsControl.ItemsPanel>
                                 <ItemsPanelTemplate><WrapPanel /></ItemsPanelTemplate>
@@ -569,4 +580,5 @@
             </Grid>
         </Border>
     </Grid>
+    </LayoutTransformControl>
 </Window>

@@ -76,6 +76,7 @@ public sealed class SettingsViewModel : Observable
         [new("HEVC (PS5; sharper at the same bitrate)", "hevc"), new("HEVC with HDR (PS5, HDR display)", "hdr"), new("H.264 (PS4, and older graphics cards)", "h264")];
     public IReadOnlyList<Choice> Controllers { get; } =
         [new("Whatever is connected", "auto"), new("A DualSense (haptics, trigger effects)", "dualsense"), new("A DualShock 4", "dualshock4")];
+    public IReadOnlyList<Choice> Scales { get; } = AppSettings.Scales.Select(percent => new Choice($"{percent}%", percent.ToString())).ToList();
     public IReadOnlyList<Choice> Buttons { get; } =
         AppSettings.Buttons.Select(name => new Choice(name.Length == 0 ? "Nothing" : ButtonLabel(name), name)).ToList();
 
@@ -160,6 +161,20 @@ public sealed class SettingsViewModel : Observable
     public Choice Controller { get => Pick(Controllers, _settings.Controller); set { if (value is not null) Keep(() => _settings.Controller = value.Value, nameof(Controller)); } }
     public Choice BackLeft { get => Pick(Buttons, _settings.BackLeft); set { if (value is not null) Keep(() => _settings.BackLeft = value.Value, nameof(BackLeft)); } }
     public Choice BackRight { get => Pick(Buttons, _settings.BackRight); set { if (value is not null) Keep(() => _settings.BackRight = value.Value, nameof(BackRight)); } }
+
+    /// <summary>The size of everything in the window, text and controls alike, as a factor of the designed size.</summary>
+    public Choice Scale
+    {
+        get => Pick(Scales, _settings.ScalePercent.ToString());
+        set
+        {
+            if (value is null) return;
+            Keep(() => _settings.ScalePercent = int.Parse(value.Value), nameof(Scale));
+            Changed(nameof(ScaleFactor));
+        }
+    }
+
+    public double ScaleFactor => _settings.Valid().ScalePercent / 100.0;
 
     /// <summary>"system", or a look's id.</summary>
     public string Theme

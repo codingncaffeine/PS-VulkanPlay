@@ -7,6 +7,7 @@
 #include <format>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -68,8 +69,9 @@ std::string compiler() {
 // Started with nothing to do, by a person: what they want is the app, which is its own program
 // (the windows around the stream: consoles, settings, setting up). It is looked for where a
 // build and a package put it, and takes this process over; it is told where this program is, to
-// run it for everything a console is asked. Returns when there is no app here.
-void hand_over_to_the_app() {
+// run it for everything a console is asked. `pass_on` goes to the app as its arguments (a
+// session asked for by a shortcut or a link). Returns when there is no app here.
+void hand_over_to_the_app(std::span<const std::string_view> pass_on = {}) {
 #if defined(__linux__)
     std::error_code failed;
     const std::filesystem::path self = std::filesystem::read_symlink("/proc/self/exe", failed);
@@ -79,8 +81,12 @@ void hand_over_to_the_app() {
         if (::access(app.c_str(), X_OK) != 0) continue;
         ::setenv("PSVP_NATIVE", self.c_str(), 1);
         std::string path = app.string();
-        char* const arguments[] = {path.data(), nullptr};
-        ::execv(path.c_str(), arguments);
+        std::vector<std::string> owned{path};
+        for (const std::string_view argument : pass_on) owned.emplace_back(argument);
+        std::vector<char*> arguments;
+        for (std::string& argument : owned) arguments.push_back(argument.data());
+        arguments.push_back(nullptr);
+        ::execv(path.c_str(), arguments.data());
         std::fprintf(stderr, "%s: the app at %s could not be started; opening the stream window alone\n", PSVP_BINARY, path.c_str());
     }
 #endif
@@ -97,6 +103,13 @@ int run(int argc, char** argv) {
     psvp::app::set_play_runner(&psvp::app::run_player);
     psvp::app::set_controllers_runner(&psvp::app::run_controllers);
     psvp::app::set_diagnose_runner(&psvp::app::run_diagnose);
+    // A session with the app's settings, asked for by a desktop shortcut, a launcher or a link: the app runs it.
+    if ((args.size() == 2 && args[0] == "--play") || (args.size() == 1 && args[0].starts_with("ps-vulkanplay:"))) {
+        hand_over_to_the_app(args);
+        std::fprintf(stderr, "%s: a session with the app's settings needs the app, which is not installed beside this program; "
+                             "'%s play CONSOLE' plays without it\n", PSVP_BINARY, PSVP_BINARY);
+        return kExitUsage;
+    }
     if (psvp::app::is_command(args)) return psvp::app::run_command(args);
     if (args.empty()) hand_over_to_the_app();
 

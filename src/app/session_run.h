@@ -102,6 +102,10 @@ struct PlayOptions {
     std::optional<proto::transport::Button> back_left, back_right;
     // The statistics over the picture from the start (F3 shows and hides them at any time).
     bool stats = false;
+    // With --wake: while the connection is made again, a console that answers as resting is woken,
+    // waiting at most the time given; `on_waking` is called once it is known to rest. Returns 0 when
+    // it is on (or did not answer at all).
+    std::function<int(std::chrono::seconds, const std::function<void()>& on_waking)> wake_resting;
 };
 // The part of 'play' that has a window: the program that has one sets it before it runs a command.
 using PlayRunner = int (*)(SessionPlan plan, const PlayOptions& options);

@@ -296,9 +296,17 @@ public:
         render::wake_window();
     }
     [[nodiscard]] bool reconnecting() const { return reconnecting_.load(); }
+    // While a console that went to rest is woken between two tries.
+    void set_waking(bool waking) {
+        waking_.store(waking);
+        if (waking) ++wakes_;
+        render::wake_window();
+    }
+    [[nodiscard]] bool waking() const { return waking_.load(); }
     // On the window's thread: what is said over the picture while the connection is made again.
     std::string notice_text() const {
         if (!reconnecting_.load()) return {};
+        if (waking_.load()) return "Connection lost. The console went to rest: waking it...";
         const int attempt = reconnect_try_.load();
         return attempt <= 1 ? std::string("Connection lost. Reconnecting...") : std::format("Connection lost. Reconnecting (try {})...", attempt);
     }
@@ -350,6 +358,8 @@ private:
 
     // The connection lost and made again: the counts are the session thread's.
     std::atomic<bool> reconnecting_{false};
+    std::atomic<bool> waking_{false};
+    int wakes_ = 0;  // on the session's thread
     std::atomic<int> reconnect_try_{0};
     std::optional<Clock::time_point> lost_at_;
     std::uint64_t losses_ = 0, comebacks_ = 0;
@@ -1179,6 +1189,7 @@ std::vector<std::string> Player::report() {
         if (losses_ != 0) {
             lines.push_back(std::format("The connection was lost {} times; it came back {} times{}.", losses_, comebacks_,
                                         comebacks_ != 0 ? std::format(" (after {:.1f} s at most)", longest_out_s_) : std::string()));
+            if (wakes_ != 0) lines.push_back(std::format("The console went to rest while the connection was down and was woken {} times.", wakes_));
         }
         if (menu_opened_ != 0) lines.push_back(std::format("The menu over the stream was opened {} times; chosen in it last: {}.", menu_opened_,
                                                            menu_chosen_.empty() ? std::string("nothing") : menu_chosen_));
@@ -1308,6 +1319,16 @@ int run_player(SessionPlan plan, const PlayOptions& options) {
                     break;
                 }
                 player.connection_lost(++attempt);
+                // A new session that did not start: the console may have gone to rest meanwhile.
+                if (!lost && options.wake_resting) {
+                    const auto left = std::chrono::seconds(options.reconnect_seconds) -
+                                      std::chrono::duration_cast<std::chrono::seconds>(Clock::now() - *trying_since);
+                    if (left.count() > 0) {
+                        const int woke = options.wake_resting(left, [&] { player.set_waking(true); });
+                        if (player.waking() && woke != 0) log::warn("play: the console went to rest and could not be woken again");
+                        player.set_waking(false);
+                    }
+                }
                 // A moment between tries, cut short when the window closes.
                 for (int i = 0; i < 20 && !stop.load() && !player.quit_asked(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(50));
             }

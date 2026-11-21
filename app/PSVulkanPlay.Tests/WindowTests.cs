@@ -255,11 +255,11 @@ public class WindowTests : IDisposable
         cards.BringIntoView();
         Ui.Settle();
         Button Swatch(string name) => cards.GetVisualDescendantButtons().First(button => (button.DataContext as ThemeChoice)?.Name == name);
-        Assert.Equal(6, cards.GetVisualDescendantButtons().Count());
+        Assert.Equal(7, cards.GetVisualDescendantButtons().Count());
         Ui.Click(window, Swatch("Midnight Blue"));
         Assert.Equal("midnight", model.Settings.Theme);
         Assert.Equal(ThemeVariant.Dark, Application.Current!.RequestedThemeVariant);
-        Assert.Equal(Color.Parse("#3B82F6"), ((ISolidColorBrush)Application.Current.Resources["Accent"]!).Color);
+        Assert.Equal(Color.Parse("#2B6CE6"), ((ISolidColorBrush)Application.Current.Resources["Accent"]!).Color);
         Assert.True(Swatch("Midnight Blue").Classes.Contains("active") && !Swatch("Slate").Classes.Contains("active"));
         Ui.Capture(window, "look-midnight");
         Ui.Click(window, Swatch("Light"));
@@ -269,6 +269,46 @@ public class WindowTests : IDisposable
         window.FindControl<ScrollViewer>("SettingsScroll")!.ScrollToHome();
         Ui.Capture(window, "settings-light");
         Ui.Until(() => File.Exists(model.Settings.File) && new SettingsStore(model.Settings.File).Load() is { CushionMs: 20, Theme: "light" }, "the choices are kept");
+        window.Close();
+    });
+
+    [Fact]
+    public void High_contrast_and_a_larger_size_change_the_whole_window_at_once() => Ui.Run(() =>
+    {
+        FakeRunner fake = FakeRunner.WithTwoConsoles();
+        (MainWindow window, MainViewModel model) = Ui.Open(fake, _folder);
+        Ui.Until(() => Ui.Shows(window, "Living Room"), "the home page is up");
+        Button play = window.GetVisualDescendantButtons().First(button => button.Content as string == "Play");
+        double before = play.Bounds.Width;
+        var rootBefore = play.TranslatePoint(new Point(play.Bounds.Width, 0), window)!.Value.X - play.TranslatePoint(new Point(0, 0), window)!.Value.X;
+
+        Ui.Click(window, window.FindControl<Button>("NavSettings")!);
+        var cards = window.FindControl<ItemsControl>("ThemeCards")!;
+        cards.BringIntoView();
+        Ui.Settle();
+        Ui.Click(window, cards.GetVisualDescendantButtons().First(button => (button.DataContext as ThemeChoice)?.Name == "High Contrast"));
+        Assert.Equal("contrast", model.Settings.Theme);
+        Assert.Equal(Color.Parse("#000000"), ((ISolidColorBrush)Application.Current!.Resources["WindowBg"]!).Color);
+        Assert.Equal(Color.Parse("#FFFFFF"), ((ISolidColorBrush)Application.Current.Resources["Line"]!).Color);
+        // A switch that is on shows its knob in black on the yellow, not the theme's white.
+        Assert.Equal(Color.Parse("#000000"), ((ISolidColorBrush)Application.Current.Resources["ToggleSwitchKnobFillOn"]!).Color);
+
+        var scale = window.FindControl<ComboBox>("ScaleChoice")!;
+        Assert.Equal("100%", model.Settings.Scale.Label);
+        model.Settings.Scale = model.Settings.Scales.First(choice => choice.Value == "150");
+        Ui.Settle();
+        Assert.Equal("150%", (scale.SelectedItem as Choice)?.Label);
+        Ui.Capture(window, "settings-contrast-150");
+
+        Ui.Click(window, window.FindControl<Button>("NavHome")!);
+        Ui.Until(() => Ui.Shows(window, "Living Room"), "the home page is back");
+        Ui.Settle();
+        // The same control, one and a half times as wide on the screen; its own layout unchanged.
+        double rootAfter = play.TranslatePoint(new Point(play.Bounds.Width, 0), window)!.Value.X - play.TranslatePoint(new Point(0, 0), window)!.Value.X;
+        Assert.Equal(before, play.Bounds.Width, 0.5);
+        Assert.InRange(rootAfter / rootBefore, 1.49, 1.51);
+        Ui.Capture(window, "home-contrast-150");
+        Ui.Until(() => File.Exists(model.Settings.File) && new SettingsStore(model.Settings.File).Load() is { ScalePercent: 150, Theme: "contrast" }, "the choices are kept");
         window.Close();
     });
 }

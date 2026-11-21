@@ -242,12 +242,45 @@ check "a new session was made and its pictures came" has "$work/reconnect.err" "
 check "the report counts it" has "$work/reconnect.out" "The connection was lost 1 times; it came back 1 times (after "
 check "--reconnect is 600 seconds at most" sh -c "! '$app' play 'Living Room' --reconnect 601 > /dev/null 2>&1"
 
+echo "a console that goes to rest while the connection is down is woken by the reconnecting (with --wake)"
+start_mock rest-drop --kind ps5 --clip 416x240 --frame-ms 16 --media-ms 10 --drop-after-ms 2000 --rest-on-drop yes
+"$app" play "Living Room" --wake --seconds 9 > "$work/rest-drop.out" 2> "$work/rest-drop.err" &
+pid=$!
+for _ in $(seq 200); do grep -aq "is in rest mode: waking it" "$work/rest-drop.out" 2>/dev/null && break; kill -0 $pid 2>/dev/null || break; sleep 0.1; done
+sleep 0.2
+waking=$(count 255 196 92)
+cp "$PSVP_TEST_FB" "$work/rest-drop-notice.xwd"   # the notice while it wakes, to be looked at
+wait $pid; rc=$?
+sleep 0.3; stop_mock
+[ $rc -eq 0 ] && ok "the session ended as asked: exit 0" || fail "exit $rc: $(tail -2 "$work/rest-drop.out")"
+check "the mock went to rest as the stream dropped" has "$work/rest-drop.log" "in rest mode now"
+check "a session asked of it while it rested was not served" has "$work/rest-drop.log" "session request ignored: in rest mode"
+check "the program found it resting and woke it" has "$work/rest-drop.out" "Living Room is in rest mode: waking it."
+check "the mock took the wake-up" has "$work/rest-drop.log" "wake-up accepted, now on"
+between "$waking" 200 60000 && ok "a notice was over the picture while it woke: $waking pixels" || fail "the waking notice: '$waking' pixels of (255,196,92)"
+check "the stream came back" has "$work/rest-drop.err" "play: the stream is back after"
+check "the report counts the wake" has "$work/rest-drop.out" "The console went to rest while the connection was down and was woken 1 times."
+# Without --wake the reconnecting does not wake it: it tries sessions until its time is up.
+start_mock rest-drop-nowake --kind ps5 --clip 416x240 --frame-ms 16 --media-ms 10 --drop-after-ms 1000 --rest-on-drop yes
+"$app" play "Living Room" --seconds 30 --reconnect 4 > "$work/rest-drop-nowake.out" 2> "$work/rest-drop-nowake.err"; rc=$?
+sleep 0.3; stop_mock
+[ $rc -ne 0 ] && ok "without --wake it gives up after its reconnect time: exit $rc" || fail "without --wake: exit 0"
+check "and no wake-up was sent" lacks "$work/rest-drop-nowake.log" "wake-up"
+
 echo "a session that does not start opens no window"
 start_mock in-use --kind ps5 --in-use yes
 "$app" play "Living Room" --seconds 2 > "$work/in-use.out" 2> "$work/in-use.err"; rc=$?
 stop_mock
 [ $rc -eq 1 ] && ok "exit 1" || fail "a session with a console that is in use: exit $rc"
 check "no window was opened for it" lacks "$work/in-use.err" "window: SDL"
+
+# Without --wake nothing is sent to wake a resting console (and, as a console, the mock serves it no session).
+start_mock asleep --kind ps5 --state standby --clip 416x240 --frame-ms 16 --media-ms 10
+"$app" play "Living Room" --seconds 1 > "$work/asleep.out" 2> "$work/asleep.err"; rc=$?
+stop_mock
+[ $rc -eq 1 ] && ok "a resting console without --wake: no session, exit 1" || fail "a resting console without --wake: exit $rc"
+check "without --wake no wake-up is sent" lacks "$work/asleep.log" "wake-up"
+check "the mock was reached all the same, and served no session while it rested" has "$work/asleep.log" "session request ignored: in rest mode"
 
 echo "play --wake wakes a console in rest mode, and asks one that takes no session yet again"
 start_mock wake --kind ps5 --state standby --in-use 1 --clip 416x240 --frame-ms 16 --media-ms 10
@@ -258,14 +291,6 @@ check "it saw that the console rests and woke it" has "$work/wake.out" "Living R
 check "the mock took the wake-up" has "$work/wake.log" "wake-up accepted, now on"
 check "the first try was refused as in use, and it asked again" has "$work/wake.out" "Living Room is not taking a session yet: asking again in 5 seconds."
 check "then it played" grep -aqE "^Played \(H\.264" "$work/wake.out"
-# Without --wake nothing is sent to wake a resting console. (The mock takes a session while it rests, which a
-# console does not: what is checked is that no wake-up was sent.)
-start_mock asleep --kind ps5 --state standby --clip 416x240 --frame-ms 16 --media-ms 10
-"$app" play "Living Room" --seconds 1 > "$work/asleep.out" 2> "$work/asleep.err"
-stop_mock
-check "without --wake no wake-up is sent" lacks "$work/asleep.log" "wake-up"
-check "the mock was reached all the same" has "$work/asleep.log" "session request"
-
 echo "the controllers that are connected are listed: behind the wall there is none, and one can be pretended"
 "$app" controllers > "$work/controllers.out" 2>&1; rc=$?
 [ $rc -eq 0 ] && has "$work/controllers.out" "No controller is connected." && ok "no controller of this machine is seen, and the program says so" || fail "controllers: exit $rc: $(head -2 "$work/controllers.out")"

@@ -27,7 +27,8 @@ Add a console, sign in with PSN and type the eight digits the console shows.
 
 - an app (`ps-vulkanplay` with nothing after it): your consoles as cards with Play and Wake, adding a console
   step by step (signing in with PSN gives it your account, so there is no account ID to look up), settings
-  for everything a session can do, a choice of looks, and the connected controller with its battery at the
+  for everything a session can do, a choice of looks (High Contrast among them) and of the size of everything
+  in the window, and the connected controller with its battery at the
   bottom of the window. A controller moves through it as well as a pointer does: the direction buttons or the
   left stick, accept and back, the shoulder buttons for its pages, and keys on the page for a console's PIN
 - finding consoles on the network, waking them from rest mode and registering with them
@@ -39,7 +40,11 @@ Add a console, sign in with PSN and type the eight digits the console shows.
   wireless network. F3 (or "Show statistics while playing" in the app) shows the picture's size and rate,
   the decoding time and the console's view of the connection over the picture. F1, or L1 + R1 + Options held
   on a controller, opens a menu over the stream: statistics, full screen, quit, or quit and put the console to rest.
-  A connection lost while playing is made again by itself, for up to a minute, over the last picture
+  A connection lost while playing is made again by itself, for up to a minute, over the last picture; a
+  console that went to rest meanwhile is woken again
+- straight into a session: "Add to the app menu" on a console's card puts it in the desktop's application
+  menu, and `ps-vulkanplay --play CONSOLE` or a link `ps-vulkanplay://play/CONSOLE` starts a session with the
+  app's settings and no window of the app's (for launchers that start a program)
 - decoding on the graphics card through Vulkan Video, with the pictures drawn straight from the card's memory.
   The card's first two seconds of pictures are checked against software decoding, sample for sample, and
   software takes over if they differ. "Decode on the graphics card" in the app turns it off

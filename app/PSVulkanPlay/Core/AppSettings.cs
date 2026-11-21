@@ -40,6 +40,7 @@ public sealed class AppSettings
     public bool RestAfter { get; set; }
     public bool ShowStats { get; set; }                 // the statistics over the picture from the start (F3 at any time)
     public string Theme { get; set; } = "system";       // "system", or a look's id (Theming/Themes.cs)
+    public int ScalePercent { get; set; } = 100;        // the size of everything in the app's window: 100, 125, 150, 175, 200
     /// <summary>The consoles that have a picture of their own, by name.</summary>
     public Dictionary<string, ConsolePicture> PerConsole { get; set; } = [];
 
@@ -48,6 +49,7 @@ public sealed class AppSettings
     public static readonly int[] FrameRates = [30, 60];
     public static readonly string[] Codecs = ["h264", "hevc", "hdr"];
     public static readonly string[] Controllers = ["auto", "dualsense", "dualshock4"];
+    public static readonly int[] Scales = [100, 125, 150, 175, 200];
 
     /// <summary>The console's buttons a back button can be, by the names the program takes; the first is "nothing".</summary>
     public static readonly string[] Buttons =
@@ -76,6 +78,7 @@ public sealed class AppSettings
             ShowStats = ShowStats,
             // An id of an earlier version, or of a look that is gone, follows the desktop.
             Theme = Theming.Themes.Ids.Contains(Theme) ? Theme : Theming.Themes.FollowDesktop,
+            ScalePercent = Scales.Contains(ScalePercent) ? ScalePercent : 100,
             PerConsole = (PerConsole ?? []).Where(entry => entry.Key.Length > 0 && entry.Value is not null)
                                            .ToDictionary(entry => entry.Key, entry => entry.Value.Valid()),
         };

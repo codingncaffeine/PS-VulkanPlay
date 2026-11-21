@@ -20,6 +20,7 @@
 //     --heartbeat-ms N        how often it asks the client for a heartbeat (default 500)
 //     --drop-after-ms N       N ms after the first stream was set up, that stream and its control connection
 //                             go silent, as when the network between them drops; the next session is served
+//     --rest-on-drop yes      with --drop-after-ms: it goes to rest mode as the stream drops (until a wake-up)
 //     --mtu-in N              the largest packet that reaches the client (default 1454)
 //     --mtu-out N             the largest packet that reaches the console (default 1454)
 //     --probe no              complete the probe port's handshake, then stay silent
@@ -120,6 +121,7 @@ struct Options {
     mutable int in_use_times = -1;  // how many session requests are still refused as in use; -1: all of them
     int heartbeat_ms = 500;
     int drop_after_ms = 0;  // 0: never
+    bool rest_on_drop = false;
     psvp::proto::transport::ConsoleProbe::Path path;
     bool probe = true;
     bool stream = true;
@@ -563,6 +565,8 @@ int main(int argc, char** argv) {
             if (std::from_chars(text->data(), text->data() + text->size(), options.drop_after_ms).ec != std::errc{} || options.drop_after_ms < 1) {
                 return usage("--drop-after-ms is a number of at least 1");
             }
+        } else if (arg == "--rest-on-drop") {
+            options.rest_on_drop = *text == "yes";
         } else if (arg == "--heartbeat-ms") {
             if (std::from_chars(text->data(), text->data() + text->size(), options.heartbeat_ms).ec != std::errc{} || options.heartbeat_ms < 10) {
                 return usage("--heartbeat-ms is a number of at least 10");
@@ -793,6 +797,10 @@ int main(int argc, char** argv) {
                 stream.silent = true;
                 control.silent = true;
                 event("the first stream and its control connection went silent, as a dropped network");
+                if (options.rest_on_drop) {
+                    state = ConsoleState::standby;
+                    event("in rest mode now");
+                }
             }
             if (stream.silent) continue;
             for (const auto& out : stream.stream.on_timer(Clock::now())) (void)stream_port->send_to(stream.client, out);
@@ -884,6 +892,9 @@ int main(int argc, char** argv) {
                     event("connection dropped: {}", head.error());
                 } else if (head->head.starts_with("POST ")) {
                     event("{}", serve_registration(options, stream, head->head, std::move(head->rest), ++registrations));
+                } else if (head->head.find("/rp/sess/init ") != std::string::npos && state != ConsoleState::ready) {
+                    // A resting console takes no session; the connection is closed unanswered.
+                    event("session request ignored: in rest mode");
                 } else if (head->head.find("/rp/sess/init ") != std::string::npos) {
                     if (!options.dump_dir.empty()) std::ofstream(options.dump_dir + "/session-init.head", std::ios::binary) << head->head;
                     event("{}", serve_session_request(options, stream, head->head, session_cipher));
