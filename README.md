@@ -38,7 +38,8 @@ Add a console, sign in with PSN and type the eight digits the console shows.
   short stalls of the network, and a cushion of delay can be asked for that hides the short pauses of a
   wireless network. F3 (or "Show statistics while playing" in the app) shows the picture's size and rate,
   the decoding time and the console's view of the connection over the picture. F1, or L1 + R1 + Options held
-  on a controller, opens a menu over the stream: statistics, full screen, quit, or quit and put the console to rest
+  on a controller, opens a menu over the stream: statistics, full screen, quit, or quit and put the console to rest.
+  A connection lost while playing is made again by itself, for up to a minute, over the last picture
 - decoding on the graphics card through Vulkan Video, with the pictures drawn straight from the card's memory.
   The card's first two seconds of pictures are checked against software decoding, sample for sample, and
   software takes over if they differ. "Decode on the graphics card" in the app turns it off

@@ -28,6 +28,7 @@ public sealed class AppSettings
     public string Codec { get; set; } = "hevc";         // h264, hevc, hdr
     public int BitrateKbps { get; set; }                // 0: the program's own choice
     public bool GpuDecoding { get; set; } = true;       // on the graphics card where it can (checked against software first)
+    public bool Reconnect { get; set; } = true;         // a connection lost while playing is made again (for a minute)
     public bool Pacing { get; set; } = true;
     public int CushionMs { get; set; }                  // 0 to 50
     public int LossCeiling { get; set; } = DefaultLossCeiling;   // percent, 0 to 100: the most loss the console is told of
@@ -62,6 +63,7 @@ public sealed class AppSettings
             Codec = Codecs.Contains(Codec) ? Codec : "hevc",
             BitrateKbps = BitrateKbps == 0 ? 0 : Math.Clamp(BitrateKbps, 500, 100000),
             GpuDecoding = GpuDecoding,
+            Reconnect = Reconnect,
             Pacing = Pacing,
             CushionMs = Math.Clamp(CushionMs, 0, 50),
             LossCeiling = Math.Clamp(LossCeiling, 0, 100),
@@ -95,6 +97,7 @@ public sealed class AppSettings
         if (!ps4) arguments.AddRange(["--codec", picture.Codec]);
         if (picture.BitrateKbps > 0) arguments.AddRange(["--bitrate", picture.BitrateKbps.ToString()]);
         if (!s.GpuDecoding) arguments.AddRange(["--decoder", "software"]);
+        if (!s.Reconnect) arguments.AddRange(["--reconnect", "0"]);
         arguments.AddRange(["--controller", s.Controller]);
         if (!s.Pacing) arguments.AddRange(["--pacing", "off"]);
         else if (s.CushionMs > 0) arguments.AddRange(["--cushion", s.CushionMs.ToString()]);

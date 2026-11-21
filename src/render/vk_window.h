@@ -46,6 +46,8 @@ struct WindowOptions {
     std::function<std::vector<std::string>()> overlay_lines;
     // The menu over the stream while it is open, asked the same way; nothing: none is drawn.
     std::function<std::optional<app::MenuView>()> overlay_menu;
+    // A notice at the top (the connection was lost, and is being made again); empty: none.
+    std::function<std::string()> overlay_notice;
     // Lend the window's Vulkan device to FFmpeg for decoding on the graphics card, where the device
     // can (a video decode queue for H.264 or HEVC, Vulkan 1.3).
     bool gpu_decoding = true;

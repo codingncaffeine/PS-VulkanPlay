@@ -215,6 +215,33 @@ check "the console was asked to go to rest mode" has "$work/menu-rest.log" "rest
 check "and the report says so" has "$work/menu-rest.out" "chosen in it last: quit and put the console to rest."
 check "--pretend-taps needs --pretend" sh -c "! '$app' play 'Living Room' --pretend-taps /dev/null > /dev/null 2>&1"
 
+echo "a connection that drops while playing is made again: the mock goes silent 2 s into the first stream"
+start_mock reconnect --kind ps5 --clip 416x240 --frame-ms 16 --media-ms 10 --drop-after-ms 2000
+# Each session is held 9 s: the first is lost about 5 s after the drop, the second runs its 9 s and ends.
+"$app" play "Living Room" --seconds 9 > "$work/reconnect.out" 2> "$work/reconnect.err" &
+pid=$!
+for _ in $(seq 150); do grep -aq "the connection was lost; trying" "$work/reconnect.err" 2>/dev/null && break; kill -0 $pid 2>/dev/null || break; sleep 0.1; done
+sleep 0.4
+notice=$(count 255 196 92)
+cp "$PSVP_TEST_FB" "$work/reconnect-notice.xwd"   # the notice over the last picture, to be looked at
+for _ in $(seq 200); do grep -aq "the stream is back after" "$work/reconnect.err" 2>/dev/null && break; kill -0 $pid 2>/dev/null || break; sleep 0.1; done
+sleep 1
+cp "$PSVP_TEST_FB" "$work/reconnect-1.xwd"; sleep 1
+moving=no; cmp -s "$PSVP_TEST_FB" "$work/reconnect-1.xwd" || moving=yes
+after=$(count 255 196 92)
+wait $pid; rc=$?
+sleep 0.3; stop_mock
+[ $rc -eq 0 ] && ok "the session ended as asked: exit 0" || fail "exit $rc: $(tail -2 "$work/reconnect.out")"
+check "the mock dropped the first stream" has "$work/reconnect.log" "the first stream and its control connection went silent"
+check "the program saw the connection lost (after the console stopped acknowledging)" has "$work/reconnect.out" "Living Room: the connection was lost: the console stopped acknowledging the stream's messages."
+between "$notice" 200 60000 && ok "the notice was over the picture meanwhile: $notice pixels of its color" || fail "the notice: '$notice' pixels of (255,196,92)"
+check "a new session was made and its pictures came" has "$work/reconnect.err" "play: the stream is back after"
+[ "$(grep -ac 'transport connected on port 9296' "$work/reconnect.log")" -ge 2 ] && ok "the mock set up a second stream" || fail "the mock set up $(grep -ac 'transport connected on port 9296' "$work/reconnect.log") streams"
+[ "$moving" = yes ] && ok "the picture moves again" || fail "the screen did not change in a second after the stream came back"
+[ "${after:-1}" -eq 0 ] && ok "and the notice is gone" || fail "the notice is still there: $after pixels"
+check "the report counts it" has "$work/reconnect.out" "The connection was lost 1 times; it came back 1 times (after "
+check "--reconnect is 600 seconds at most" sh -c "! '$app' play 'Living Room' --reconnect 601 > /dev/null 2>&1"
+
 echo "a session that does not start opens no window"
 start_mock in-use --kind ps5 --in-use yes
 "$app" play "Living Room" --seconds 2 > "$work/in-use.out" 2> "$work/in-use.err"; rc=$?

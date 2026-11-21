@@ -62,6 +62,9 @@ void append_panel(std::vector<Quad>& quads, float x0, float y0, float x1, float 
 [[nodiscard]] std::vector<Quad> menu_panel(std::string_view title, const std::vector<std::string>& items, std::size_t selected, std::string_view hint,
                                            float window_width, float window_height);
 
+// A short notice at the top of the window, in the middle ("Connection lost. Reconnecting…").
+[[nodiscard]] std::vector<Quad> notice_panel(std::string_view text, float window_width, float window_height);
+
 // The panel's colors, as they reach the screen where the text is solid.
 inline constexpr Color kPanelColor{20, 23, 28, 0.85F};
 inline constexpr Color kStatsTextColor{236, 239, 244, 1.0F};
@@ -71,5 +74,7 @@ inline constexpr Color kMenuPanelColor{20, 23, 28, 0.94F};
 inline constexpr Color kMenuBarColor{240, 112, 45, 1.0F};
 inline constexpr Color kMenuChosenTextColor{20, 23, 28, 1.0F};
 inline constexpr Color kMenuHintColor{150, 156, 168, 1.0F};
+// A notice's text: warm, so that it reads as something the matter.
+inline constexpr Color kNoticeTextColor{255, 196, 92, 1.0F};
 
 }  // namespace psvp::overlay

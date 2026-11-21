@@ -111,6 +111,9 @@ private:
     // Returns false on a failed call; `presented` says whether a frame reached the swapchain.
     // `fresh` is a picture to show from this frame on.
     bool draw_frame(bool& presented, const media::Picture* fresh);
+    // What lies over the picture is not what was drawn last: a frame is due without a new picture
+    // (the menu opened, a notice came, while no picture arrives).
+    [[nodiscard]] bool overlay_due() const;
     void note_size();
     app::WindowPlace place_;
 
@@ -160,6 +163,7 @@ private:
     const WindowOptions* options_ = nullptr;
     std::vector<std::string> overlay_lines_;  // as laid out last
     std::optional<app::MenuView> overlay_menu_;
+    std::string overlay_notice_;
     VkExtent2D overlay_extent_{};             // the size they were laid out for
 };
 
@@ -521,12 +525,16 @@ bool Window::draw_frame(bool& presented, const media::Picture* fresh) {
         log::error("render: a picture of {}x{} with {} bits cannot be shown", fresh->width, fresh->height, fresh->bits);
     }
     // What lies over the picture, laid out again only when it or the window's size changed.
-    if (options_ != nullptr && (options_->overlay_lines || options_->overlay_menu)) {
+    if (options_ != nullptr && (options_->overlay_lines || options_->overlay_menu || options_->overlay_notice)) {
         std::vector<std::string> lines = options_->overlay_lines ? options_->overlay_lines() : std::vector<std::string>{};
         std::optional<app::MenuView> menu = options_->overlay_menu ? options_->overlay_menu() : std::nullopt;
-        if (lines != overlay_lines_ || menu != overlay_menu_ || extent_.width != overlay_extent_.width || extent_.height != overlay_extent_.height) {
+        std::string notice = options_->overlay_notice ? options_->overlay_notice() : std::string();
+        if (lines != overlay_lines_ || menu != overlay_menu_ || notice != overlay_notice_ || extent_.width != overlay_extent_.width ||
+            extent_.height != overlay_extent_.height) {
             const auto width = static_cast<float>(extent_.width), height = static_cast<float>(extent_.height);
             std::vector<overlay::Quad> quads = overlay::stats_panel(lines, width, height);
+            std::vector<overlay::Quad> said = overlay::notice_panel(notice, width, height);
+            quads.insert(quads.end(), said.begin(), said.end());
             if (menu) {
                 std::vector<overlay::Quad> panel = overlay::menu_panel(menu->title, menu->items, menu->selected, menu->hint, width, height);
                 quads.insert(quads.end(), panel.begin(), panel.end());
@@ -534,6 +542,7 @@ bool Window::draw_frame(bool& presented, const media::Picture* fresh) {
             overlay_.set_quads(std::move(quads));
             overlay_lines_ = std::move(lines);
             overlay_menu_ = std::move(menu);
+            overlay_notice_ = std::move(notice);
             overlay_extent_ = extent_;
         }
     }
@@ -805,7 +814,7 @@ int Window::run(const WindowOptions& options) {
 
         std::optional<media::Picture> fresh;
         if (options.next_picture) fresh = options.next_picture();
-        if (on_demand && !fresh && !stale && !swapchain_stale_) {
+        if (on_demand && !fresh && !stale && !swapchain_stale_ && !overlay_due()) {
             SDL_WaitEventTimeout(nullptr, static_cast<Sint32>(options.ask_every.count()));
             continue;
         }
@@ -829,6 +838,13 @@ int Window::run(const WindowOptions& options) {
     place_.fullscreen = (flags & SDL_WINDOW_FULLSCREEN) != 0;
     if (options.on_place) options.on_place(place_);
     return 0;
+}
+
+bool Window::overlay_due() const {
+    if (options_ == nullptr) return false;
+    if (options_->overlay_notice && options_->overlay_notice() != overlay_notice_) return true;
+    if (options_->overlay_menu && options_->overlay_menu() != overlay_menu_) return true;
+    return options_->overlay_lines && options_->overlay_lines() != overlay_lines_;
 }
 
 // The size to come back to: the window's own, not the screen's while it is maximized or fills it.

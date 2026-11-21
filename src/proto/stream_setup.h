@@ -184,6 +184,9 @@ public:
     [[nodiscard]] State state() const noexcept { return state_; }
     // Why it failed, or the reason the console gave when it closed the stream.
     [[nodiscard]] const std::string& reason() const noexcept { return reason_; }
+    // It failed because the console went silent while the stream ran: the network between them
+    // dropped, or the console did; a new session can work.
+    [[nodiscard]] bool lost() const noexcept { return lost_; }
     [[nodiscard]] bool closed_by_console() const noexcept { return closed_by_console_; }
     [[nodiscard]] const std::optional<BangFacts>& bang() const noexcept { return bang_; }
     [[nodiscard]] const std::optional<StreamInfo>& info() const noexcept { return info_; }
@@ -219,6 +222,7 @@ private:
     TimePoint step_deadline_{};
     TimePoint next_heartbeat_{};
     std::string reason_;
+    bool lost_ = false;
     bool closed_by_console_ = false;
     bool goodbye_ = false;
     TimePoint next_congestion_{};

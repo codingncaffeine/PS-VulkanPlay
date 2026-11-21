@@ -62,11 +62,16 @@ struct SessionPlan {
     std::function<void()> on_report;
     // At the very end: a reason to call the session failed although it ran.
     std::function<std::optional<std::string>()> verdict;
+    // A stream that was lost (the console went silent while it ran) ends with kSessionLost, not 1.
+    bool reconnectable = false;
 };
 
 // Returns the process exit code: 0 done, 1 it did not work (the reason is printed), kSessionNotYet
 // when the console is there but takes no session at this moment: asking again later can work.
 inline constexpr int kSessionNotYet = 75;
+// With `reconnectable`: the stream ran and was lost (the network or the console went silent); a new
+// session can work.
+inline constexpr int kSessionLost = 76;
 [[nodiscard]] int run_session(const SessionPlan& plan);
 
 // What 'play' needs besides the plan.
@@ -81,6 +86,8 @@ struct PlayOptions {
     bool pacing = true;
     // Delay kept on purpose, in milliseconds, so that frames which come that much late are still shown in place.
     int cushion_ms = 0;
+    // After the connection was lost, how long new sessions are tried for; 0: none is.
+    int reconnect_seconds = 60;
     // Where pictures are decoded: on the graphics card where it can (after a check of its first
     // pictures against software), or in software only.
     enum class Decoder { automatic, software };

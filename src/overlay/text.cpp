@@ -114,6 +114,19 @@ std::vector<Quad> stats_panel(const std::vector<std::string>& lines, float windo
     return quads;
 }
 
+std::vector<Quad> notice_panel(std::string_view text, float window_width, float window_height) {
+    std::vector<Quad> quads;
+    if (text.empty() || window_width <= 0 || window_height <= 0) return quads;
+    const float size = std::max(15.0F, std::round(window_height / 32.0F));
+    const float pad = std::round(size * 0.8F);
+    const float width = std::min(window_width - 2.0F, std::ceil(text_width(text, size)) + pad * 2);
+    const float height = std::round(line_height(size)) + pad * 2;
+    const float x0 = std::round((window_width - width) / 2), y0 = std::round(window_height / 12.0F);
+    append_panel(quads, x0, y0, x0 + width, y0 + height, kMenuPanelColor);
+    append_text(quads, text, x0 + pad, y0 + pad + std::round(ascender(size)), size, kNoticeTextColor);
+    return quads;
+}
+
 std::vector<Quad> menu_panel(std::string_view title, const std::vector<std::string>& items, std::size_t selected, std::string_view hint,
                              float window_width, float window_height) {
     std::vector<Quad> quads;

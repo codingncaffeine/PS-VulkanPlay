@@ -813,6 +813,7 @@ PSVP_TEST(stream_setup_gives_up_on_a_console_that_does_not_answer) {
         link.run_until_settled();
         CHECK(link.client.state() == ClientStream::State::failed);
         CHECK(link.client.reason() == "the console did not answer the stream's opening message");
+        CHECK(!link.client.lost());  // it never ran: nothing was lost
         CHECK(link.now == kStart + 5s);
         CHECK(link.client.disconnect(link.now).empty());
     }
@@ -827,6 +828,7 @@ PSVP_TEST(stream_setup_gives_up_on_a_console_that_does_not_answer) {
         link.run_until_settled();
         CHECK(link.client.state() == ClientStream::State::failed);
         CHECK(link.client.reason() == "the console sent no stream information");
+        CHECK(!link.client.lost());
         CHECK(link.now == kStart + 2 * link.hop + 5s);
     }
     {
@@ -1143,6 +1145,8 @@ PSVP_TEST(stream_keeps_loss_reports_it_cannot_send_yet) {
     link.run(5000ms);
     CHECK(link.client.state() == ClientStream::State::failed);
     CHECK(link.client.reason() == "the console stopped acknowledging the stream's messages");
+    // Lost while it ran: a new session can bring it back.
+    CHECK(link.client.lost());
 }
 
 PSVP_TEST(stream_takes_what_the_console_says_on_its_own) {

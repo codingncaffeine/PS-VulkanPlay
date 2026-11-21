@@ -18,6 +18,8 @@
 //     --passcode DIGITS       ask for this login passcode before it names the session
 //     --in-use yes|N          refuse a session because Remote Play is already in use: every one, or the first N
 //     --heartbeat-ms N        how often it asks the client for a heartbeat (default 500)
+//     --drop-after-ms N       N ms after the first stream was set up, that stream and its control connection
+//                             go silent, as when the network between them drops; the next session is served
 //     --mtu-in N              the largest packet that reaches the client (default 1454)
 //     --mtu-out N             the largest packet that reaches the console (default 1454)
 //     --probe no              complete the probe port's handshake, then stay silent
@@ -117,6 +119,7 @@ struct Options {
     bool in_use = false;
     mutable int in_use_times = -1;  // how many session requests are still refused as in use; -1: all of them
     int heartbeat_ms = 500;
+    int drop_after_ms = 0;  // 0: never
     psvp::proto::transport::ConsoleProbe::Path path;
     bool probe = true;
     bool stream = true;
@@ -140,6 +143,7 @@ struct Control {
     Clock::time_point next_heartbeat;
     int heartbeats_answered = 0;
     bool session_named = false;
+    bool silent = false;  // the network to the client "dropped": nothing is sent or read
 };
 
 constexpr std::array<std::uint8_t, 6> kMac{0x02, 0x00, 0x5e, 0x10, 0x20, 0x30};
@@ -555,6 +559,10 @@ int main(int argc, char** argv) {
                 options.in_use = true;
                 options.in_use_times = times;
             }
+        } else if (arg == "--drop-after-ms") {
+            if (std::from_chars(text->data(), text->data() + text->size(), options.drop_after_ms).ec != std::errc{} || options.drop_after_ms < 1) {
+                return usage("--drop-after-ms is a number of at least 1");
+            }
         } else if (arg == "--heartbeat-ms") {
             if (std::from_chars(text->data(), text->data() + text->size(), options.heartbeat_ms).ec != std::errc{} || options.heartbeat_ms < 10) {
                 return usage("--heartbeat-ms is a number of at least 10");
@@ -649,8 +657,12 @@ int main(int argc, char** argv) {
         psvp::net::Address client;
         psvp::proto::transport::ConsoleStream stream;
         bool summarized = false;
+        Clock::time_point made{};
+        bool first = false;   // the first stream set up: the one --drop-after-ms drops
+        bool silent = false;  // dropped: nothing is sent to it or read from it any more
     };
     std::map<std::uint64_t, Stream> streams;
+    int streams_made = 0;
     const auto log_stream = [&](Stream& stream) {
         for (const std::string& line : stream.stream.take_events()) event("stream {}", line);
         if (stream.stream.disconnected() && !stream.summarized) {
@@ -681,6 +693,7 @@ int main(int argc, char** argv) {
             return;
         }
         if (const auto stream = streams.find(key.second); transport_port == psvp::proto::transport::kStreamPort && stream != streams.end()) {
+            if (stream->second.silent) return;
             for (const auto& out : stream->second.stream.on_datagram((*datagram)->data, Clock::now())) (void)socket.send_to(from, out);
             log_stream(stream->second);
             return;
@@ -744,7 +757,8 @@ int main(int argc, char** argv) {
                 stream_options.media_every = std::chrono::milliseconds(options.media_ms);
                 stream_options.corrupt_media = options.corrupt_media;
                 streams.insert_or_assign(key.second, Stream{from, psvp::proto::transport::ConsoleStream(handshake.tag(), *handshake.client(), std::move(stream_options),
-                                                                                                         psvp::proto::KeyExchange::generate())});
+                                                                                                         psvp::proto::KeyExchange::generate()),
+                                                            false, Clock::now(), ++streams_made == 1, false});
             }
         }
         if (!answer && was_connected) event("transport datagram on port {} after the handshake ({} bytes)", transport_port, (*datagram)->data.size());
@@ -765,7 +779,7 @@ int main(int argc, char** argv) {
 
     while (g_stop == 0) {
         pollfd waits[6] = {{discovery->fd(), POLLIN, 0}, {search->fd(), POLLIN, 0}, {listener->fd(), POLLIN, 0},
-                           {control.stream.open() ? control.stream.fd() : -1, POLLIN, 0},
+                           {control.stream.open() && !control.silent ? control.stream.fd() : -1, POLLIN, 0},
                            {probe_port->fd(), POLLIN, 0}, {stream_port->fd(), POLLIN, 0}};
         // Short waits while a stream sends on a timer of its own.
         const int ready = ::poll(waits, 6, streams.empty() ? 50 : 10);
@@ -775,15 +789,21 @@ int main(int argc, char** argv) {
             for (const auto& out : probe.probe.on_timer(Clock::now())) (void)probe_port->send_to(probe.client, out);
         }
         for (auto& [client, stream] : streams) {
+            if (!stream.silent && stream.first && options.drop_after_ms > 0 && Clock::now() - stream.made >= std::chrono::milliseconds(options.drop_after_ms)) {
+                stream.silent = true;
+                control.silent = true;
+                event("the first stream and its control connection went silent, as a dropped network");
+            }
+            if (stream.silent) continue;
             for (const auto& out : stream.stream.on_timer(Clock::now())) (void)stream_port->send_to(stream.client, out);
         }
 
         // The control channel: a heartbeat request now and then, and whatever the client sends.
-        if (control.stream.open() && control.channel && Clock::now() >= control.next_heartbeat) {
+        if (control.stream.open() && control.channel && !control.silent && Clock::now() >= control.next_heartbeat) {
             send_control(control, psvp::proto::ctrl_type::kHeartbeatRequest);
             control.next_heartbeat = Clock::now() + std::chrono::milliseconds(options.heartbeat_ms);
         }
-        if (ready > 0 && control.stream.open() && (waits[3].revents & (POLLIN | POLLHUP | POLLERR)) != 0) {
+        if (ready > 0 && control.stream.open() && !control.silent && (waits[3].revents & (POLLIN | POLLHUP | POLLERR)) != 0) {
             std::uint8_t chunk[1024];
             const auto got = control.stream.receive(chunk, Clock::now());
             if (!got || *got == 0) {
@@ -869,6 +889,7 @@ int main(int argc, char** argv) {
                     event("{}", serve_session_request(options, stream, head->head, session_cipher));
                 } else if (head->head.find("/rp/sess/ctrl ") != std::string::npos) {
                     if (control.stream.open()) close_control("replaced by a new one");
+                    control.silent = false;
                     const std::string line = serve_control_request(options, stream, head->head, session_cipher, control);
                     event("{}", line);
                     if (control.channel) {

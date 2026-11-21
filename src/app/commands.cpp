@@ -1237,7 +1237,14 @@ int run_session_here(const SessionPlan& plan) {
         return now >= hold_until || (plan.stop && plan.stop());
     });
     const auto held_for = Clock::now() - hold_started;
-    if (!held) return fail("session: {}", held.error());
+    if (!held) {
+        // The network itself went away (a machine that slept, a cable that came out).
+        if (plan.reconnectable) {
+            say("{}: the connection was lost: {}.", registration.nickname, held.error());
+            return kSessionLost;
+        }
+        return fail("session: {}", held.error());
+    }
     if (!control_failure.empty()) return fail("{}", control_failure);
     const transport::StreamCounters& counters = stream.counters();
     say("Stream held for {} seconds: {} picture and {} sound packets arrived with the right authentication code, {} with a wrong one, "
@@ -1311,7 +1318,13 @@ int run_session_here(const SessionPlan& plan) {
     }
     if (counters.split_messages != 0) say("Messages that came in more than one chunk: {}.", counters.split_messages);
     if (counters.other_datagrams != 0) say("Datagrams of kinds this version does not read: {}.", counters.other_datagrams);
-    if (stream.state() == State::failed) return fail("{}: the stream: {}.", registration.nickname, stream.reason());
+    if (stream.state() == State::failed) {
+        if (plan.reconnectable && stream.lost()) {
+            say("{}: the connection was lost: {}.", registration.nickname, stream.reason());
+            return kSessionLost;
+        }
+        return fail("{}: the stream: {}.", registration.nickname, stream.reason());
+    }
     const bool console_closed = stream.state() == State::closed;
     if (console_closed) say("{} closed the stream: {}.", registration.nickname, stream.reason());
 
@@ -1404,7 +1417,7 @@ PlayRunner play_runner = nullptr;
 
 // The stream in a window, with its sound and a controller: what the program is for.
 int command_play(std::span<const std::string_view> args) {
-    const Parsed parsed = parse(args, {"--host", "--seconds", "--passcode", "--resolution", "--fps", "--bitrate", "--codec", "--tap", "--frames", "--controller", "--pacing", "--cushion", "--haptics-volume", "--back-left", "--back-right", "--loss-ceiling", "--ack-copies", "--decoder", "--pretend", "--pretend-taps"},
+    const Parsed parsed = parse(args, {"--host", "--seconds", "--passcode", "--resolution", "--fps", "--bitrate", "--codec", "--tap", "--frames", "--controller", "--pacing", "--cushion", "--haptics-volume", "--back-left", "--back-right", "--loss-ceiling", "--ack-copies", "--decoder", "--pretend", "--pretend-taps", "--reconnect"},
                                 {"--rest", "--wake", "--stats"}, 1);
     if (!parsed.error.empty()) return usage("play: {}", parsed.error);
     SessionPlan plan;
@@ -1446,6 +1459,11 @@ int command_play(std::span<const std::string_view> args) {
     if (const auto text = parsed.option("--pretend")) options.pretend = std::string(*text);
     if (const auto text = parsed.option("--pretend-taps")) options.pretend_taps = std::string(*text);
     if (options.pretend_taps && !options.pretend) return usage("play: --pretend-taps goes with --pretend");
+    if (const auto text = parsed.option("--reconnect")) {
+        const auto seconds = parse_number(*text, 0, 600);
+        if (!seconds && *text != "0") return usage("play: --reconnect takes a number of seconds from 0 to 600");
+        options.reconnect_seconds = seconds ? static_cast<int>(*seconds) : 0;
+    }
     if (const auto text = parsed.option("--decoder")) {
         if (*text != "auto" && *text != "software") return usage("play: --decoder is auto or software");
         options.decoder = *text == "auto" ? PlayOptions::Decoder::automatic : PlayOptions::Decoder::software;
@@ -1779,7 +1797,7 @@ std::string commands_help() {
         "          [--bitrate KBPS] [--codec h264|hevc|hdr] [--controller auto|dualsense|dualshock4]\n"
         "          [--pacing on|off] [--cushion 0-50] [--haptics-volume 0-100] [--back-left BUTTON]\n"
         "          [--back-right BUTTON] [--loss-ceiling PERCENT] [--ack-copies 0-2] [--decoder auto|software]\n"
-        "          [--stats] [--wake] [--rest]\n"
+        "          [--reconnect SECONDS] [--stats] [--wake] [--rest]\n"
         "      play: the console's picture in a window, its sound, and a controller that is plugged in\n"
         "      or paired; closing the window ends the session (--rest then sends the console to rest mode).\n"
         "      --wake wakes a console that is in rest mode first, and asks one that takes no session yet\n"
@@ -1797,7 +1815,9 @@ std::string commands_help() {
         "      for a burst on a wireless network as for a slow line; 100 tells it all; --ack-copies says\n"
         "      how often each acknowledgment of the console's messages is sent again, 40 and 120 ms later\n"
         "      (2 unless said): one that is lost makes the console wait 200 ms, which it takes as the\n"
-        "      round trip and answers with a lower bitrate; --decoder software decodes the pictures in\n"
+        "      round trip and answers with a lower bitrate; --reconnect says how long new sessions are\n"
+        "      tried for when the connection is lost while playing (60 unless said; 0: none);\n"
+        "      --decoder software decodes the pictures in\n"
         "      software only (auto: on the graphics card where it can, through Vulkan Video, once its\n"
         "      first pictures were found the same as the software decoder's); --stats shows the statistics\n"
         "      over the picture from the start (F3 shows and hides them at any time)\n"

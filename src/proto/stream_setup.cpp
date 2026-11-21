@@ -410,6 +410,7 @@ Datagrams ClientStream::on_timeout(TimePoint now) {
         }
     } else if (state_ == State::ready) {
         if (!timer.abandoned.empty()) {
+            lost_ = true;
             fail("the console stopped acknowledging the stream's messages");
         } else if (now >= next_heartbeat_) {
             // With every place for an unanswered message taken, this one is left out: the

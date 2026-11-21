@@ -277,6 +277,7 @@ public sealed class SettingsViewModel : Observable
     }
 
     public bool GpuDecoding { get => _settings.GpuDecoding; set => Keep(() => _settings.GpuDecoding = value, nameof(GpuDecoding)); }
+    public bool Reconnect { get => _settings.Reconnect; set => Keep(() => _settings.Reconnect = value, nameof(Reconnect)); }
 
     public bool Pacing
     {

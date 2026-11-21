@@ -147,6 +147,13 @@ public:
     // ---- on the session's thread ----
     void on_media(transport::MediaOutput& media, const std::optional<proto::StreamInfo>& info) {
         if (!info) return;
+        if (!media.video.empty() && reconnecting_.exchange(false)) {
+            ++comebacks_;
+            const double out = lost_at_ ? std::chrono::duration<double>(Clock::now() - *lost_at_).count() : 0.0;
+            longest_out_s_ = std::max(longest_out_s_, out);
+            log::info("play: the stream is back after {:.1f} s", out);
+            render::wake_window();
+        }
         {
             const auto now = Clock::now();
             const std::lock_guard lock(jobs_mutex_);
@@ -270,6 +277,32 @@ public:
         menu_.set_state(stats_shown_.load(), fullscreen());
         return menu_.view();
     }
+    // ---- on the session's thread ----
+    // The connection was lost (`attempt` 1) or a new session to bring it back did not work (2 and on):
+    // the window says so over the last picture, and the frames of the next stream go to a new decoder.
+    void connection_lost(int attempt) {
+        if (attempt == 1) {
+            ++losses_;
+            lost_at_ = Clock::now();
+        }
+        reconnect_try_.store(attempt);
+        reconnecting_.store(true);
+        {
+            const std::lock_guard lock(jobs_mutex_);
+            jobs_.clear();
+            restart_stream_ = true;
+        }
+        log::warn("play: the connection was lost; trying to make it again (try {})", attempt);
+        render::wake_window();
+    }
+    [[nodiscard]] bool reconnecting() const { return reconnecting_.load(); }
+    // On the window's thread: what is said over the picture while the connection is made again.
+    std::string notice_text() const {
+        if (!reconnecting_.load()) return {};
+        const int attempt = reconnect_try_.load();
+        return attempt <= 1 ? std::string("Connection lost. Reconnecting...") : std::format("Connection lost. Reconnecting (try {})...", attempt);
+    }
+
     // Chosen in the menu: the window closes; and the console is sent to rest mode.
     [[nodiscard]] bool quit_asked() const { return quit_asked_.load(); }
     [[nodiscard]] bool rest_asked() const { return rest_asked_.load(); }
@@ -314,6 +347,14 @@ private:
         buttons_.set(button, down);
         input_changed_ = true;
     }
+
+    // The connection lost and made again: the counts are the session thread's.
+    std::atomic<bool> reconnecting_{false};
+    std::atomic<int> reconnect_try_{0};
+    std::optional<Clock::time_point> lost_at_;
+    std::uint64_t losses_ = 0, comebacks_ = 0;
+    double longest_out_s_ = 0.0;
+    bool restart_stream_ = false;  // under jobs_mutex_: the next frame begins a new stream
 
     // Frames waiting for the decoder.
     std::mutex jobs_mutex_;
@@ -506,6 +547,8 @@ void Player::decode_loop() {
             if (closing_) return;
             job = std::move(jobs_.front());
             jobs_.pop_front();
+            // A new session's stream: a new decoder, opened with its header, whatever its picture size.
+            if (std::exchange(restart_stream_, false)) size_index_.reset();
         }
         ++frames_;
         if (size_index_ != job.size_index) {
@@ -1133,6 +1176,10 @@ std::vector<std::string> Player::report() {
             const std::lock_guard lock(jobs_mutex_);
             if (!gpu_why_not_.empty()) lines.push_back(std::format("Decoding in software: {}.", gpu_why_not_));
         }
+        if (losses_ != 0) {
+            lines.push_back(std::format("The connection was lost {} times; it came back {} times{}.", losses_, comebacks_,
+                                        comebacks_ != 0 ? std::format(" (after {:.1f} s at most)", longest_out_s_) : std::string()));
+        }
         if (menu_opened_ != 0) lines.push_back(std::format("The menu over the stream was opened {} times; chosen in it last: {}.", menu_opened_,
                                                            menu_chosen_.empty() ? std::string("nothing") : menu_chosen_));
         lines.push_back(std::format("Frames arrived this far apart: {}.", arrival_spacing_.text()));
@@ -1241,8 +1288,30 @@ int run_player(SessionPlan plan, const PlayOptions& options) {
         plan.stop = [&] { return stop.load(); };
         plan.rest_asked = [&] { return player.rest_asked(); };
         if (options.pretend_taps) player.set_taps(*options.pretend_taps);
+        plan.reconnectable = options.reconnect_seconds > 0;
         std::thread session([&] {
-            session_code = run_session(plan);
+            // A lost connection is made again with new sessions, for as long as the options say; a loss after
+            // it came back begins that time again.
+            std::optional<Clock::time_point> trying_since;
+            int attempt = 0;
+            for (;;) {
+                session_code = run_session(plan);
+                if (stop.load() || player.quit_asked() || !plan.reconnectable) break;
+                const bool lost = session_code == kSessionLost;
+                if (lost && !player.reconnecting()) {
+                    trying_since = Clock::now();
+                    attempt = 0;
+                }
+                if (!trying_since || (!lost && !player.reconnecting())) break;
+                if (Clock::now() - *trying_since > std::chrono::seconds(options.reconnect_seconds)) {
+                    log::warn("play: the connection did not come back within {} s", options.reconnect_seconds);
+                    break;
+                }
+                player.connection_lost(++attempt);
+                // A moment between tries, cut short when the window closes.
+                for (int i = 0; i < 20 && !stop.load() && !player.quit_asked(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
+            if (session_code == kSessionLost) session_code = 1;
             done.store(true);
             render::wake_window();
         });
@@ -1261,6 +1330,7 @@ int run_player(SessionPlan plan, const PlayOptions& options) {
             window.on_event = [&](const SDL_Event& event) { player.on_event(event); };
             window.overlay_lines = [&] { return player.stats_lines(); };
             window.overlay_menu = [&] { return player.menu_view(); };
+            window.overlay_notice = [&] { return player.notice_text(); };
             window.gpu_decoding = options.decoder == PlayOptions::Decoder::automatic;
             window.on_gpu = [&](std::optional<media::GpuDevice> gpu, const std::string& why_not) { player.set_gpu(std::move(gpu), why_not); };
             window.before_device_gone = [&] { player.drop_gpu(); };

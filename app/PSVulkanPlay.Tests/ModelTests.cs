@@ -247,6 +247,8 @@ public class ModelTests : IDisposable
         add.AddressKey.Execute(".");
         add.AddressKey.Execute("5");
         Assert.Equal("192.168.5", add.Address);
+        // The address can be used once the search the page began with has ended.
+        Until(() => !add.Searching, "the search ended");
         Assert.True(add.UseAddress.CanExecute(null));
         foreach (string key in new[] { "1", ".", "2", "3" }) add.AccountKey.Execute(key);
         Assert.Equal("123", add.AccountId);      // the account ID is digits only
