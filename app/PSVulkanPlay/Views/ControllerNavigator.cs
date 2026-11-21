@@ -75,6 +75,31 @@ public sealed class ControllerNavigator(TopLevel window, Func<Control?> page)
     /// <summary>The control a direction leads to from another, or none: the framework's search, kept to what a controller stops at.</summary>
     public Control? Next(Control from, NavigationDirection direction)
     {
+        Control? found = Search(from, direction);
+        if (direction is not (NavigationDirection.Up or NavigationDirection.Down)) return found;
+        // The search sees only what is in view: on a page taller than the window, what lies beyond its edge
+        // is brought in a screenful at a time and looked for again, before the focus leaves the page (for
+        // the window's own buttons above it, which are always in view).
+        if (from.FindAncestorOfType<ScrollViewer>() is not { } scroll) return found;
+        if (found is not null && found.FindAncestorOfType<ScrollViewer>() == scroll) return found;
+        Vector before = scroll.Offset;
+        for (int screenfuls = 0; screenfuls < 20; screenfuls++)
+        {
+            double step = Math.Max(40, scroll.Viewport.Height * 0.8);
+            double bottom = Math.Max(0, scroll.Extent.Height - scroll.Viewport.Height);
+            double y = direction == NavigationDirection.Up ? Math.Max(0, scroll.Offset.Y - step) : Math.Min(bottom, scroll.Offset.Y + step);
+            if (Math.Abs(y - scroll.Offset.Y) < 0.5) break;
+            scroll.Offset = new Vector(scroll.Offset.X, y);
+            scroll.UpdateLayout();
+            if (Search(from, direction) is { } beyond && beyond.FindAncestorOfType<ScrollViewer>() == scroll) return beyond;
+        }
+        scroll.Offset = before;
+        scroll.UpdateLayout();
+        return found;
+    }
+
+    private Control? Search(Control from, NavigationDirection direction)
+    {
         var options = new FindNextElementOptions { FocusedElement = from, SearchRoot = window };
         for (Control? found = window.FocusManager?.FindNextElement(direction, options) as Control; found is not null; found = found.GetVisualParent() as Control)
         {

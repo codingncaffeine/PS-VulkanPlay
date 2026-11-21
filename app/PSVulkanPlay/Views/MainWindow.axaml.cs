@@ -19,7 +19,8 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-        _navigator = new ControllerNavigator(this, () => HomeScroll.IsVisible ? HomeScroll : SettingsScroll.IsVisible ? SettingsScroll : AddScroll);
+        _navigator = new ControllerNavigator(this, () => HomeScroll.IsVisible ? HomeScroll : SettingsScroll.IsVisible ? SettingsScroll
+                                                         : DiagnosticsScroll.IsVisible ? DiagnosticsScroll : AddScroll);
         // A key of the keyboard (not the one a controller's press is passed on as): whoever types has a keyboard.
         AddHandler(KeyDownEvent, (_, e) => { if (e.KeyDeviceType == KeyDeviceType.Keyboard) _model?.KeyboardUsed(); }, RoutingStrategies.Tunnel);
         // Made stopped: a timer made with its handler starts by itself.
@@ -51,15 +52,25 @@ public partial class MainWindow : Window
         model.PropertyChanged += ModelChanged;
         model.AddConsole.PropertyChanged += StepChanged;
         model.Consoles.CollectionChanged += ContentArrived;
+        // The diagnostics arrive after their page is up: the focus follows them as it follows the consoles.
+        model.Diagnostics.PropertyChanged += (_, e) => { if (e.PropertyName is nameof(DiagnosticsViewModel.Known) or nameof(DiagnosticsViewModel.Looking)) FollowWithFocus(FocusGoes.ToWhatArrived); };
         model.Pressed += Pressed;
         // The sign-in's two roads: the login page in a window of its own, or in the user's browser.
         model.AddConsole.SignInWindow ??= new SignInWindow(this);
         model.AddConsole.OpenBrowser ??= address => _ = Launcher.LaunchUriAsync(address);
+        // The diagnostics page's two buttons: the clipboard, and the desktop's file manager.
+        if (model.Diagnostics.CopyText is null) model.Diagnostics.CopyText = CopyToClipboard;
+        if (model.Diagnostics.OpenFolder is null) model.Diagnostics.OpenFolder = folder => _ = Launcher.LaunchUriAsync(new Uri(folder));
         AboutLine.Text = $"PS VulkanPlay {model.Version}   ·   stream program: {(model.ProgramLocation.Length > 0 ? model.ProgramLocation : "not found")}   ·   settings: {model.Settings.File}";
     }
 
     // Back from the browser with the sign-in's last address copied: it is taken without a paste.
     // Asked for only while the page that wants it is showing; the clipboard is nobody else's business.
+    private void CopyToClipboard(string text)
+    {
+        if (Clipboard is not null) _ = Avalonia.Input.Platform.ClipboardExtensions.SetTextAsync(Clipboard, text);
+    }
+
     private async Task LookAtClipboardAsync()
     {
         if (_model is not { IsAddConsole: true } model || !model.AddConsole.IsStep2 || !model.AddConsole.ShowPaste || Clipboard is null) return;

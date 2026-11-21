@@ -74,6 +74,9 @@ sleep 0.3; stop_mock
 out="$work/play.out"; log="$work/play.log"
 [ $rc -eq 0 ] && ok "play: exit 0" || fail "play: exit $rc: $(tail -3 "$out") $(grep -a ERROR "$work/play.err" | head -3)"
 check "it decoded with FFmpeg's H.264 decoder" grep -aqE "^Played \(H\.264, FFmpeg's h264 decoder in software\): " "$out"
+# The software Vulkan driver behind the wall has no video queue: the window says so, and the decoder waited for it to say.
+check "it says why the pictures were decoded in software" has "$out" "Decoding in software: the device has no VK_KHR_video_queue."
+check "the window said it before the decoder opened" sh -c "grep -an 'render: pictures are decoded in software' '$work/play.err' | head -1 | cut -d: -f1 | { read a; b=\$(grep -an 'play: decoding with' '$work/play.err' | head -1 | cut -d: -f1); [ -n \"\$a\" ] && [ -n \"\$b\" ] && [ \"\$a\" -lt \"\$b\" ]; }"
 # The mock says every 1.2 s how it sees the connection, always the same: the log has it once, with its time.
 own_log="${XDG_STATE_HOME:-$HOME/.local/state}/ps-vulkanplay/logs/play.log"
 [ "$(grep -ac "the console's view of the connection: target bitrate 9708 kbit/s, round-trip value 200.0, loss 0" "$own_log")" = 1 ] \
@@ -152,10 +155,11 @@ check "a cushion is 50 ms at most" sh -c "! '$app' play 'Living Room' --cushion 
 check "and is part of the pacing: not without it" sh -c "! '$app' play 'Living Room' --cushion 20 --pacing off > /dev/null 2>&1"
 check "the loss ceiling is a percent: 100 at most" sh -c "! '$app' play 'Living Room' --loss-ceiling 101 > /dev/null 2>&1"
 check "a back button takes a button's name and nothing else" sh -c "! '$app' play 'Living Room' --back-left lever > /dev/null 2>&1"
+check "the decoder is auto or software" sh -c "! '$app' play 'Living Room' --decoder vulkan > /dev/null 2>&1"
 
 echo "the statistics over the picture, asked for with --stats: drawn in their panel at the top left"
 start_mock stats --kind ps5 --clip 416x240 --frame-ms 16 --media-ms 10
-"$app" play "Living Room" --seconds 4 --stats > "$work/stats.out" 2> "$work/stats.err" &
+"$app" play "Living Room" --seconds 4 --stats --decoder software > "$work/stats.out" 2> "$work/stats.err" &
 pid=$!
 for _ in $(seq 80); do grep -aq "first picture shown" "$work/stats.err" 2>/dev/null && break; kill -0 $pid 2>/dev/null || break; sleep 0.1; done
 sleep 1.5   # the rates are worked out twice a second: by now they are there
@@ -166,6 +170,50 @@ wait $pid; rc=$?
 sleep 0.3; stop_mock
 [ $rc -eq 0 ] && ok "play --stats: exit 0" || fail "play --stats: exit $rc: $(tail -3 "$work/stats.out")"
 check "no error was logged with the statistics shown" lacks "$work/stats.err" " ERROR "
+check "--decoder software: the window does not lend its device, and the report says software was asked for" \
+    sh -c "grep -aq 'render: pictures are decoded in software: not asked for' '$work/stats.err' && grep -aq 'Decoding in software: software was asked for.' '$work/stats.out'"
+
+echo "the menu over the stream: L1 + R1 + Options held on a (pretended) controller opens it, Cross chooses in it"
+menu_run() {   # menu_run NAME DOWNS: opens the menu, goes down DOWNS times, presses Cross
+    local name="$1" downs="$2" taps="$work/$1.taps"
+    : > "$taps"
+    start_mock "$name" --kind ps5 --clip 416x240 --frame-ms 16 --media-ms 10
+    "$app" play "Living Room" --seconds 12 --pretend 045e:028e --pretend-taps "$taps" > "$work/$name.out" 2> "$work/$name.err" &
+    pid=$!
+    for _ in $(seq 80); do grep -aq "first picture shown" "$work/$name.err" 2>/dev/null && break; kill -0 $pid 2>/dev/null || break; sleep 0.1; done
+    before=$(count 240 112 45)
+    # A moment apart, as a hand presses them: the console sees the two shoulders go down first.
+    printf 'down left-shoulder\n' >> "$taps"; sleep 0.3
+    printf 'down right-shoulder\n' >> "$taps"; sleep 0.3
+    printf 'down start\n' >> "$taps"
+    for _ in $(seq 40); do grep -aq "the menu over the stream opened" "$work/$name.err" 2>/dev/null && break; sleep 0.1; done
+    sleep 0.5
+    bar=$(count 240 112 45); hint=$(count 150 156 168)
+    cp "$PSVP_TEST_FB" "$work/$name-open.xwd"   # the screen with the menu, to be looked at
+    printf 'up start\nup left-shoulder\nup right-shoulder\n' >> "$taps"
+    for _ in $(seq "$downs"); do printf 'tap down\n' >> "$taps"; sleep 0.25; done
+    printf 'tap south\n' >> "$taps"
+    started=$SECONDS
+    wait $pid; rc=$?
+    took=$((SECONDS - started))
+    sleep 0.3; stop_mock
+}
+menu_run menu 3
+check "the menu opened from the three buttons" has "$work/menu.err" "the menu over the stream opened"
+between "$bar" 5000 200000 && ok "it is on the screen: $bar pixels of its bar's color (before: $before)" || fail "the menu's bar: '$bar' pixels of (240,112,45) (before: $before)"
+between "$hint" 200 20000 && ok "with its hint: $hint pixels" || fail "the menu's hint: '$hint' pixels of (150,156,168)"
+[ "$rc" -eq 0 ] && ok "quit from the menu: exit 0" || fail "quit from the menu: exit $rc: $(tail -3 "$work/menu.out")"
+[ "$took" -lt 8 ] && ok "it ended when Quit was chosen, not at the end of its 12 seconds ($took s after)" || fail "it ended $took s after Quit was chosen"
+check "the report says what was chosen" has "$work/menu.out" "The menu over the stream was opened 1 times; chosen in it last: quit."
+check "the console was not sent to rest" lacks "$work/menu.log" "rest mode requested"
+inputs="$(grep -a 'stream input ' "$work/menu.log" | sed -E 's/^mock: stream input [0-9]+: //' | tr '\n' ';')"
+check "the console saw L1 and R1 go down, then up when the menu opened, and never Options: $inputs" \
+    sh -c "printf '%s' '$inputs' | grep -q 'l1 pressed;r1 pressed;' && printf '%s' '$inputs' | grep -q 'l1 released' && printf '%s' '$inputs' | grep -q 'r1 released' && ! printf '%s' '$inputs' | grep -q options"
+menu_run menu-rest 4
+[ "$rc" -eq 0 ] && ok "quit and rest from the menu: exit 0" || fail "quit and rest: exit $rc"
+check "the console was asked to go to rest mode" has "$work/menu-rest.log" "rest mode requested"
+check "and the report says so" has "$work/menu-rest.out" "chosen in it last: quit and put the console to rest."
+check "--pretend-taps needs --pretend" sh -c "! '$app' play 'Living Room' --pretend-taps /dev/null > /dev/null 2>&1"
 
 echo "a session that does not start opens no window"
 start_mock in-use --kind ps5 --in-use yes
@@ -239,6 +287,17 @@ presses 057e:2009 pad-nintendo
     && ok "where the maker prints A on the right-hand button, that one is accept and the lower one is back" || fail "a Nintendo controller's presses were said as: $(said "$work/pad-nintendo.out")"
 "$app" controllers --presses > "$work/presses-alone.out" 2>&1; rc=$?
 [ $rc -eq 64 ] && has "$work/presses-alone.out" "--presses goes with --watch" && ok "--presses without --watch is refused" || fail "controllers --presses: exit $rc: $(head -2 "$work/presses-alone.out")"
+
+echo "diagnose: what this computer offers, and how the last session ended"
+"$app" diagnose > "$work/diagnose.out" 2>&1; rc=$?
+[ $rc -eq 0 ] && ok "diagnose: exit 0" || fail "diagnose: exit $rc: $(head -3 "$work/diagnose.out")"
+check "it names the software Vulkan driver and why pictures are decoded in software here" \
+    sh -c "grep -q 'Graphics device: llvmpipe' '$work/diagnose.out' && grep -q 'Pictures are decoded in software: the device has no VK_KHR_video_queue.' '$work/diagnose.out'"
+check "it has the last session's report" sh -c "grep -q '^The last session (started ' '$work/diagnose.out' && grep -q '^  Played (H.264' '$work/diagnose.out'"
+"$app" diagnose --json > "$work/diagnose.json" 2> "$work/diagnose-json.err"
+# What else the machine's libraries say goes to the error stream; the answer is the output's one line.
+check "as JSON: one line, with the device and the report ($(wc -l < "$work/diagnose-json.err") lines on the error stream: $(head -c 160 "$work/diagnose-json.err" | tr '\n' ' '))" \
+    sh -c "[ \$(wc -l < '$work/diagnose.json') -eq 1 ] && grep -q '\"gpu_decoding_why_not\": \"the device has no VK_KHR_video_queue\"' '$work/diagnose.json' && grep -q '\"last_session\": \\[\"' '$work/diagnose.json'"
 
 [ $failed -eq 0 ] && echo "PHASE 3B PASSED" || echo "PHASE 3B FAILED"
 exit $failed

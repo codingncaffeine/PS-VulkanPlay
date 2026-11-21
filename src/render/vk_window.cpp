@@ -15,8 +15,10 @@
 #include <vulkan/vulkan.h>
 
 #include "app/log.h"
+#include "media/gpu_share.h"
 #include "psvp/version.h"
 #include "render/overlay_pass.h"
+#include "render/video_device.h"
 #include "render/video_pass.h"
 
 namespace psvp::render {
@@ -30,6 +32,7 @@ constexpr std::uint32_t make_version(std::uint32_t major, std::uint32_t minor, s
     return (major << 22) | (minor << 12) | patch;
 }
 constexpr std::uint32_t kMinimumApi = make_version(1, 2, 0);
+
 
 std::string version_text(std::uint32_t version) {
     return std::format("{}.{}.{}", (version >> 22) & 0x7f, (version >> 12) & 0x3ff, version & 0xfff);
@@ -100,6 +103,7 @@ private:
     bool create_instance();
     bool pick_device();
     bool create_device();
+    void share_with_decoder();
     bool create_frame_objects();
     bool create_swapchain();
     void destroy_swapchain();
@@ -118,8 +122,22 @@ private:
     VkPhysicalDevice physical_ = VK_NULL_HANDLE;
     std::uint32_t queue_family_ = 0;
     std::string device_name_;
+    std::uint32_t device_api_ = 0;
+    std::uint32_t instance_api_ = 0;
+    std::vector<std::string> instance_extensions_;
     VkDevice device_ = VK_NULL_HANDLE;
     VkQueue queue_ = VK_NULL_HANDLE;
+
+    // Decoding on the graphics card: the video queue the device was made with, and FFmpeg's view of it.
+    media::VulkanShare share_;
+    std::string gpu_why_not_;
+    std::optional<media::GpuDevice> gpu_;
+    void lock_queue() const {
+        if (gpu_) gpu_->lock_queue(queue_family_, 0);
+    }
+    void unlock_queue() const {
+        if (gpu_) gpu_->unlock_queue(queue_family_, 0);
+    }
 
     VkCommandPool command_pool_ = VK_NULL_HANDLE;
     VkCommandBuffer command_buffer_ = VK_NULL_HANDLE;
@@ -141,6 +159,7 @@ private:
     OverlayPass overlay_;
     const WindowOptions* options_ = nullptr;
     std::vector<std::string> overlay_lines_;  // as laid out last
+    std::optional<app::MenuView> overlay_menu_;
     VkExtent2D overlay_extent_{};             // the size they were laid out for
 };
 
@@ -169,7 +188,11 @@ bool Window::create_instance() {
     app.pApplicationName = PSVP_NAME;
     app.applicationVersion = make_version(0, 0, 1);
     app.pEngineName = PSVP_NAME;
-    app.apiVersion = kMinimumApi;
+    // The newest version this program uses: 1.3 for decoding on the graphics card. A device of 1.2
+    // still draws (it is only not lent to the decoder).
+    instance_api_ = loader_version >= kVideoApi ? kVideoApi : kMinimumApi;
+    app.apiVersion = instance_api_;
+    for (std::uint32_t i = 0; i < extension_count; ++i) instance_extensions_.emplace_back(extensions[i]);
 
     VkInstanceCreateInfo info{};
     info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
@@ -239,6 +262,7 @@ bool Window::pick_device() {
             best_rank = rank;
             physical_ = candidate;
             queue_family_ = *family;
+            device_api_ = properties.apiVersion;
             device_name_ = std::format("{} ({})", name, kind);
         }
     }
@@ -250,23 +274,31 @@ bool Window::pick_device() {
 }
 
 bool Window::create_device() {
-    const float priority = 1.0F;
-    VkDeviceQueueCreateInfo queue{};
-    queue.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-    queue.queueFamilyIndex = queue_family_;
-    queue.queueCount = 1;
-    queue.pQueuePriorities = &priority;
-
-    const char* const extensions[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
-    VkDeviceCreateInfo info{};
-    info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-    info.queueCreateInfoCount = 1;
-    info.pQueueCreateInfos = &queue;
-    info.enabledExtensionCount = 1;
-    info.ppEnabledExtensionNames = extensions;
-    if (!check(vkCreateDevice(physical_, &info, nullptr, &device_), "vkCreateDevice")) return false;
-    vkGetDeviceQueue(device_, queue_family_, 0, &queue_);
+    const bool wanted = options_ != nullptr && options_->gpu_decoding;
+    auto made = make_device(DeviceRequest{instance_, instance_api_, instance_extensions_, physical_, device_api_, queue_family_, device_name_, wanted,
+                                          {VK_KHR_SWAPCHAIN_EXTENSION_NAME}});
+    if (!made) {
+        log::error("render: {}", made.error());
+        return false;
+    }
+    device_ = made->device;
+    queue_ = made->queue;
+    share_ = std::move(made->share);
+    gpu_why_not_ = made->why_not;
     return true;
+}
+
+void Window::share_with_decoder() {
+    if (gpu_why_not_.empty()) {
+        if (auto shared = media::share_device(share_)) {
+            gpu_.emplace(std::move(*shared));
+        } else {
+            gpu_why_not_ = shared.error();
+        }
+    }
+    if (gpu_) log::info("render: pictures are decoded on {}", gpu_->description());
+    else log::info("render: pictures are decoded in software: {}", gpu_why_not_);
+    if (options_ != nullptr && options_->on_gpu) options_->on_gpu(gpu_, gpu_why_not_);
 }
 
 bool Window::create_frame_objects() {
@@ -489,11 +521,19 @@ bool Window::draw_frame(bool& presented, const media::Picture* fresh) {
         log::error("render: a picture of {}x{} with {} bits cannot be shown", fresh->width, fresh->height, fresh->bits);
     }
     // What lies over the picture, laid out again only when it or the window's size changed.
-    if (options_ != nullptr && options_->overlay_lines) {
-        std::vector<std::string> lines = options_->overlay_lines();
-        if (lines != overlay_lines_ || extent_.width != overlay_extent_.width || extent_.height != overlay_extent_.height) {
-            overlay_.set_quads(overlay::stats_panel(lines, static_cast<float>(extent_.width), static_cast<float>(extent_.height)));
+    if (options_ != nullptr && (options_->overlay_lines || options_->overlay_menu)) {
+        std::vector<std::string> lines = options_->overlay_lines ? options_->overlay_lines() : std::vector<std::string>{};
+        std::optional<app::MenuView> menu = options_->overlay_menu ? options_->overlay_menu() : std::nullopt;
+        if (lines != overlay_lines_ || menu != overlay_menu_ || extent_.width != overlay_extent_.width || extent_.height != overlay_extent_.height) {
+            const auto width = static_cast<float>(extent_.width), height = static_cast<float>(extent_.height);
+            std::vector<overlay::Quad> quads = overlay::stats_panel(lines, width, height);
+            if (menu) {
+                std::vector<overlay::Quad> panel = overlay::menu_panel(menu->title, menu->items, menu->selected, menu->hint, width, height);
+                quads.insert(quads.end(), panel.begin(), panel.end());
+            }
+            overlay_.set_quads(std::move(quads));
             overlay_lines_ = std::move(lines);
+            overlay_menu_ = std::move(menu);
             overlay_extent_ = extent_;
         }
     }
@@ -515,6 +555,13 @@ bool Window::draw_frame(bool& presented, const media::Picture* fresh) {
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     if (!check(vkBeginCommandBuffer(command_buffer_, &begin), "vkBeginCommandBuffer")) return false;
 
+    // A picture on the graphics card stays locked from here until it was submitted, or not.
+    bool submitted = false;
+    struct Unlock {
+        VideoPass& video;
+        bool& submitted;
+        ~Unlock() { video.after_submit(submitted); }
+    } unlock{video_, submitted};
     video_.record_upload(command_buffer_);
     overlay_.record_upload(command_buffer_);
 
@@ -540,17 +587,35 @@ bool Window::draw_frame(bool& presented, const media::Picture* fresh) {
     vkCmdEndRenderPass(command_buffer_);
     if (!check(vkEndCommandBuffer(command_buffer_), "vkEndCommandBuffer")) return false;
 
-    const VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    // With a picture decoded on the graphics card, the frame also waits for the decoder's work on
+    // it (a timeline semaphore) and tells the decoder when it has read it.
+    const std::optional<VideoPass::GpuWait> gpu_wait = video_.gpu_wait();
+    const VkSemaphore wait_semaphores[2] = {image_available_, gpu_wait ? gpu_wait->semaphore : VK_NULL_HANDLE};
+    const VkPipelineStageFlags wait_stages[2] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT};
+    const VkSemaphore signal_semaphores[2] = {render_done_[index], gpu_wait ? gpu_wait->semaphore : VK_NULL_HANDLE};
+    const std::uint64_t wait_values[2] = {0, gpu_wait ? gpu_wait->wait : 0};
+    const std::uint64_t signal_values[2] = {0, gpu_wait ? gpu_wait->signal : 0};
+    VkTimelineSemaphoreSubmitInfo timeline{};
+    timeline.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
+    timeline.waitSemaphoreValueCount = 2;
+    timeline.pWaitSemaphoreValues = wait_values;
+    timeline.signalSemaphoreValueCount = 2;
+    timeline.pSignalSemaphoreValues = signal_values;
     VkSubmitInfo submit{};
     submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    submit.waitSemaphoreCount = 1;
-    submit.pWaitSemaphores = &image_available_;
-    submit.pWaitDstStageMask = &wait_stage;
+    submit.pNext = gpu_wait ? &timeline : nullptr;
+    submit.waitSemaphoreCount = gpu_wait ? 2 : 1;
+    submit.pWaitSemaphores = wait_semaphores;
+    submit.pWaitDstStageMask = wait_stages;
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &command_buffer_;
-    submit.signalSemaphoreCount = 1;
-    submit.pSignalSemaphores = &render_done_[index];
-    if (!check(vkQueueSubmit(queue_, 1, &submit, frame_done_), "vkQueueSubmit")) return false;
+    submit.signalSemaphoreCount = gpu_wait ? 2 : 1;
+    submit.pSignalSemaphores = signal_semaphores;
+    lock_queue();
+    const VkResult queued = vkQueueSubmit(queue_, 1, &submit, frame_done_);
+    unlock_queue();
+    submitted = queued == VK_SUCCESS;
+    if (!check(queued, "vkQueueSubmit")) return false;
 
     VkPresentInfoKHR present{};
     present.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
@@ -559,7 +624,9 @@ bool Window::draw_frame(bool& presented, const media::Picture* fresh) {
     present.swapchainCount = 1;
     present.pSwapchains = &swapchain_;
     present.pImageIndices = &index;
+    lock_queue();
     const VkResult shown = vkQueuePresentKHR(queue_, &present);
+    unlock_queue();
     if (shown == VK_ERROR_OUT_OF_DATE_KHR || shown == VK_SUBOPTIMAL_KHR) {
         swapchain_stale_ = true;
     } else if (shown != VK_SUCCESS) {
@@ -571,15 +638,26 @@ bool Window::draw_frame(bool& presented, const media::Picture* fresh) {
 
 void Window::destroy() {
     if (device_ != VK_NULL_HANDLE) {
+        // Whoever decodes on the device lets go of it first: the decoders, and the pictures they made.
+        if (gpu_ && options_ != nullptr && options_->before_device_gone) options_->before_device_gone();
+        lock_queue();
         vkDeviceWaitIdle(device_);
+        unlock_queue();
         destroy_swapchain();
         video_.destroy();
         overlay_.destroy();
+        // FFmpeg's objects on the device go when the last hold on its device context does.
+        bool device_free = true;
+        if (gpu_) {
+            device_free = gpu_->users() == 1;
+            if (!device_free) log::error("render: the decoder still holds the graphics device; it is left to the system");
+            gpu_.reset();
+        }
         if (swapchain_ != VK_NULL_HANDLE) vkDestroySwapchainKHR(device_, swapchain_, nullptr);
         if (frame_done_ != VK_NULL_HANDLE) vkDestroyFence(device_, frame_done_, nullptr);
         if (image_available_ != VK_NULL_HANDLE) vkDestroySemaphore(device_, image_available_, nullptr);
         if (command_pool_ != VK_NULL_HANDLE) vkDestroyCommandPool(device_, command_pool_, nullptr);
-        vkDestroyDevice(device_, nullptr);
+        if (device_free) vkDestroyDevice(device_, nullptr);
         device_ = VK_NULL_HANDLE;
     }
     if (surface_ != VK_NULL_HANDLE) {
@@ -682,10 +760,11 @@ int Window::open(const WindowOptions& options) {
                                 "an updated graphics driver usually provides it.",
                                 PSVP_NAME, version_text(kMinimumApi)));
     }
-    if (!create_device() || !create_frame_objects() || !video_.create(physical_, device_) || !overlay_.create(physical_, device_)) {
+    if (!create_device() || !create_frame_objects() || !video_.create(physical_, device_, gpu_why_not_.empty()) || !overlay_.create(physical_, device_)) {
         return fail(kExitVulkanFailed, PSVP_NAME " cannot start",
                     std::format("The graphics device {} could not be set up. The log has the details.", device_name_));
     }
+    share_with_decoder();
     return 0;
 }
 

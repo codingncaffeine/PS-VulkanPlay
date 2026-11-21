@@ -50,6 +50,15 @@ BWRAP=(--dev-bind / / --tmpfs /dev --tmpfs /dev/shm --unshare-user --unshare-pid
 for node in null zero full random urandom tty; do
     [ -e "/dev/$node" ] && BWRAP+=(--dev-bind "/dev/$node" "/dev/$node")
 done
+# PSVP_WALL_GPU=1: the graphics card's compute and video nodes too (render nodes, NVIDIA's device
+# nodes), for headless decoding on it. Never its display nodes (/dev/dri/card*), never input or sound.
+GPU_NODES=()
+if [ "${PSVP_WALL_GPU:-}" = 1 ]; then
+    for node in /dev/dri/renderD* /dev/nvidia0 /dev/nvidia1 /dev/nvidiactl /dev/nvidia-uvm /dev/nvidia-uvm-tools; do
+        [ -e "$node" ] && GPU_NODES+=("$node")
+    done
+    for node in "${GPU_NODES[@]}"; do BWRAP+=(--dev-bind "$node" "$node"); done
+fi
 [ -d "$RT" ] && BWRAP+=(--tmpfs "$RT")
 [ -d /tmp/.X11-unix ] && BWRAP+=(--perms 1777 --tmpfs /tmp/.X11-unix)
 WALL=1
@@ -71,7 +80,7 @@ if [ "$1" = "--check" ]; then
     if has_sound; then echo "wall: control ok (sound: $(ls -A /dev/snd | wc -l) devices outside, none inside)"
     else echo "wall: control ok (sound: this machine has no devices at all)"; fi
 
-    reachable="$(inside sh -c "$devices_here")"
+    reachable="$(inside sh -c "$devices_here" | grep -v -x -F "$(printf '%s\n' "${GPU_NODES[@]:-/nonexistent}")" || true)"
     if [ -n "$reachable" ]; then echo "wall: CONTROL FAILED, devices reachable inside the wall:"; echo "$reachable" | head -5; exit 1; fi
     echo "wall: control ok (devices: $(sh -c "$devices_here" | wc -l) input, USB, camera and graphics devices outside, none inside)"
 
@@ -91,8 +100,12 @@ if [ "$1" = "--check" ]; then
     exit 0
 fi
 
-# Vulkan: the software driver, named explicitly, so a test never loads the desktop's GPU stack.
+# Vulkan: the software driver, named explicitly, so a test never loads the desktop's GPU stack
+# (with PSVP_WALL_GPU=1 the machine's own drivers, and no window server is used by such a run).
 icd="${PSVP_TEST_ICD:-}"
+if [ "${PSVP_WALL_GPU:-}" = 1 ] && [ -z "$icd" ]; then
+    icd="$( (ls /usr/share/vulkan/icd.d/*.json /etc/vulkan/icd.d/*.json 2>/dev/null || true) | grep -v lvp_icd | tr '\n' ':' | sed 's/:$//')"
+fi
 if [ -z "$icd" ]; then
     for candidate in /usr/share/vulkan/icd.d/lvp_icd*.json /etc/vulkan/icd.d/lvp_icd*.json; do
         [ -f "$candidate" ] && { icd="$candidate"; break; }

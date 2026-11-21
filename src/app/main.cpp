@@ -15,6 +15,7 @@
 #include "app/args.h"
 #include "app/commands.h"
 #include "app/controllers.h"
+#include "app/diagnose.h"
 #include "app/log.h"
 #include "app/paths.h"
 #include "app/player.h"
@@ -95,6 +96,7 @@ int run(int argc, char** argv) {
     // A command does its work in the terminal and opens neither the log nor a window.
     psvp::app::set_play_runner(&psvp::app::run_player);
     psvp::app::set_controllers_runner(&psvp::app::run_controllers);
+    psvp::app::set_diagnose_runner(&psvp::app::run_diagnose);
     if (psvp::app::is_command(args)) return psvp::app::run_command(args);
     if (args.empty()) hand_over_to_the_app();
 

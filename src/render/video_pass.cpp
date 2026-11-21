@@ -16,6 +16,8 @@ namespace {
 struct Constants {
     float to_rgb[16];
     float options[4];
+    float scale[4];  // x, y: the share of the texture the picture fills
+    float limit[4];  // the middles of the last brightness (x, y) and color (z, w) samples of the picture
 };
 
 bool good(VkResult result, const char* what) {
@@ -35,9 +37,13 @@ std::uint32_t VideoPass::memory_type(std::uint32_t allowed, VkMemoryPropertyFlag
     return UINT32_MAX;
 }
 
-bool VideoPass::create(VkPhysicalDevice physical, VkDevice device) {
+bool VideoPass::create(VkPhysicalDevice physical, VkDevice device, bool gpu_pictures) {
     physical_ = physical;
     device_ = device;
+    if (gpu_pictures) {
+        pipeline_barrier2_ = reinterpret_cast<PFN_vkCmdPipelineBarrier2>(vkGetDeviceProcAddr(device_, "vkCmdPipelineBarrier2"));
+        gpu_pictures_ = pipeline_barrier2_ != nullptr;
+    }
 
     VkFormatProperties wide{};
     vkGetPhysicalDeviceFormatProperties(physical_, VK_FORMAT_R16_UNORM, &wide);
@@ -178,13 +184,41 @@ void VideoPass::destroy_textures() {
     staging_ = VK_NULL_HANDLE;
     staging_memory_ = VK_NULL_HANDLE;
     staging_bytes_ = nullptr;
-    width_ = height_ = 0;
+    texture_width_ = texture_height_ = 0;
+    textures_bound_ = false;
+}
+
+void VideoPass::release_gpu_picture() {
+    for (VkImageView& view : gpu_views_) {
+        if (view != VK_NULL_HANDLE) vkDestroyImageView(device_, view, nullptr);
+        view = VK_NULL_HANDLE;
+    }
+    gpu_picture_.reset();
+}
+
+void VideoPass::write_descriptors(VkImageView y, VkImageView cb, VkImageView cr) {
+    const VkImageView views[3] = {y, cb, cr};
+    VkDescriptorImageInfo images[3]{};
+    VkWriteDescriptorSet writes[3]{};
+    for (std::uint32_t i = 0; i < 3; ++i) {
+        images[i].sampler = sampler_;
+        images[i].imageView = views[i];
+        images[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[i].dstSet = set_;
+        writes[i].dstBinding = i;
+        writes[i].descriptorCount = 1;
+        writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[i].pImageInfo = &images[i];
+    }
+    vkUpdateDescriptorSets(device_, 3, writes, 0, nullptr);
 }
 
 void VideoPass::destroy() {
     if (device_ == VK_NULL_HANDLE) return;
     destroy_pipeline();
     destroy_textures();
+    release_gpu_picture();
     if (fragment_ != VK_NULL_HANDLE) vkDestroyShaderModule(device_, fragment_, nullptr);
     if (vertex_ != VK_NULL_HANDLE) vkDestroyShaderModule(device_, vertex_, nullptr);
     if (layout_ != VK_NULL_HANDLE) vkDestroyPipelineLayout(device_, layout_, nullptr);
@@ -275,37 +309,84 @@ bool VideoPass::create_textures(std::uint32_t width, std::uint32_t height, bool 
     }
     staging_bytes_ = static_cast<std::uint8_t*>(mapped);
 
-    VkDescriptorImageInfo images[3]{};
-    VkWriteDescriptorSet writes[3]{};
-    for (std::uint32_t i = 0; i < 3; ++i) {
-        images[i].sampler = sampler_;
-        images[i].imageView = planes_[i].view;
-        images[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[i].dstSet = set_;
-        writes[i].dstBinding = i;
-        writes[i].descriptorCount = 1;
-        writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        writes[i].pImageInfo = &images[i];
-    }
-    vkUpdateDescriptorSets(device_, 3, writes, 0, nullptr);
-
-    width_ = width;
-    height_ = height;
+    write_descriptors(planes_[0].view, planes_[1].view, planes_[2].view);
+    textures_bound_ = true;
+    texture_width_ = width;
+    texture_height_ = height;
     wide_ = wide;
     first_upload_ = true;
     return true;
 }
 
-bool VideoPass::set_picture(const media::Picture& picture) {
-    if (picture.width == 0 || picture.height == 0 || picture.planes[0] == nullptr || (picture.bits != 8 && (picture.bits < 9 || picture.bits > 16))) return false;
-    const bool wide = picture.bits > 8 && wide_filterable_;
-    if (picture.width != width_ || picture.height != height_ || wide != wide_) {
-        if (!create_textures(picture.width, picture.height, wide)) {
-            destroy_textures();
+bool VideoPass::set_gpu_picture(const media::Picture& picture) {
+    // The picture shown before is done with: the frame drawn from it has finished.
+    release_gpu_picture();
+    if (!gpu_pictures_) return false;
+    auto use = media::begin_use(picture);
+    if (!use) {
+        if (!std::exchange(gpu_refused_, true)) log::error("render: {}", use.error());
+        return false;
+    }
+    const VkImage image = use->image;
+    gpu_wide_ = use->wide;
+    gpu_image_width_ = std::max(use->image_width, picture.width);
+    gpu_image_height_ = std::max(use->image_height, picture.height);
+    media::finish_use(picture, false, VK_IMAGE_LAYOUT_UNDEFINED, 0);
+    // Views of the image's two planes: the brightness, and the two color differences side by side.
+    const VkFormat formats[2] = {gpu_wide_ ? VK_FORMAT_R16_UNORM : VK_FORMAT_R8_UNORM, gpu_wide_ ? VK_FORMAT_R16G16_UNORM : VK_FORMAT_R8G8_UNORM};
+    const VkImageAspectFlags aspects[2] = {VK_IMAGE_ASPECT_PLANE_0_BIT, VK_IMAGE_ASPECT_PLANE_1_BIT};
+    for (int i = 0; i < 2; ++i) {
+        VkImageViewUsageCreateInfo usage{};
+        usage.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO;
+        usage.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
+        VkImageViewCreateInfo view{};
+        view.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        view.pNext = &usage;
+        view.image = image;
+        view.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        view.format = formats[i];
+        view.subresourceRange = {aspects[i], 0, 1, 0, 1};
+        if (!good(vkCreateImageView(device_, &view, nullptr, &gpu_views_[i]), "vkCreateImageView")) {
+            release_gpu_picture();
             return false;
         }
     }
+    write_descriptors(gpu_views_[0], gpu_views_[1], gpu_views_[1]);
+    textures_bound_ = false;
+    gpu_picture_ = picture;
+    return true;
+}
+
+bool VideoPass::set_picture(const media::Picture& picture) {
+    if (picture.width == 0 || picture.height == 0 || (picture.bits != 8 && (picture.bits < 9 || picture.bits > 16))) return false;
+    if (picture.on_gpu) {
+        if (!set_gpu_picture(picture)) return false;
+        width_ = picture.width;
+        height_ = picture.height;
+        bits_ = picture.bits;
+        narrowed_ = false;
+        matrix_ = picture.matrix;
+        transfer_ = picture.transfer;
+        full_range_ = picture.full_range;
+        transform_ = media::color_transform(picture.matrix, picture.full_range, picture.bits);
+        return true;
+    }
+    if (picture.planes[0] == nullptr) return false;
+    release_gpu_picture();
+    const bool wide = picture.bits > 8 && wide_filterable_;
+    if (picture.width != texture_width_ || picture.height != texture_height_ || wide != wide_) {
+        if (!create_textures(picture.width, picture.height, wide)) {
+            destroy_textures();
+            width_ = height_ = 0;
+            return false;
+        }
+    }
+    if (!textures_bound_) {
+        write_descriptors(planes_[0].view, planes_[1].view, planes_[2].view);
+        textures_bound_ = true;
+    }
+    width_ = picture.width;
+    height_ = picture.height;
     bits_ = picture.bits;
     narrowed_ = picture.bits > 8 && !wide;
     matrix_ = picture.matrix;
@@ -340,7 +421,32 @@ bool VideoPass::set_picture(const media::Picture& picture) {
 }
 
 void VideoPass::record_upload(VkCommandBuffer commands) {
-    if (!upload_due_ || width_ == 0) return;
+    if (gpu_picture_) {
+        // Every frame that reads the image waits for whoever wrote it last, from the layout it left
+        // it in: the decoder may have used it since, as a picture later ones are built on.
+        auto use = media::begin_use(*gpu_picture_);
+        if (!use) return;
+        gpu_use_ = *use;
+        VkImageMemoryBarrier2 barrier{};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+        barrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+        barrier.srcAccessMask = use->access;
+        barrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        barrier.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+        barrier.oldLayout = use->layout;
+        barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = use->image;
+        barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        VkDependencyInfo dependency{};
+        dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        dependency.imageMemoryBarrierCount = 1;
+        dependency.pImageMemoryBarriers = &barrier;
+        pipeline_barrier2_(commands, &dependency);
+        return;
+    }
+    if (!upload_due_ || texture_width_ == 0) return;
     upload_due_ = false;
     VkImageMemoryBarrier barriers[3]{};
     for (int i = 0; i < 3; ++i) {
@@ -374,8 +480,20 @@ void VideoPass::record_upload(VkCommandBuffer commands) {
     first_upload_ = false;
 }
 
+std::optional<VideoPass::GpuWait> VideoPass::gpu_wait() const {
+    if (!gpu_use_) return std::nullopt;
+    return GpuWait{gpu_use_->semaphore, gpu_use_->wait_value, gpu_use_->wait_value + 1};
+}
+
+void VideoPass::after_submit(bool submitted) {
+    if (!gpu_use_ || !gpu_picture_) return;
+    media::finish_use(*gpu_picture_, submitted, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+    gpu_use_.reset();
+}
+
 void VideoPass::record_draw(VkCommandBuffer commands, VkExtent2D target) {
-    if (width_ == 0 || pipeline_ == VK_NULL_HANDLE || first_upload_) return;
+    if (width_ == 0 || pipeline_ == VK_NULL_HANDLE) return;
+    if (gpu_picture_ ? !gpu_use_ : first_upload_) return;
     placement_ = media::place_picture(width_, height_, target.width, target.height);
     VkViewport viewport{};
     viewport.x = static_cast<float>(placement_.x);
@@ -390,12 +508,26 @@ void VideoPass::record_draw(VkCommandBuffer commands, VkExtent2D target) {
     Constants constants{};
     std::copy(transform_.begin(), transform_.end(), constants.to_rgb);
     // A texture of 16 bits gives a sample of fewer bits as a share of 65535: brought to a share of its own largest value.
+    // A graphics card's decoder puts samples of 10 bits in the high bits of 16: a share of 65535 that
+    // is 64 times the sample.
     const unsigned largest = (1U << bits_) - 1U;
-    constants.options[0] = wide_ ? 65535.0F / static_cast<float>(largest) : 1.0F;
+    if (gpu_picture_) constants.options[0] = gpu_wide_ ? 65535.0F / static_cast<float>(largest << (16U - bits_)) : 1.0F;
+    else constants.options[0] = wide_ ? 65535.0F / static_cast<float>(largest) : 1.0F;
     // A color sample sits on the left one of the two brightness samples it belongs to, not between them (as the
     // streams of a console say): a quarter of its own width left of where a plane of half the size puts it.
-    constants.options[1] = 0.25F / static_cast<float>(planes_[1].width);
+    // The texture may be larger than the picture (a decoder's image is): only the picture's share is drawn.
+    const std::uint32_t texture_width = gpu_picture_ ? gpu_image_width_ : width_;
+    const std::uint32_t texture_height = gpu_picture_ ? gpu_image_height_ : height_;
+    constants.scale[0] = static_cast<float>(width_) / static_cast<float>(texture_width);
+    constants.scale[1] = static_cast<float>(height_) / static_cast<float>(texture_height);
+    const auto half = [](std::uint32_t size) { return static_cast<float>((size + 1) / 2); };
+    constants.limit[0] = (static_cast<float>(width_) - 0.5F) / static_cast<float>(texture_width);
+    constants.limit[1] = (static_cast<float>(height_) - 0.5F) / static_cast<float>(texture_height);
+    constants.limit[2] = (half(width_) - 0.5F) / half(texture_width);
+    constants.limit[3] = (half(height_) - 0.5F) / half(texture_height);
+    constants.options[1] = 0.25F / static_cast<float>((texture_width + 1) / 2);
     constants.options[2] = target_encodes_ ? 1.0F : 0.0F;
+    constants.options[3] = gpu_picture_ ? 1.0F : 0.0F;
     vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
     vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0, 1, &set_, 0, nullptr);
     vkCmdPushConstants(commands, layout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof constants, &constants);
@@ -403,9 +535,10 @@ void VideoPass::record_draw(VkCommandBuffer commands, VkExtent2D target) {
 }
 
 std::string VideoPass::describe() const {
-    return std::format("{}x{}, {} bits{}, {} range, {}{}, drawn at {}x{}", width_, height_, bits_, narrowed_ ? " (shown as 8)" : "", full_range_ ? "full" : "limited",
+    return std::format("{}x{}, {} bits{}, {} range, {}{}, drawn at {}x{}{}", width_, height_, bits_, narrowed_ ? " (shown as 8)" : "", full_range_ ? "full" : "limited",
                        matrix_ == media::ColorMatrix::bt2020 ? "BT.2020" : matrix_ == media::ColorMatrix::bt601 ? "BT.601" : "BT.709",
-                       transfer_ == media::ColorTransfer::sdr ? "" : ", HDR shown without tone mapping", placement_.width, placement_.height);
+                       transfer_ == media::ColorTransfer::sdr ? "" : ", HDR shown without tone mapping", placement_.width, placement_.height,
+                       gpu_picture_ ? ", read straight from the graphics card's decoder" : "");
 }
 
 }  // namespace psvp::render

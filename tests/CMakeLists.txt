@@ -27,6 +27,7 @@ add_executable(psvp_tests
     unit/test_sound_buffer.cpp
     unit/test_store.cpp
     unit/test_stream_message.cpp
+    unit/test_stream_menu.cpp
     unit/test_stream_setup.cpp
     unit/test_text_message.cpp
     unit/test_transport.cpp)
@@ -68,6 +69,14 @@ psvp_add_fuzz_target(transport)
 # Reads the screen of the virtual X server a window check runs on (tools/launch-check.sh).
 add_executable(psvp_fbcheck ../tools/fbcheck/fbcheck.cpp)
 psvp_setup_target(psvp_fbcheck)
+
+# Draws pictures decoded on a graphics card as the window does, offscreen, and compares them with the
+# software way (on a machine whose card decodes; tools/wall.sh with PSVP_WALL_GPU=1).
+if(TARGET psvp_render)
+    add_executable(psvp_render_check ../tools/render-check/render_check.cpp)
+    target_link_libraries(psvp_render_check PRIVATE psvp_render psvp_media Vulkan::Vulkan)
+    psvp_setup_target(psvp_render_check)
+endif()
 
 # Stands in for a console in the scenario tests (tests/scenario).
 add_executable(psvp-mock-console ../tools/mock-console/mock_console.cpp)

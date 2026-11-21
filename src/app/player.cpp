@@ -18,8 +18,11 @@
 
 #include <SDL3/SDL.h>
 
+#include "app/controller_presses.h"
 #include "app/haptics_volume.h"
 #include "app/log.h"
+#include "app/pretend.h"
+#include "app/stream_menu.h"
 #include "app/window_place.h"
 #include "media/sound_decoder.h"
 #include "media/frame_pacer.h"
@@ -82,11 +85,44 @@ class Player {
 public:
     // `frames_per_second` is what the console was asked for; with `pacing`, pictures are shown that evenly.
     // With a `cushion_ms`, that much delay is kept so that frames which come that much late are shown in place.
+    // With `gpu_decoding`, the decoder waits for the window to say which graphics device to decode on.
     Player(double frames_per_second, bool pacing, int cushion_ms, int haptics_volume, std::optional<transport::Button> back_left,
-           std::optional<transport::Button> back_right)
+           std::optional<transport::Button> back_right, bool gpu_decoding)
         : haptics_volume_(haptics_volume), back_left_(back_left), back_right_(back_right), decode_thread_([this] { decode_loop(); }) {
         const std::lock_guard lock(jobs_mutex_);
         if (pacing) pacer_.emplace(frames_per_second, std::chrono::milliseconds(cushion_ms));
+        if (!gpu_decoding) {
+            gpu_decided_ = true;
+            gpu_why_not_ = "software was asked for";
+        }
+    }
+    // ---- on the window's thread ----
+    // The device the window lends for decoding, or nothing and why not. Frames wait for this.
+    void set_gpu(std::optional<media::GpuDevice> gpu, const std::string& why_not) {
+        {
+            const std::lock_guard lock(jobs_mutex_);
+            // Software was asked for: decided at the start, and that is the reason that stands.
+            if (gpu_decided_) return;
+            gpu_ = std::move(gpu);
+            gpu_why_not_ = why_not;
+            gpu_decided_ = true;
+        }
+        jobs_wake_.notify_all();
+    }
+    // Before the window's device goes: decoding ends, and every picture decoded on it is let go.
+    void drop_gpu() {
+        finish();
+        if (decoder_) {
+            take_counters();
+            decoder_text_ = decoder_->description();
+            decoder_.reset();
+        }
+        {
+            const std::lock_guard lock(picture_mutex_);
+            latest_.reset();
+        }
+        const std::lock_guard lock(jobs_mutex_);
+        gpu_.reset();
     }
     // Ends the decoding: frames still waiting are not decoded any more. After it the counts stand still.
     void finish() {
@@ -228,8 +264,23 @@ public:
     }
     // The statistics over the picture, while they are shown: worked out again twice a second.
     std::vector<std::string> stats_lines();
+    // The menu over the stream, while it is open.
+    std::optional<MenuView> menu_view() {
+        if (!menu_.is_open()) return std::nullopt;
+        menu_.set_state(stats_shown_.load(), fullscreen());
+        return menu_.view();
+    }
+    // Chosen in the menu: the window closes; and the console is sent to rest mode.
+    [[nodiscard]] bool quit_asked() const { return quit_asked_.load(); }
+    [[nodiscard]] bool rest_asked() const { return rest_asked_.load(); }
     void show_stats(bool shown) { stats_shown_.store(shown); }
     void on_event(const SDL_Event& event);
+    // For checks: presses the pretended controller as its file says. On the window's thread, as it goes round.
+    void follow_taps() {
+        if (!taps_ || pad_ == nullptr) return;
+        taps_->follow(SDL_GetGamepadJoystick(pad_), SDL_GetTicks());
+    }
+    void set_taps(const std::string& file) { taps_.emplace(file); }
 
     // ---- on the session's thread ----
     void on_quality(const proto::ConnectionQuality& quality) {
@@ -278,6 +329,41 @@ private:
     std::optional<Clock::time_point> last_keyframe_ask_;
     std::atomic<bool> keyframe_needed_{false};
 
+    // The graphics card to decode on: set by the window's thread under the jobs' lock, read by the decode thread.
+    std::optional<media::GpuDevice> gpu_;
+    bool gpu_decided_ = false;
+    std::string gpu_why_not_;
+    const media::GpuDevice* decode_gpu() {
+        const std::lock_guard lock(jobs_mutex_);
+        if (!gpu_ && !gpu_why_not_.empty() && !gpu_said_) {
+            gpu_said_ = true;
+            log::info("play: decoding in software: {}", gpu_why_not_);
+        }
+        return gpu_ ? &*gpu_ : nullptr;
+    }
+    bool gpu_said_ = false;
+    // Where the decoder decodes, said in the log and over the picture when it changes (its check passed or failed).
+    std::string codec_name_;
+    bool decoder_on_gpu_ = false;
+    int decoder_checks_left_ = -1;
+    std::string decoder_software_reason_;
+    std::uint64_t gpu_pictures_ = 0, gpu_checked_ = 0;
+    void note_decoder_state(bool opened) {
+        const bool on_gpu = decoder_->on_gpu();
+        const int checks_left = decoder_->checks_left();
+        const std::string& reason = decoder_->software_reason();
+        if (!opened && on_gpu == decoder_on_gpu_ && checks_left == decoder_checks_left_ && reason == decoder_software_reason_) return;
+        decoder_on_gpu_ = on_gpu;
+        decoder_checks_left_ = checks_left;
+        decoder_software_reason_ = reason;
+        decoder_text_ = decoder_->description();
+        if (opened) log::info("play: decoding with {}", decoder_text_);
+        else if (on_gpu && checks_left == 0) log::info("play: the graphics card's first pictures were the software decoder's, sample for sample: decoding there");
+        else if (!reason.empty()) log::warn("play: decoding in software from now on: {}", reason);
+        const std::lock_guard stats_lock(stats_mutex_);
+        stats_codec_ = std::format("{} ({})", codec_name_, on_gpu ? (checks_left > 0 ? "graphics card, checking" : "graphics card") : "software");
+    }
+
     // The decoder's side: only the decode thread touches these until it has ended.
     std::optional<media::VideoDecoder> decoder_;
     std::optional<unsigned> size_index_;
@@ -292,6 +378,8 @@ private:
         changed_ += counters.changed;
         approximate_ += counters.approximate;
         undecodable_ += counters.undecodable;
+        gpu_pictures_ += counters.gpu_pictures;
+        gpu_checked_ += counters.checked;
         unfollowed_ = decoder_->unfollowed_reason();
     }
     // When to show each picture. Set before the first frame is there; the decode thread's from then on.
@@ -376,6 +464,24 @@ private:
     unsigned haptics_since_rumble_ = 0;
     std::uint64_t haptics_frames_ = 0, haptics_played_ = 0, haptics_rumbled_ = 0, haptics_unusable_ = 0, haptics_let_go_ = 0;
 
+    // The menu over the stream, on the window's thread.
+    StreamMenu menu_;
+    PressReader menu_presses_;
+    bool chord_l1_ = false, chord_r1_ = false, chord_options_ = false;
+    int menu_stick_x_ = 0, menu_stick_y_ = 0;
+    SDL_WindowID window_id_ = 0;
+    std::uint64_t menu_opened_ = 0;
+    std::string menu_chosen_;  // the last thing chosen in it, for the report
+    std::atomic<bool> quit_asked_{false}, rest_asked_{false};
+    std::optional<Taps> taps_;
+    [[nodiscard]] bool fullscreen() const {
+        SDL_Window* window = SDL_GetWindowFromID(window_id_);
+        return window != nullptr && (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN) != 0;
+    }
+    void open_menu();
+    void menu_event(const SDL_Event& event);
+    void menu_act(MenuAction action);
+
     // The controller.
     std::mutex input_mutex_;
     transport::Buttons buttons_;
@@ -395,7 +501,8 @@ void Player::decode_loop() {
         Job job;
         {
             std::unique_lock lock(jobs_mutex_);
-            jobs_wake_.wait(lock, [&] { return closing_ || !jobs_.empty(); });
+            // The first decoder opens on the graphics card the window lends, so frames wait until it said.
+            jobs_wake_.wait(lock, [&] { return closing_ || (!jobs_.empty() && gpu_decided_); });
             if (closing_) return;
             job = std::move(jobs_.front());
             jobs_.pop_front();
@@ -409,14 +516,11 @@ void Player::decode_loop() {
             const auto codec = media::codec_of_header(job.header);
             if (!codec) {
                 decoder_error_ = std::format("the picture header of {} bytes is neither H.264's nor HEVC's", job.header.size());
-            } else if (auto opened = media::VideoDecoder::open(*codec, job.header)) {
+            } else if (auto opened = media::VideoDecoder::open(*codec, job.header, decode_gpu())) {
                 decoder_.emplace(std::move(*opened));
                 decoder_text_ = decoder_->description();
-                {
-                    const std::lock_guard stats_lock(stats_mutex_);
-                    stats_codec_ = *codec == media::VideoCodec::h264 ? "H.264" : "HEVC";
-                }
-                log::info("play: decoding with {}", decoder_text_);
+                codec_name_ = *codec == media::VideoCodec::h264 ? "H.264" : "HEVC";
+                note_decoder_state(true);
             } else {
                 decoder_error_ = opened.error();
             }
@@ -431,6 +535,7 @@ void Player::decode_loop() {
         longest_arrival_since_ms_ = std::max(longest_arrival_since_ms_, job.since_arrival_ms);
         const auto began = Clock::now();
         auto decoded = decoder_->decode(job.index, job.data);
+        note_decoder_state(false);
         // No frame the decoder holds leads to this one: only a keyframe gets the picture going again.
         if (decoded.needs_keyframe) keyframe_needed_.store(true);
         std::optional<media::Picture>& picture = decoded.picture;
@@ -716,13 +821,136 @@ std::vector<std::string> Player::stats_lines() {
     return lines;
 }
 
+void Player::open_menu() {
+    menu_.open(stats_shown_.load(), fullscreen());
+    menu_presses_ = PressReader{};
+    ++menu_opened_;
+    // What was held goes up for the console: nothing stays pressed on it while the menu is open.
+    {
+        const std::lock_guard lock(input_mutex_);
+        buttons_ = transport::Buttons{};
+        state_.left_x = state_.left_y = state_.right_x = state_.right_y = 0;
+        input_changed_ = true;
+    }
+    log::info("play: the menu over the stream opened");
+    render::wake_window();
+}
+
+void Player::menu_act(MenuAction action) {
+    switch (action) {
+    case MenuAction::none: return;
+    case MenuAction::resume: menu_chosen_ = "back to the game"; break;
+    case MenuAction::toggle_stats:
+        stats_shown_.store(!stats_shown_.load());
+        menu_chosen_ = stats_shown_.load() ? "statistics shown" : "statistics hidden";
+        break;
+    case MenuAction::toggle_fullscreen:
+        if (SDL_Window* window = SDL_GetWindowFromID(window_id_)) SDL_SetWindowFullscreen(window, !fullscreen());
+        menu_chosen_ = "full screen";
+        break;
+    case MenuAction::quit:
+        menu_chosen_ = "quit";
+        quit_asked_.store(true);
+        break;
+    case MenuAction::rest_and_quit:
+        menu_chosen_ = "quit and put the console to rest";
+        rest_asked_.store(true);
+        quit_asked_.store(true);
+        break;
+    }
+    log::info("play: chosen in the menu: {}", menu_chosen_);
+    render::wake_window();
+}
+
+// While the menu is open, what is pressed moves through it and reaches the console no more.
+void Player::menu_event(const SDL_Event& event) {
+    std::vector<Press> presses;
+    const std::uint64_t now = SDL_GetTicks();
+    switch (event.type) {
+    case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+    case SDL_EVENT_GAMEPAD_BUTTON_UP: {
+        if (event.gbutton.which != pad_id_) return;
+        std::optional<Press> press;
+        switch (event.gbutton.button) {
+        case SDL_GAMEPAD_BUTTON_DPAD_UP: press = Press::up; break;
+        case SDL_GAMEPAD_BUTTON_DPAD_DOWN: press = Press::down; break;
+        case SDL_GAMEPAD_BUTTON_DPAD_LEFT: press = Press::left; break;
+        case SDL_GAMEPAD_BUTTON_DPAD_RIGHT: press = Press::right; break;
+        case SDL_GAMEPAD_BUTTON_SOUTH: press = Press::accept; break;
+        case SDL_GAMEPAD_BUTTON_EAST: press = Press::back; break;
+        default: break;
+        }
+        if (press) menu_presses_.button(*press, event.gbutton.down, now, presses);
+        break;
+    }
+    case SDL_EVENT_GAMEPAD_AXIS_MOTION:
+        if (event.gaxis.which != pad_id_) return;
+        if (event.gaxis.axis == SDL_GAMEPAD_AXIS_LEFTX) menu_stick_x_ = event.gaxis.value;
+        else if (event.gaxis.axis == SDL_GAMEPAD_AXIS_LEFTY) menu_stick_y_ = event.gaxis.value;
+        else return;
+        menu_presses_.stick(menu_stick_x_, menu_stick_y_, now, presses);
+        break;
+    case SDL_EVENT_KEY_DOWN:
+        switch (event.key.key) {
+        case SDLK_UP: presses.push_back(Press::up); break;
+        case SDLK_DOWN: presses.push_back(Press::down); break;
+        case SDLK_RETURN:
+        case SDLK_KP_ENTER:
+        case SDLK_SPACE:
+            if (!event.key.repeat) presses.push_back(Press::accept);
+            break;
+        case SDLK_ESCAPE:
+        case SDLK_BACKSPACE:
+            if (!event.key.repeat) presses.push_back(Press::back);
+            break;
+        default: break;
+        }
+        break;
+    default: return;
+    }
+    for (const Press press : presses) menu_act(menu_.press(press));
+    render::wake_window();
+}
+
 void Player::on_event(const SDL_Event& event) {
     using transport::Button;
+    if (event.type >= SDL_EVENT_WINDOW_FIRST && event.type <= SDL_EVENT_WINDOW_LAST) window_id_ = event.window.windowID;
     // F3, as in many games: the statistics over the picture, and away again.
     if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_F3 && !event.key.repeat) {
         stats_shown_.store(!stats_shown_.load());
         render::wake_window();
         return;
+    }
+    // F1, or L1 + R1 + Options held together on the controller: the menu over the stream.
+    if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_F1 && !event.key.repeat) {
+        if (menu_.is_open()) menu_act(menu_.press(Press::back));
+        else open_menu();
+        return;
+    }
+    if ((event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN || event.type == SDL_EVENT_GAMEPAD_BUTTON_UP) && event.gbutton.which == pad_id_) {
+        if (event.gbutton.button == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) chord_l1_ = event.gbutton.down;
+        if (event.gbutton.button == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) chord_r1_ = event.gbutton.down;
+        if (event.gbutton.button == SDL_GAMEPAD_BUTTON_START) chord_options_ = event.gbutton.down;
+        if (menu_.chord(chord_l1_, chord_r1_, chord_options_)) {
+            open_menu();
+            return;
+        }
+    }
+    if (menu_.is_open()) {
+        switch (event.type) {
+        case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+        case SDL_EVENT_GAMEPAD_BUTTON_UP:
+        case SDL_EVENT_GAMEPAD_AXIS_MOTION:
+        case SDL_EVENT_GAMEPAD_TOUCHPAD_DOWN:
+        case SDL_EVENT_GAMEPAD_TOUCHPAD_MOTION:
+        case SDL_EVENT_GAMEPAD_TOUCHPAD_UP:
+        case SDL_EVENT_GAMEPAD_SENSOR_UPDATE:
+        case SDL_EVENT_KEY_DOWN:
+        case SDL_EVENT_KEY_UP:
+            menu_event(event);
+            return;
+        default: break;
+        }
     }
     switch (event.type) {
     case SDL_EVENT_GAMEPAD_ADDED:
@@ -896,6 +1124,17 @@ std::vector<std::string> Player::report() {
         } else {
             lines.push_back(std::format("Behind lost frames the picture stands until the console's repair: {}.", unfollowed_));
         }
+        if (gpu_pictures_ != 0 || gpu_checked_ != 0) {
+            lines.push_back(std::format("Decoding on the graphics card: {} of the {} pictures came out there; {} of its pictures were compared with the "
+                                        "software decoder's first{}.",
+                                        gpu_pictures_, pictures_, gpu_checked_,
+                                        decoder_software_reason_.empty() ? std::string(", all the same") : std::format(", then: {}", decoder_software_reason_)));
+        } else {
+            const std::lock_guard lock(jobs_mutex_);
+            if (!gpu_why_not_.empty()) lines.push_back(std::format("Decoding in software: {}.", gpu_why_not_));
+        }
+        if (menu_opened_ != 0) lines.push_back(std::format("The menu over the stream was opened {} times; chosen in it last: {}.", menu_opened_,
+                                                           menu_chosen_.empty() ? std::string("nothing") : menu_chosen_));
         lines.push_back(std::format("Frames arrived this far apart: {}.", arrival_spacing_.text()));
         lines.push_back(std::format("Frames that came late with none lost: {} were held up on the way (the next one came right behind), {} the console "
                                     "sent late (the next one kept its distance: the game's own pace).",
@@ -966,7 +1205,12 @@ int run_player(SessionPlan plan, const PlayOptions& options) {
     // Ten milliseconds of sound at a time, a console's frame: a larger piece is that much more delay.
     SDL_SetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES, "480");
     if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) log::warn("play: no sound: {}", SDL_GetError());
+    if (options.pretend) only_pretended_controllers();
     if (!SDL_InitSubSystem(SDL_INIT_GAMEPAD)) log::warn("play: no controllers: {}", SDL_GetError());
+    if (options.pretend && !attach_pretended(*options.pretend)) {
+        log::error("play: --pretend takes a vendor and a product number, as 054c:0df2");
+        return 64;
+    }
 
     // What a PS5 is told the controller is, when the session starts: a DualSense when one is
     // connected then. To it the console sends that controller's haptics and its triggers' effects.
@@ -984,7 +1228,8 @@ int run_player(SessionPlan plan, const PlayOptions& options) {
     int window_code = 0;
     int session_code = 0;
     {
-        Player player(static_cast<double>(plan.video.max_fps), options.pacing, options.cushion_ms, options.haptics_volume, options.back_left, options.back_right);
+        Player player(static_cast<double>(plan.video.max_fps), options.pacing, options.cushion_ms, options.haptics_volume, options.back_left, options.back_right,
+                      options.decoder == PlayOptions::Decoder::automatic);
         std::atomic<bool> stop{false};
         std::atomic<bool> done{false};
         plan.on_media = [&](transport::MediaOutput& media, const std::optional<proto::StreamInfo>& info) { player.on_media(media, info); };
@@ -994,6 +1239,8 @@ int run_player(SessionPlan plan, const PlayOptions& options) {
         plan.on_quality = [&](const proto::ConnectionQuality& quality) { player.on_quality(quality); };
         player.show_stats(options.stats);
         plan.stop = [&] { return stop.load(); };
+        plan.rest_asked = [&] { return player.rest_asked(); };
+        if (options.pretend_taps) player.set_taps(*options.pretend_taps);
         std::thread session([&] {
             session_code = run_session(plan);
             done.store(true);
@@ -1007,9 +1254,16 @@ int run_player(SessionPlan plan, const PlayOptions& options) {
             window.frame_limit = options.frames;
             window.dialogs = !options.frames.has_value();
             window.next_picture = [&] { return player.next_picture(); };
-            window.finished = [&] { return done.load(); };
+            window.finished = [&] {
+                player.follow_taps();
+                return done.load() || player.quit_asked();
+            };
             window.on_event = [&](const SDL_Event& event) { player.on_event(event); };
             window.overlay_lines = [&] { return player.stats_lines(); };
+            window.overlay_menu = [&] { return player.menu_view(); };
+            window.gpu_decoding = options.decoder == PlayOptions::Decoder::automatic;
+            window.on_gpu = [&](std::optional<media::GpuDevice> gpu, const std::string& why_not) { player.set_gpu(std::move(gpu), why_not); };
+            window.before_device_gone = [&] { player.drop_gpu(); };
             if (const auto file = window_place_file()) {
                 window.place = load_window_place(*file);
                 window.on_place = [file = *file](const WindowPlace& place) {

@@ -15,6 +15,8 @@ namespace psvp::media {
 
 enum class VideoCodec { h264, hevc };
 [[nodiscard]] const char* codec_name(VideoCodec codec) noexcept;
+// FFmpeg's own version, as it says it ("9.1").
+[[nodiscard]] std::string ffmpeg_version();
 // The codec of a stream, told from the header the console sends before the first
 // frame (the parameter sets its decoder needs); nothing when it is neither.
 [[nodiscard]] std::optional<VideoCodec> codec_of_header(std::span<const std::uint8_t> header) noexcept;
@@ -37,6 +39,9 @@ struct Picture {
     // Built on a frame that stood in for a lost one, or on a picture that was: close to the
     // console's picture, not the same. The console's repair ends it.
     bool approximate = false;
+    // Decoded on a graphics card and still in its memory (media/gpu_device.h): no planes here,
+    // `keep` holds FFmpeg's frame. `bits` is still the depth of its samples.
+    bool on_gpu = false;
     const std::uint8_t* planes[3] = {nullptr, nullptr, nullptr};
     std::size_t strides[3] = {0, 0, 0};  // in bytes
     std::shared_ptr<void> keep;          // the planes live as long as this does
@@ -57,12 +62,21 @@ struct VideoDecoderCounters {
     std::uint64_t undecodable = 0;   // frames left out: the decoder held none of the frames they name
     std::uint64_t microseconds = 0;      // spent decoding, all frames together
     std::uint64_t slowest_microseconds = 0;
+    std::uint64_t gpu_pictures = 0;      // of `pictures`, those that came out on the graphics card
+    std::uint64_t checked = 0;           // pictures of the graphics card compared with the software decoder's
 };
+
+class GpuDevice;
 
 class VideoDecoder {
 public:
-    // `header` is what the console sent before the first frame.
-    [[nodiscard]] static std::expected<VideoDecoder, std::string> open(VideoCodec codec, std::span<const std::uint8_t> header);
+    // `header` is what the console sent before the first frame. With a `gpu`, the pictures are
+    // decoded on that graphics card where it can: its first pictures (two seconds) are decoded in
+    // software too and must be the same, sample for sample (decoding is exact by the standards), or the
+    // decoder goes on in software and says why. It also does when the card stops giving pictures.
+    // `gpu_checks`: how many of the card's first pictures are compared (a short clip's check takes fewer).
+    [[nodiscard]] static std::expected<VideoDecoder, std::string> open(VideoCodec codec, std::span<const std::uint8_t> header,
+                                                                     const GpuDevice* gpu = nullptr, int gpu_checks = -1);
     VideoDecoder(VideoDecoder&&) noexcept;
     VideoDecoder& operator=(VideoDecoder&&) noexcept;
     ~VideoDecoder();
@@ -87,6 +101,12 @@ public:
     [[nodiscard]] const VideoDecoderCounters& counters() const noexcept;
     // Which decoder this is, for a report: "H.264, FFmpeg's h264 decoder in software".
     [[nodiscard]] std::string description() const;
+    // Pictures come out on the graphics card (once its check has passed).
+    [[nodiscard]] bool on_gpu() const noexcept;
+    // Why a decoder that was given a graphics card decodes in software; empty otherwise.
+    [[nodiscard]] const std::string& software_reason() const noexcept;
+    // Pictures of the graphics card it compares with the software decoder's: how many are still to come.
+    [[nodiscard]] int checks_left() const noexcept;
 
 private:
     struct State;

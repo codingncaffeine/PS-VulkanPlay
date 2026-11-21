@@ -48,6 +48,8 @@ lane launch-asan       env ASAN_OPTIONS=detect_leaks=0 tools/wall.sh tools/launc
 lane launch-libcxx     launch clang-libcxx
 # Every Vulkan call of the window under the Khronos validation layer.
 lane validation        tools/wall.sh tools/validation-check.sh build/release/ps-vulkanplay
+# Decoding on this machine's graphics card, drawn as the window draws it (skips where no card decodes).
+lane gpu               tools/gpu-check.sh build/release
 lane identity          tools/identity-audit.sh
 
 # The commands against the mock console, with the reference's own client as the control.

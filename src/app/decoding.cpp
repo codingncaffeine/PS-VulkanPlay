@@ -72,7 +72,7 @@ void Decoding::video(std::span<const std::uint8_t> header, unsigned size_index, 
         const auto codec = media::codec_of_header(header);
         if (!codec) {
             video_error_ = std::format("the picture header of {} bytes is neither H.264's nor HEVC's", header.size());
-        } else if (auto opened = media::VideoDecoder::open(*codec, header)) {
+        } else if (auto opened = media::VideoDecoder::open(*codec, header, options_.gpu)) {
             video_.emplace(std::move(*opened));
             decoder_text_ = video_->description();
         } else {
@@ -87,8 +87,24 @@ void Decoding::video(std::span<const std::uint8_t> header, unsigned size_index, 
         after_loss_ = true;
         repair_run_ = 0;
     }
-    const auto decoded = video_->decode(index, frame);
+    auto decoded = video_->decode(index, frame);
     unfollowed_ = video_->unfollowed_reason();
+    decoder_text_ = video_->description();
+    if (decoded.picture && decoded.picture->on_gpu) {
+        // Read back from the card, to be checked as a picture in the machine's memory.
+        ++gpu_pictures_;
+        auto local = media::download(*decoded.picture);
+        if (!local) ++gpu_unreadable_;
+        decoded.picture = std::move(local);
+        if (options_.compare_gpu && decoded.picture && reference_picture_ && reference_index_ == index) {
+            if (const auto apart = media::compare_pictures(*decoded.picture, *reference_picture_)) {
+                ++gpu_compared_;
+                if (apart->different == 0) ++gpu_identical_;
+                else if (!gpu_first_different_) gpu_first_different_ = index;
+                gpu_largest_ = std::max(gpu_largest_, apart->largest);
+            }
+        }
+    }
     const std::optional<media::Picture>& picture = decoded.picture;
     const bool compare = reference_picture_ && reference_index_ == index;
     if (!picture) {
@@ -180,6 +196,14 @@ std::vector<std::string> Decoding::report() const {
                 lines.push_back(std::format("Behind lost frames the picture stands until the console's repair: {}.", unfollowed_));
             }
         }
+        if (options_.gpu != nullptr) {
+            lines.push_back(std::format("On the graphics card: {} of {} pictures; {} of them could not be read back; against the software decoder, {} of "
+                                        "{} compared were the same in every plane{}.",
+                                        gpu_pictures_, pictures_, gpu_unreadable_, gpu_identical_, gpu_compared_,
+                                        gpu_identical_ == gpu_compared_ ? std::string()
+                                                                        : std::format(" (the first different: frame {}; the largest difference: {})",
+                                                                                      gpu_first_different_.value_or(0), gpu_largest_)));
+        }
         if (compared_ + missing_ != 0) {
             lines.push_back(std::format("Against the stream with nothing lost: {} pictures are the same sample for sample, {} are not (off by {:.2f} of "
                                         "255 on average, {:.2f} at most, in frame {}), {} are not there to be shown.",
@@ -215,6 +239,8 @@ std::vector<std::string> Decoding::report() const {
 
 bool Decoding::good() const {
     if (!video_error_.empty() || !sound_error_.empty()) return false;
+    // On a graphics card: its pictures came out, could be read back, and were the software decoder's.
+    if (options_.gpu != nullptr && (gpu_pictures_ == 0 || gpu_unreadable_ != 0 || gpu_identical_ != gpu_compared_)) return false;
     if (!options_.expect_clip) return pictures_ != 0 || (sound_ && sound_->counters().frames != 0);
     if (clip_right_ == 0 || clip_wrong_ != 0 || refused_ + undecodable_ != 0) return false;
     if (!sound_ || sound_->counters().refused != 0) return false;

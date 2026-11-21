@@ -199,6 +199,85 @@ public sealed class SettingsViewModel : Observable
 
     public string BitrateText => _settings.BitrateKbps == 0 ? "Chosen for the picture size" : $"{_settings.BitrateKbps / 1000} Mbit/s";
 
+    // ---- One console's own picture ----
+
+    /// <summary>The registered consoles, by name: the main page says them whenever its list changes.</summary>
+    public System.Collections.ObjectModel.ObservableCollection<string> ConsoleNames { get; } = [];
+    public bool HasConsoles => ConsoleNames.Count > 0;
+    public IReadOnlyList<Choice> Bitrates { get; } =
+        [new("Chosen for the picture size", "0"), new("5 Mbit/s", "5000"), new("10 Mbit/s", "10000"), new("15 Mbit/s", "15000"), new("20 Mbit/s", "20000"),
+         new("30 Mbit/s", "30000"), new("40 Mbit/s", "40000"), new("50 Mbit/s", "50000")];
+
+    private string _chosenConsole = "";
+
+    public void SetConsoles(IEnumerable<string> names)
+    {
+        List<string> now = names.Distinct().ToList();
+        if (now.SequenceEqual(ConsoleNames)) return;
+        ConsoleNames.Clear();
+        foreach (string name in now) ConsoleNames.Add(name);
+        Changed(nameof(HasConsoles));
+        if (!ConsoleNames.Contains(_chosenConsole)) ChosenConsole = ConsoleNames.FirstOrDefault() ?? "";
+    }
+
+    public string ChosenConsole
+    {
+        get => _chosenConsole;
+        set
+        {
+            if (value is null || !Set(ref _chosenConsole, value)) return;
+            ConsolePictureChanged();
+        }
+    }
+
+    private ConsolePicture? Own => _settings.PerConsole.GetValueOrDefault(_chosenConsole);
+
+    /// <summary>The chosen console has a picture of its own; it begins as a copy of the app's.</summary>
+    public bool ConsoleOwnPicture
+    {
+        get => Own is not null;
+        set
+        {
+            if (_chosenConsole.Length == 0 || value == ConsoleOwnPicture) return;
+            Keep(() =>
+            {
+                if (value)
+                    _settings.PerConsole[_chosenConsole] = new ConsolePicture
+                        { Resolution = _settings.Resolution, FramesPerSecond = _settings.FramesPerSecond, Codec = _settings.Codec, BitrateKbps = _settings.BitrateKbps };
+                else _settings.PerConsole.Remove(_chosenConsole);
+            }, nameof(ConsoleOwnPicture));
+            ConsolePictureChanged();
+        }
+    }
+
+    public Choice ConsoleResolution
+    {
+        get => Pick(Resolutions, (Own?.Resolution ?? _settings.Resolution).ToString());
+        set { if (value is not null && Own is not null) Keep(() => Own!.Resolution = int.Parse(value.Value), nameof(ConsoleResolution)); }
+    }
+    public Choice ConsoleFrameRate
+    {
+        get => Pick(FrameRates, (Own?.FramesPerSecond ?? _settings.FramesPerSecond).ToString());
+        set { if (value is not null && Own is not null) Keep(() => Own!.FramesPerSecond = int.Parse(value.Value), nameof(ConsoleFrameRate)); }
+    }
+    public Choice ConsoleCodec
+    {
+        get => Pick(Codecs, Own?.Codec ?? _settings.Codec);
+        set { if (value is not null && Own is not null) Keep(() => Own!.Codec = value.Value, nameof(ConsoleCodec)); }
+    }
+    public Choice ConsoleBitrate
+    {
+        get => Pick(Bitrates, (Own?.BitrateKbps ?? _settings.BitrateKbps).ToString());
+        set { if (value is not null && Own is not null) Keep(() => Own!.BitrateKbps = int.Parse(value.Value), nameof(ConsoleBitrate)); }
+    }
+
+    private void ConsolePictureChanged()
+    {
+        foreach (string name in new[] { nameof(ConsoleOwnPicture), nameof(ConsoleResolution), nameof(ConsoleFrameRate), nameof(ConsoleCodec), nameof(ConsoleBitrate) }) Changed(name);
+    }
+
+    public bool GpuDecoding { get => _settings.GpuDecoding; set => Keep(() => _settings.GpuDecoding = value, nameof(GpuDecoding)); }
+
     public bool Pacing
     {
         get => _settings.Pacing;

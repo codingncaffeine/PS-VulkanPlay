@@ -3,7 +3,7 @@ using PSVulkanPlay.Core;
 
 namespace PSVulkanPlay.ViewModels;
 
-public enum Page { Home, Settings, AddConsole }
+public enum Page { Home, Settings, Diagnostics, AddConsole }
 
 /// <summary>
 /// The app's one model: the consoles, what is running, and which page shows. Everything that
@@ -38,6 +38,8 @@ public sealed class MainViewModel : Observable
         AddConsole = new AddConsoleViewModel(runner, _directory, post, Registered, signIn);
         GoHome = new Command(() => Show(Page.Home));
         GoSettings = new Command(() => Show(Page.Settings));
+        Diagnostics = new DiagnosticsViewModel(runner, post);
+        GoDiagnostics = new Command(() => Show(Page.Diagnostics));
         GoAddConsole = new Command(() => { AddConsole.Begin(); Show(Page.AddConsole); }, () => !Busy);
         RefreshNow = new Command(() => _ = RefreshAsync());
         Stop = new Command(() => _session?.Stop(), () => _session is not null);
@@ -48,6 +50,8 @@ public sealed class MainViewModel : Observable
     public ObservableCollection<ConsoleCard> Consoles { get; } = [];
     public SettingsViewModel Settings { get; }
     public AddConsoleViewModel AddConsole { get; }
+    public DiagnosticsViewModel Diagnostics { get; }
+    public Command GoDiagnostics { get; }
 
     public Command GoHome { get; }
     public Command GoSettings { get; }
@@ -68,6 +72,7 @@ public sealed class MainViewModel : Observable
             if (!Set(ref _page, value)) return;
             Changed(nameof(IsHome));
             Changed(nameof(IsSettings));
+            Changed(nameof(IsDiagnostics));
             Changed(nameof(IsAddConsole));
             Changed(nameof(CanGoBack));
         }
@@ -75,6 +80,7 @@ public sealed class MainViewModel : Observable
 
     public bool IsHome => Page == Page.Home;
     public bool IsSettings => Page == Page.Settings;
+    public bool IsDiagnostics => Page == Page.Diagnostics;
     public bool IsAddConsole => Page == Page.AddConsole;
 
     /// <summary>The consoles have been asked for once: an empty list means none is registered.</summary>
@@ -156,14 +162,14 @@ public sealed class MainViewModel : Observable
             if (AddConsole.Step > 1) AddConsole.Back.Execute(null);
             else Show(Page.Home);
         }
-        else if (Page == Page.Settings) Show(Page.Home);
+        else if (Page is Page.Settings or Page.Diagnostics) Show(Page.Home);
         else if (Consoles.FirstOrDefault(card => card.ConfirmForget) is { } asking) asking.ConfirmForget = false;
         else if (HasNotice) DismissNotice.Execute(null);
     }
 
     /// <summary>The controller's shoulder buttons: the pages at the top, in their order.</summary>
-    public void PreviousPage() { if (Page != Page.Home) Show(Page.Home); }
-    public void NextPage() { if (Page != Page.Settings) Show(Page.Settings); }
+    public void PreviousPage() => Show(Page switch { Page.Diagnostics => Page.Settings, _ => Page.Home });
+    public void NextPage() => Show(Page switch { Page.Home => Page.Settings, Page.Settings => Page.Diagnostics, Page.Diagnostics => Page.Diagnostics, _ => Page.Settings });
 
     public bool HasController => _controllers.Count > 0;
 
@@ -229,6 +235,7 @@ public sealed class MainViewModel : Observable
     {
         Page = page;
         if (page == Page.Home) _ = RefreshAsync();
+        if (page == Page.Diagnostics) _ = Diagnostics.LookAsync();
     }
 
     private void Notify(string text, bool error)
@@ -283,6 +290,7 @@ public sealed class MainViewModel : Observable
         foreach (RegisteredConsole console in registered)
             if (Consoles.All(card => card.Console.Mac != console.Mac)) Consoles.Add(new ConsoleCard(this, console));
         Changed(nameof(ShowEmpty));
+        Settings.SetConsoles(Consoles.Select(card => card.Console.Name));
     }
 
     private void Registered(string name)
@@ -325,7 +333,7 @@ public sealed class MainViewModel : Observable
         {
             StreamShown = true;
             SessionTitle = $"Playing on {card.Name}";
-            SessionLine = "Close the stream's window to end the session.";
+            SessionLine = "In the stream's window, F1 or L1 + R1 + Options opens its menu; closing the window ends the session.";
             return;
         }
         // Log lines (they begin with a time) are for the log; what the program says to a person is not.

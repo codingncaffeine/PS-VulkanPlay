@@ -10,7 +10,9 @@
 #include <string>
 #include <vector>
 
+#include "app/stream_menu.h"
 #include "app/window_place.h"
+#include "media/gpu_device.h"
 #include "media/video_decoder.h"
 
 union SDL_Event;
@@ -42,6 +44,17 @@ struct WindowOptions {
     // Lines drawn over the picture in a panel at the top left (the statistics), asked before every
     // frame on the window's thread; none: no panel. It must not wait for anything.
     std::function<std::vector<std::string>()> overlay_lines;
+    // The menu over the stream while it is open, asked the same way; nothing: none is drawn.
+    std::function<std::optional<app::MenuView>()> overlay_menu;
+    // Lend the window's Vulkan device to FFmpeg for decoding on the graphics card, where the device
+    // can (a video decode queue for H.264 or HEVC, Vulkan 1.3).
+    bool gpu_decoding = true;
+    // Told once, on the window's thread, when its device is set up: the device to decode on, or
+    // nothing and why not. Not told when the window cannot be opened.
+    std::function<void(std::optional<media::GpuDevice>, const std::string& why_not)> on_gpu;
+    // Told before the device goes, after `on_gpu` gave one: every decoder opened on it and every
+    // picture decoded on it must be gone when this returns.
+    std::function<void()> before_device_gone;
 };
 
 // From any thread: there is a new picture, or the answer of `finished` changed. The window

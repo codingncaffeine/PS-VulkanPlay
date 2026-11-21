@@ -13,6 +13,11 @@ layout(push_constant) uniform Constants {
     vec4 options;  // x: what a sample is multiplied by first
                    // y: how far right of a color sample's place it is read, in picture widths
                    // z: above 0.5 when the target encodes what is written to it
+                   // w: above 0.5 when both color differences are in one plane, side by side
+                   //    (a graphics card's decoder): the second of them is that plane's green
+    vec4 scale;    // xy: the share of the textures the picture fills (a decoder's image may be larger)
+    vec4 limit;    // xy: the last brightness sample's middle, zw: the last color sample's, in the textures'
+                   // coordinates: nothing beyond the picture is blended in at its edges
 } constants;
 
 // From the screen's encoding to linear light (IEC 61966-2-1).
@@ -21,8 +26,10 @@ vec3 to_linear(vec3 encoded) {
 }
 
 void main() {
-    vec2 color_uv = uv + vec2(constants.options.y, 0.0);
-    vec3 sampled = vec3(texture(plane_y, uv).r, texture(plane_cb, color_uv).r, texture(plane_cr, color_uv).r);
+    vec2 picture_uv = min(uv * constants.scale.xy, constants.limit.xy);
+    vec2 color_uv = min(uv * constants.scale.xy + vec2(constants.options.y, 0.0), constants.limit.zw);
+    vec2 cr = texture(plane_cr, color_uv).rg;
+    vec3 sampled = vec3(texture(plane_y, picture_uv).r, texture(plane_cb, color_uv).r, constants.options.w > 0.5 ? cr.g : cr.r);
     vec3 rgb = clamp((constants.to_rgb * vec4(sampled * constants.options.x, 1.0)).rgb, 0.0, 1.0);
     if (constants.options.z > 0.5) rgb = to_linear(rgb);
     color = vec4(rgb, 1.0);

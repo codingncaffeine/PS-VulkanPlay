@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "check.h"
+#include "media/gpu_device.h"
 #include "media/sound_decoder.h"
 #include "media/test_clip.h"
 #include "media/video_decoder.h"
@@ -207,6 +208,55 @@ PSVP_TEST(hevc_decoder_goes_on_after_a_lost_frame) {
     }
     CHECK(pictures_after == 27);
     CHECK(decoder->counters().pictures == 47 && decoder->counters().refused == 0);
+}
+
+PSVP_TEST(pictures_are_compared_in_every_plane) {
+    // Two pictures of 4x2 samples of 8 bits; the color planes 2x1.
+    std::uint8_t y_a[8] = {1, 2, 3, 4, 5, 6, 7, 8}, cb_a[2] = {100, 101}, cr_a[2] = {200, 201};
+    std::uint8_t y_b[8] = {1, 2, 3, 4, 5, 6, 7, 8}, cb_b[2] = {100, 101}, cr_b[2] = {200, 201};
+    const auto picture = [](std::uint8_t* y, std::uint8_t* cb, std::uint8_t* cr) {
+        Picture p;
+        p.width = 4;
+        p.height = 2;
+        p.planes[0] = y;
+        p.planes[1] = cb;
+        p.planes[2] = cr;
+        p.strides[0] = 4;
+        p.strides[1] = p.strides[2] = 2;
+        return p;
+    };
+    const Picture a = picture(y_a, cb_a, cr_a);
+    const Picture b = picture(y_b, cb_b, cr_b);
+    auto apart = compare_pictures(a, b);
+    CHECK(apart && apart->samples == 12 && apart->different == 0 && apart->largest == 0);
+    // The last sample of the last color plane: seen.
+    cr_b[1] = 196;
+    apart = compare_pictures(a, b);
+    CHECK(apart && apart->different == 1 && apart->largest == 5);
+    // Another size or depth: not compared.
+    Picture other = b;
+    other.width = 2;
+    CHECK(!compare_pictures(a, other));
+    other = b;
+    other.bits = 10;
+    CHECK(!compare_pictures(a, other));
+    // A picture still on a graphics card is not compared: it has no samples here.
+    other = b;
+    other.on_gpu = true;
+    CHECK(!compare_pictures(a, other));
+    CHECK(!download(b));
+}
+
+PSVP_TEST(a_decoder_without_a_graphics_card_says_nothing_of_one) {
+    const HevcClip clip = read_hevc_clip();
+    auto decoder = VideoDecoder::open(VideoCodec::hevc, clip.header, nullptr);
+    CHECK(decoder.has_value());
+    if (!decoder) return;
+    CHECK(!decoder->on_gpu() && decoder->software_reason().empty() && decoder->checks_left() == 0);
+    CHECK(decoder->description() == "HEVC, FFmpeg's hevc decoder in software");
+    const auto picture = decoder->decode(clip.frames.front());
+    CHECK(picture && !picture->on_gpu && picture->planes[0] != nullptr);
+    CHECK(decoder->counters().gpu_pictures == 0 && decoder->counters().checked == 0);
 }
 
 PSVP_TEST(tone_decodes_to_its_two_tones) {

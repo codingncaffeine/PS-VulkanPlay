@@ -56,6 +56,8 @@ struct SessionPlan {
     std::function<bool()> wants_keyframe;
     // True ends the stream.
     std::function<bool()> stop;
+    // Asked at the end: true sends the console to rest mode as `rest` does (chosen in the menu over the stream).
+    std::function<bool()> rest_asked;
     // After the stream's own report lines: more of them.
     std::function<void()> on_report;
     // At the very end: a reason to call the session failed although it ran.
@@ -79,6 +81,12 @@ struct PlayOptions {
     bool pacing = true;
     // Delay kept on purpose, in milliseconds, so that frames which come that much late are still shown in place.
     int cushion_ms = 0;
+    // Where pictures are decoded: on the graphics card where it can (after a check of its first
+    // pictures against software), or in software only.
+    enum class Decoder { automatic, software };
+    Decoder decoder = Decoder::automatic;
+    // For checks: a pretended controller ("054c:0df2") in place of this machine's, and a file whose lines press it.
+    std::optional<std::string> pretend, pretend_taps;
     // How strong a DualSense's haptics are: the volume of the two channels of its sound device
     // that move its actuators, in percent.
     int haptics_volume = 100;
@@ -97,5 +105,8 @@ void set_play_runner(PlayRunner runner);
 struct ControllersOptions;
 using ControllersRunner = int (*)(const ControllersOptions& options);
 void set_controllers_runner(ControllersRunner runner);
+// What this computer offers (the program's own part: it makes a Vulkan device): `diagnose [--json]`.
+using DiagnoseRunner = int (*)(bool json);
+void set_diagnose_runner(DiagnoseRunner runner);
 
 }  // namespace psvp::app

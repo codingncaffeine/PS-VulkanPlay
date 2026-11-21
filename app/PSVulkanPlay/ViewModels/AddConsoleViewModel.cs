@@ -33,6 +33,11 @@ public sealed class AddConsoleViewModel : Observable
         Register = new Command(() => _ = RegisterAsync(), () => PinLooksRight && !Working);
         PinDigit = new Command(digit => { if (digit is string { Length: 1 } one && char.IsAsciiDigit(one[0]) && PinDigits.Length < 8) Pin = Spaced(PinDigits + one); });
         PinErase = new Command(() => { if (PinDigits.Length > 0) Pin = Spaced(PinDigits[..^1]); });
+        // The keys under the address and the account ID, for whoever sits there with a controller and no keyboard.
+        AddressKey = new Command(key => { if (key is string { Length: 1 } one && (char.IsAsciiDigit(one[0]) || one[0] == '.') && Address.Length < 39) Address += one; });
+        AddressErase = new Command(() => { if (Address.Length > 0) Address = Address[..^1]; });
+        AccountKey = new Command(key => { if (key is string { Length: 1 } one && char.IsAsciiDigit(one[0]) && AccountId.Length < 20) AccountId += one; });
+        AccountErase = new Command(() => { if (AccountId.Length > 0) AccountId = AccountId[..^1]; });
         SignIn = new Command(() => _ = SignInAsync(), () => !SigningIn);
         UsePasted = new Command(() => _ = TakeAddressAsync(Pasted), () => !SigningIn && PsnSignIn.CodeFrom(Pasted) is not null);
         OpenInBrowser = new Command(() => { ShowPaste = true; OpenBrowser?.Invoke(_signIn.LoginPage); });
@@ -221,6 +226,10 @@ public sealed class AddConsoleViewModel : Observable
 
     /// <summary>The PIN's keys on the page, for whoever has a controller and no keyboard at hand.</summary>
     public Command PinDigit { get; }
+    public Command AddressKey { get; }
+    public Command AddressErase { get; }
+    public Command AccountKey { get; }
+    public Command AccountErase { get; }
     public Command PinErase { get; }
 
     // The way the console shows it: two groups of four.

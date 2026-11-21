@@ -22,6 +22,7 @@
                 <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Bottom">
                     <Button x:Name="NavHome" Classes="nav" Classes.here="{Binding IsHome}" Content="Consoles" Command="{Binding GoHome}" />
                     <Button x:Name="NavSettings" Classes="nav" Classes.here="{Binding IsSettings}" Content="Settings" Command="{Binding GoSettings}" />
+                    <Button x:Name="NavDiagnostics" Classes="nav" Classes.here="{Binding IsDiagnostics}" Content="Diagnostics" Command="{Binding GoDiagnostics}" />
                 </StackPanel>
             </Grid>
         </Border>
@@ -122,6 +123,51 @@
                                 <Slider Minimum="2" Maximum="50" TickFrequency="1" IsSnapToTickEnabled="True" Value="{Binding BitrateMbps}" IsEnabled="{Binding !AutoBitrate}" />
                             </StackPanel>
                         </Grid>
+                        <Border Classes="rule" />
+                        <Grid ColumnDefinitions="*,Auto">
+                            <StackPanel VerticalAlignment="Center"><TextBlock Text="Decode on the graphics card" /><TextBlock Classes="secondary small" TextWrapping="Wrap" Text="Where the card can. Its first pictures are checked against software decoding, which takes over if they differ." /></StackPanel>
+                            <ToggleSwitch Grid.Column="1" IsChecked="{Binding GpuDecoding}" OnContent="" OffContent="" MinWidth="0" />
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <Border Classes="card">
+                    <StackPanel>
+                        <TextBlock Classes="section" Text="One console's picture" />
+                        <TextBlock Classes="secondary small" TextWrapping="Wrap" Margin="0,4,0,0"
+                                   Text="A console can have a picture of its own: a lower size for the one on Wi-Fi, HEVC for the PS5 and H.264 for the PS4." />
+                        <TextBlock Classes="secondary" Text="The consoles you add are listed here." Margin="0,14,0,0" IsVisible="{Binding !HasConsoles}" />
+                        <StackPanel IsVisible="{Binding HasConsoles}">
+                            <Grid ColumnDefinitions="*,Auto" Margin="0,16,0,0">
+                                <TextBlock Text="Console" VerticalAlignment="Center" />
+                                <ComboBox x:Name="ConsolePictureConsole" Grid.Column="1" ItemsSource="{Binding ConsoleNames}" SelectedItem="{Binding ChosenConsole}" MinWidth="330" />
+                            </Grid>
+                            <Border Classes="rule" />
+                            <Grid ColumnDefinitions="*,Auto">
+                                <StackPanel VerticalAlignment="Center"><TextBlock Text="Its own picture" /><TextBlock Classes="secondary small" Text="Off: the picture above." /></StackPanel>
+                                <ToggleSwitch x:Name="ConsoleOwnPictureSwitch" Grid.Column="1" IsChecked="{Binding ConsoleOwnPicture}" OnContent="" OffContent="" MinWidth="0" />
+                            </Grid>
+                            <Border Classes="rule" />
+                            <Grid ColumnDefinitions="*,Auto">
+                                <TextBlock Text="Size" VerticalAlignment="Center" />
+                                <ComboBox Grid.Column="1" ItemsSource="{Binding Resolutions}" SelectedItem="{Binding ConsoleResolution}" IsEnabled="{Binding ConsoleOwnPicture}" MinWidth="330" />
+                            </Grid>
+                            <Border Classes="rule" />
+                            <Grid ColumnDefinitions="*,Auto">
+                                <TextBlock Text="Pictures" VerticalAlignment="Center" />
+                                <ComboBox Grid.Column="1" ItemsSource="{Binding FrameRates}" SelectedItem="{Binding ConsoleFrameRate}" IsEnabled="{Binding ConsoleOwnPicture}" MinWidth="330" />
+                            </Grid>
+                            <Border Classes="rule" />
+                            <Grid ColumnDefinitions="*,Auto">
+                                <TextBlock Text="Coding" VerticalAlignment="Center" />
+                                <ComboBox Grid.Column="1" ItemsSource="{Binding Codecs}" SelectedItem="{Binding ConsoleCodec}" IsEnabled="{Binding ConsoleOwnPicture}" MinWidth="330" />
+                            </Grid>
+                            <Border Classes="rule" />
+                            <Grid ColumnDefinitions="*,Auto">
+                                <TextBlock Text="Bitrate" VerticalAlignment="Center" />
+                                <ComboBox Grid.Column="1" ItemsSource="{Binding Bitrates}" SelectedItem="{Binding ConsoleBitrate}" IsEnabled="{Binding ConsoleOwnPicture}" MinWidth="330" />
+                            </Grid>
+                        </StackPanel>
                     </StackPanel>
                 </Border>
 
@@ -238,6 +284,53 @@
             </StackPanel>
         </ScrollViewer>
 
+        <!-- ===== Diagnostics ===== -->
+        <ScrollViewer x:Name="DiagnosticsScroll" Grid.Row="1" IsVisible="{Binding IsDiagnostics}" VerticalScrollBarVisibility="Auto">
+            <StackPanel Margin="28,26,28,28" MaxWidth="780" DataContext="{Binding Diagnostics}" x:DataType="vm:DiagnosticsViewModel" Spacing="18">
+                <Grid ColumnDefinitions="*,Auto">
+                    <TextBlock Classes="title" Text="Diagnostics" />
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                        <Button x:Name="DiagnosticsAgain" Classes="quiet" Content="Look again" Command="{Binding LookAgain}" />
+                        <Button x:Name="DiagnosticsCopy" Content="Copy for a bug report" Command="{Binding Copy}" IsEnabled="{Binding Known}" />
+                    </StackPanel>
+                </Grid>
+                <TextBlock Classes="secondary" Text="Asking the stream program…" IsVisible="{Binding Looking}" />
+                <Border IsVisible="{Binding HasProblem}" Padding="16,12" CornerRadius="8" BorderThickness="1" BorderBrush="{DynamicResource Bad}" Background="{DynamicResource Surface}">
+                    <TextBlock Text="{Binding Problem}" TextWrapping="Wrap" />
+                </Border>
+
+                <Border Classes="card" IsVisible="{Binding Known}">
+                    <StackPanel>
+                        <TextBlock Classes="section" Text="This computer" />
+                        <TextBlock Text="Decoding" Margin="0,16,0,0" />
+                        <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,4,0,0">
+                            <Ellipse Width="8" Height="8" VerticalAlignment="Center" Fill="{DynamicResource Good}" IsVisible="{Binding DecodesOnCard}" />
+                            <Ellipse Width="8" Height="8" VerticalAlignment="Center" Fill="{DynamicResource Resting}" IsVisible="{Binding !DecodesOnCard}" />
+                            <TextBlock x:Name="DecodingLine" Classes="secondary" Text="{Binding Decoding}" TextWrapping="Wrap" MaxWidth="680" />
+                        </StackPanel>
+                        <Border Classes="rule" />
+                        <TextBlock Text="Graphics" />
+                        <TextBlock Classes="secondary" Text="{Binding Devices}" TextWrapping="Wrap" Margin="0,4,0,0" />
+                        <Border Classes="rule" />
+                        <TextBlock Text="Versions" />
+                        <TextBlock Classes="secondary" Text="{Binding Versions}" TextWrapping="Wrap" Margin="0,4,0,0" />
+                    </StackPanel>
+                </Border>
+
+                <Border Classes="card" IsVisible="{Binding Known}">
+                    <StackPanel>
+                        <Grid ColumnDefinitions="*,Auto">
+                            <TextBlock Classes="section" Text="{Binding LastSessionTitle}" VerticalAlignment="Center" />
+                            <Button x:Name="OpenLogsButton" Grid.Column="1" Classes="quiet" Content="Open the log folder" Command="{Binding OpenLogs}" IsVisible="{Binding HasLogs}" />
+                        </Grid>
+                        <TextBlock Classes="secondary small" Text="What the stream program said when it ended: how the pictures came, how smooth they were, and what the console asked of the connection."
+                                   TextWrapping="Wrap" Margin="0,6,0,10" IsVisible="{Binding HasLastSession}" />
+                        <TextBox x:Name="LastSessionBox" Classes="report" Text="{Binding LastSession}" IsReadOnly="True" IsVisible="{Binding HasLastSession}" />
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </ScrollViewer>
+
         <!-- ===== Adding a console ===== -->
         <ScrollViewer x:Name="AddScroll" Grid.Row="1" IsVisible="{Binding IsAddConsole}" VerticalScrollBarVisibility="Auto">
             <StackPanel Margin="28,26,28,28" MaxWidth="660">
@@ -281,6 +374,24 @@
                                 <TextBox x:Name="AddressBox" Text="{Binding Address}" PlaceholderText="192.168.1.20" />
                                 <Button Grid.Column="1" Content="Use this address" Command="{Binding UseAddress}" Margin="10,0,0,0" />
                             </Grid>
+                            <!-- The address's keys, for whoever sits there with a controller and no keyboard. -->
+                            <UniformGrid x:Name="AddressPad" Columns="3" Width="250" HorizontalAlignment="Left" Margin="-4,10,-4,0"
+                                         IsVisible="{Binding $parent[Window].((vm:MainViewModel)DataContext).ControllerInUse}">
+                                <Button Classes="key" Content="1" Command="{Binding AddressKey}" CommandParameter="1" />
+                                <Button Classes="key" Content="2" Command="{Binding AddressKey}" CommandParameter="2" />
+                                <Button Classes="key" Content="3" Command="{Binding AddressKey}" CommandParameter="3" />
+                                <Button Classes="key" Content="4" Command="{Binding AddressKey}" CommandParameter="4" />
+                                <Button Classes="key" Content="5" Command="{Binding AddressKey}" CommandParameter="5" />
+                                <Button Classes="key" Content="6" Command="{Binding AddressKey}" CommandParameter="6" />
+                                <Button Classes="key" Content="7" Command="{Binding AddressKey}" CommandParameter="7" />
+                                <Button Classes="key" Content="8" Command="{Binding AddressKey}" CommandParameter="8" />
+                                <Button Classes="key" Content="9" Command="{Binding AddressKey}" CommandParameter="9" />
+                                <Button Classes="key" Content="." Command="{Binding AddressKey}" CommandParameter="." />
+                                <Button Classes="key" Content="0" Command="{Binding AddressKey}" CommandParameter="0" />
+                                <Button Classes="key" Command="{Binding AddressErase}" ToolTip.Tip="Erase the last character">
+                                    <Path Data="M7.5 1 H21 V15 H7.5 L1 8 Z M11 5 L17 11 M17 5 L11 11" Stroke="{DynamicResource TextPrimary}" StrokeThickness="1.6" StrokeJoin="Round" StrokeLineCap="Round" Width="22" Height="16" />
+                                </Button>
+                            </UniformGrid>
                         </StackPanel>
                     </Border>
 
@@ -313,6 +424,24 @@
                             <TextBlock Text="Or type the account ID" />
                             <TextBlock Classes="secondary small" Margin="0,2,0,8" Text="A long number, or the twelve characters the same number is also written as. It is asked once and kept on this computer." />
                             <TextBox x:Name="AccountBox" Text="{Binding AccountId}" PlaceholderText="Account ID" MaxWidth="340" HorizontalAlignment="Left" Width="340" />
+                            <!-- The account ID's keys: its long number, digit by digit. -->
+                            <UniformGrid x:Name="AccountPad" Columns="3" Width="250" HorizontalAlignment="Left" Margin="-4,10,-4,0"
+                                         IsVisible="{Binding $parent[Window].((vm:MainViewModel)DataContext).ControllerInUse}">
+                                <Button Classes="key" Content="1" Command="{Binding AccountKey}" CommandParameter="1" />
+                                <Button Classes="key" Content="2" Command="{Binding AccountKey}" CommandParameter="2" />
+                                <Button Classes="key" Content="3" Command="{Binding AccountKey}" CommandParameter="3" />
+                                <Button Classes="key" Content="4" Command="{Binding AccountKey}" CommandParameter="4" />
+                                <Button Classes="key" Content="5" Command="{Binding AccountKey}" CommandParameter="5" />
+                                <Button Classes="key" Content="6" Command="{Binding AccountKey}" CommandParameter="6" />
+                                <Button Classes="key" Content="7" Command="{Binding AccountKey}" CommandParameter="7" />
+                                <Button Classes="key" Content="8" Command="{Binding AccountKey}" CommandParameter="8" />
+                                <Button Classes="key" Content="9" Command="{Binding AccountKey}" CommandParameter="9" />
+                                <Panel />
+                                <Button Classes="key" Content="0" Command="{Binding AccountKey}" CommandParameter="0" />
+                                <Button Classes="key" Command="{Binding AccountErase}" ToolTip.Tip="Erase the last digit">
+                                    <Path Data="M7.5 1 H21 V15 H7.5 L1 8 Z M11 5 L17 11 M17 5 L11 11" Stroke="{DynamicResource TextPrimary}" StrokeThickness="1.6" StrokeJoin="Round" StrokeLineCap="Round" Width="22" Height="16" />
+                                </Button>
+                            </UniformGrid>
                             <StackPanel Orientation="Horizontal" Spacing="10" Margin="0,22,0,0">
                                 <Button x:Name="NextButton" Content="Next" Command="{Binding Next}" Padding="26,11" />
                                 <Button Classes="quiet" Content="Back" Command="{Binding Back}" />

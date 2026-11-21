@@ -37,19 +37,23 @@ Add a console, sign in with PSN and type the eight digits the console shows.
   triggers, touchpad, motion). The picture keeps going over lost frames and is shown evenly; the sound bridges
   short stalls of the network, and a cushion of delay can be asked for that hides the short pauses of a
   wireless network. F3 (or "Show statistics while playing" in the app) shows the picture's size and rate,
-  the decoding time and the console's view of the connection over the picture
+  the decoding time and the console's view of the connection over the picture. F1, or L1 + R1 + Options held
+  on a controller, opens a menu over the stream: statistics, full screen, quit, or quit and put the console to rest
+- decoding on the graphics card through Vulkan Video, with the pictures drawn straight from the card's memory.
+  The card's first two seconds of pictures are checked against software decoding, sample for sample, and
+  software takes over if they differ. "Decode on the graphics card" in the app turns it off
 - a DualSense on USB gets what a PS5 sends for it: haptics on the controller's own sound device, the effects
   of its adaptive triggers, the light bar's color; other controllers get rumble
 
-Not there yet: decoding on the graphics card (pictures are decoded in software), HDR output, the microphone,
-a menu over the stream, and play from outside the home network.
+Not there yet: HDR output, the microphone, and play from outside the home network.
 
 ## Building from source
 
 You need a C++23 compiler (GCC 13 or Clang 17, or later), CMake 3.25 or later, Ninja, pkg-config, SDL 3.2 or
 later, FFmpeg 7 or later (libavcodec), Opus, OpenSSL 3 or later, the Vulkan headers and loader, and glslang to
 compile the shaders. With the PulseAudio client library (which PipeWire serves as well) the program also sets
-the volume of a controller's haptics; without it, it builds the same less that. The app is a .NET program
+the volume of a controller's haptics; without it, it builds the same less that. Decoding on the graphics card
+needs FFmpeg 7.1 or later built with Vulkan; with an older one, pictures are decoded in software. The app is a .NET program
 of its own (`app/`) that runs the stream program: it needs the .NET 10 SDK, and the stream program builds
 and plays without it.
 

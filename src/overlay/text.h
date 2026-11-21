@@ -57,9 +57,19 @@ void append_panel(std::vector<Quad>& quads, float x0, float y0, float x1, float 
 // dark panel, sized to the window (text about a 45th of its height, 13 px at least).
 [[nodiscard]] std::vector<Quad> stats_panel(const std::vector<std::string>& lines, float window_width, float window_height);
 
+// The menu over the stream, in the middle of the window: a title, the items one under another with
+// the chosen one on a bar of the accent color, and a line on how to use it under them.
+[[nodiscard]] std::vector<Quad> menu_panel(std::string_view title, const std::vector<std::string>& items, std::size_t selected, std::string_view hint,
+                                           float window_width, float window_height);
+
 // The panel's colors, as they reach the screen where the text is solid.
 inline constexpr Color kPanelColor{20, 23, 28, 0.85F};
 inline constexpr Color kStatsTextColor{236, 239, 244, 1.0F};
 inline constexpr Color kStatsTitleColor{240, 112, 45, 1.0F};
+// The menu: its panel, the bar behind the chosen item and the text on that bar, the hint.
+inline constexpr Color kMenuPanelColor{20, 23, 28, 0.94F};
+inline constexpr Color kMenuBarColor{240, 112, 45, 1.0F};
+inline constexpr Color kMenuChosenTextColor{20, 23, 28, 1.0F};
+inline constexpr Color kMenuHintColor{150, 156, 168, 1.0F};
 
 }  // namespace psvp::overlay

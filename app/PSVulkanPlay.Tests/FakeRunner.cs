@@ -22,10 +22,14 @@ public sealed class FakeRunner : IProgramRunner
     public IReadOnlyList<string>? Last(string command) => Calls.LastOrDefault(call => call[0] == command);
 
     /// <summary>A living room PS5 that is on at its address, and a PS4 that is found resting by asking everyone.</summary>
+    public const string Diagnosis =
+        """{"version": "0.0.3","vulkan_loader": "1.4.363","vulkan_error": "","devices": [{"name": "NVIDIA GeForce RTX 5080","kind": "discrete GPU","vulkan": "1.4.357"}],"gpu_decoding": "NVIDIA GeForce RTX 5080 (H.264, HEVC)","gpu_decoding_why_not": "","ffmpeg": "9.1","sdl": "3.4.20","last_session_started": "2026-11-21T03:12:40","last_session": ["Played (HEVC, FFmpeg's hevc decoder on NVIDIA GeForce RTX 5080 (H.264, HEVC) through Vulkan Video): 127347 pictures decoded from 127349 frames.","Smoothness: the picture stood for over 30 ms 330 times."],"logs_folder": "/home/someone/.local/state/ps-vulkanplay/logs"}""";
+
     public static FakeRunner WithTwoConsoles()
     {
         var fake = new FakeRunner();
         fake.Answers["consoles"] = _ => new RunResult(0, TwoConsoles, "");
+        fake.Answers["diagnose"] = _ => new RunResult(0, Diagnosis + "\n", "");
         fake.Answers["discover"] = arguments => arguments.Contains("--host")
             ? new RunResult(0, """[{"name":"Living Room","kind":"PS5","state":"ready","address":"192.0.2.10","host_id":"02005E102030","system_version":"1","running_app":"","registered":true,"supported":true}]""", "")
             : new RunResult(0, """[{"name":"Den","kind":"PS4","state":"standby","address":"192.0.2.11","host_id":"02005E102031","system_version":"1","running_app":"","registered":true,"supported":true}]""", "");

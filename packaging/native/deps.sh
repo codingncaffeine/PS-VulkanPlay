@@ -65,17 +65,19 @@ quiet "$WORK/opus-configure.log" cmake -S "$WORK/opus-$OPUS_VER" -B "$WORK/opus-
 quiet "$WORK/opus-build.log" cmake --build "$WORK/opus-build" --parallel "$JOBS"
 quiet "$WORK/opus-install.log" cmake --install "$WORK/opus-build"
 
-echo "── FFmpeg $FFMPEG_VER (H.264 and HEVC decoders only)"
+echo "── FFmpeg $FFMPEG_VER (H.264 and HEVC decoders only, in software and through Vulkan Video)"
 fetch "ffmpeg-$FFMPEG_VER.tar.xz" "$FFMPEG_SHA256" "https://ffmpeg.org/releases/ffmpeg-$FFMPEG_VER.tar.xz"
 tar -xJf "/cache/ffmpeg-$FFMPEG_VER.tar.xz" -C "$WORK"
 ( cd "$WORK/ffmpeg-$FFMPEG_VER"
   quiet "$WORK/ffmpeg-configure.log" ./configure --prefix="$PREFIX" --libdir="$PREFIX/lib" \
       --enable-static --disable-shared --enable-pic --disable-autodetect --disable-programs --disable-doc --disable-debug \
       --disable-avdevice --disable-avformat --disable-swscale --disable-swresample --disable-avfilter --disable-network \
-      --disable-everything --enable-decoder=h264 --enable-decoder=hevc --enable-parser=h264 --enable-parser=hevc
-  # Decoding without the processor's own instructions, or on one core, is several times slower:
-  # a build that came out that way is not a release build.
-  for have in HAVE_X86ASM HAVE_PTHREADS; do
+      --disable-everything --enable-decoder=h264 --enable-decoder=hevc --enable-parser=h264 --enable-parser=hevc \
+      --enable-vulkan --enable-hwaccel=h264_vulkan --enable-hwaccel=hevc_vulkan
+  # Decoding without the processor's own instructions, or on one core, is several times slower;
+  # without Vulkan, never on the graphics card: a build that came out that way is not a release build.
+  # (FFmpeg opens the Vulkan loader the program already needs at run time, through the program's own device.)
+  for have in HAVE_X86ASM HAVE_PTHREADS CONFIG_VULKAN CONFIG_H264_VULKAN_HWACCEL CONFIG_HEVC_VULKAN_HWACCEL; do
       grep -q "^#define $have 1" config.h || { echo "!! FFmpeg was configured without $have" >&2; exit 1; }
   done
   quiet "$WORK/ffmpeg-build.log" make -j "$JOBS"

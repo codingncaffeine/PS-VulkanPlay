@@ -24,6 +24,7 @@
 #include "app/console_store.h"
 #include "app/controllers.h"
 #include "app/decoding.h"
+#include "media/gpu_device.h"
 #include "app/json.h"
 #include "app/log.h"
 #include "app/paths.h"
@@ -1314,7 +1315,7 @@ int run_session_here(const SessionPlan& plan) {
     const bool console_closed = stream.state() == State::closed;
     if (console_closed) say("{} closed the stream: {}.", registration.nickname, stream.reason());
 
-    if (plan.rest) {
+    if (plan.rest || (plan.rest_asked && plan.rest_asked())) {
         if (!send(proto::ctrl_type::kGoToRest)) return fail("session: the connection to the console broke");
         say("Asked {} to go to rest mode.", registration.nickname);
     }
@@ -1403,7 +1404,7 @@ PlayRunner play_runner = nullptr;
 
 // The stream in a window, with its sound and a controller: what the program is for.
 int command_play(std::span<const std::string_view> args) {
-    const Parsed parsed = parse(args, {"--host", "--seconds", "--passcode", "--resolution", "--fps", "--bitrate", "--codec", "--tap", "--frames", "--controller", "--pacing", "--cushion", "--haptics-volume", "--back-left", "--back-right", "--loss-ceiling", "--ack-copies"},
+    const Parsed parsed = parse(args, {"--host", "--seconds", "--passcode", "--resolution", "--fps", "--bitrate", "--codec", "--tap", "--frames", "--controller", "--pacing", "--cushion", "--haptics-volume", "--back-left", "--back-right", "--loss-ceiling", "--ack-copies", "--decoder", "--pretend", "--pretend-taps"},
                                 {"--rest", "--wake", "--stats"}, 1);
     if (!parsed.error.empty()) return usage("play: {}", parsed.error);
     SessionPlan plan;
@@ -1442,6 +1443,13 @@ int command_play(std::span<const std::string_view> args) {
         if (!*target) return usage("play: {} takes a button's name, as --tap does (cross, circle, l1, r3, options ...)", name);
     }
     options.stats = parsed.flag("--stats");
+    if (const auto text = parsed.option("--pretend")) options.pretend = std::string(*text);
+    if (const auto text = parsed.option("--pretend-taps")) options.pretend_taps = std::string(*text);
+    if (options.pretend_taps && !options.pretend) return usage("play: --pretend-taps goes with --pretend");
+    if (const auto text = parsed.option("--decoder")) {
+        if (*text != "auto" && *text != "software") return usage("play: --decoder is auto or software");
+        options.decoder = *text == "auto" ? PlayOptions::Decoder::automatic : PlayOptions::Decoder::software;
+    }
     if (const auto text = parsed.option("--pacing")) {
         if (*text != "on" && *text != "off") return usage("play: --pacing is on or off");
         options.pacing = *text == "on";
@@ -1493,6 +1501,14 @@ int command_play(std::span<const std::string_view> args) {
 }
 
 ControllersRunner controllers_runner = nullptr;
+DiagnoseRunner diagnose_runner = nullptr;
+
+int command_diagnose(std::span<const std::string_view> args) {
+    const Parsed parsed = parse(args, {}, {"--json"}, 0);
+    if (!parsed.error.empty()) return usage("diagnose: {}", parsed.error);
+    if (diagnose_runner == nullptr) return fail("diagnose: this build has no graphics part to ask");
+    return diagnose_runner(parsed.flag("--json"));
+}
 
 // The controllers that are connected: what a session would find.
 int command_controllers(std::span<const std::string_view> args) {
@@ -1512,8 +1528,18 @@ int command_controllers(std::span<const std::string_view> args) {
 
 // Decodes what 'session --dump' kept: the same decoders, without a console.
 int command_decode(std::span<const std::string_view> args) {
-    const Parsed parsed = parse(args, {"--lose"}, {"--expect-clip"}, 1);
+    const Parsed parsed = parse(args, {"--lose", "--decoder"}, {"--expect-clip"}, 1);
     if (!parsed.error.empty()) return usage("decode: {}", parsed.error);
+    // On a graphics card: FFmpeg's own device, and every picture compared with the software decoder's.
+    std::optional<media::GpuDevice> gpu;
+    if (const auto text = parsed.option("--decoder")) {
+        if (*text != "software" && *text != "gpu") return usage("decode: --decoder is software or gpu");
+        if (*text == "gpu") {
+            auto device = media::GpuDevice::create_own();
+            if (!device) return fail("decode: {}", device.error());
+            gpu.emplace(std::move(*device));
+        }
+    }
     // Frames to leave out, as if they had not arrived: what a player then shows is compared with the whole stream's pictures.
     std::vector<std::uint64_t> lose;
     if (const auto text = parsed.option("--lose")) {
@@ -1556,7 +1582,7 @@ int command_decode(std::span<const std::string_view> args) {
     const auto video = read("video.bin"), video_list = read("video.tsv"), sound = read("sound.bin"), sound_list = read("sound.tsv");
     if (!video || !video_list || !sound || !sound_list) return fail("decode: {} is not a folder that 'session --dump' wrote", folder.string());
 
-    Decoding decoding(Decoding::Options{.expect_clip = parsed.flag("--expect-clip")});
+    Decoding decoding(Decoding::Options{.expect_clip = parsed.flag("--expect-clip"), .gpu = gpu ? &*gpu : nullptr, .compare_gpu = gpu && lose.empty()});
     const auto bytes = [](const std::string& text, std::size_t at, std::size_t size) {
         return std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(text.data()) + at, size);
     };
@@ -1571,7 +1597,7 @@ int command_decode(std::span<const std::string_view> args) {
         const auto index = static_cast<std::uint16_t>(row[0]);
         const auto frame = bytes(*video, at, row[1]);
         at += row[1];
-        if (!lose.empty()) decoding.reference(headers[row[4]], static_cast<unsigned>(row[4]), index, frame);
+        if (!lose.empty() || gpu) decoding.reference(headers[row[4]], static_cast<unsigned>(row[4]), index, frame);
         if (std::ranges::find(lose, row[0]) != lose.end()) {
             ++left_out;
             continue;
@@ -1709,6 +1735,7 @@ int command_account(std::span<const std::string_view> args) {
 int run_session(const SessionPlan& plan) { return run_session_here(plan); }
 void set_play_runner(PlayRunner runner) { play_runner = runner; }
 void set_controllers_runner(ControllersRunner runner) { controllers_runner = runner; }
+void set_diagnose_runner(DiagnoseRunner runner) { diagnose_runner = runner; }
 
 bool is_command(std::span<const std::string_view> args) { return !args.empty() && !args.front().starts_with("-"); }
 
@@ -1726,6 +1753,7 @@ int run_command(std::span<const std::string_view> args) {
     if (name == "import") return command_import(rest);
     if (name == "account") return command_account(rest);
     if (name == "controllers") return command_controllers(rest);
+    if (name == "diagnose") return command_diagnose(rest);
     return usage("unknown command '{}'", name);
 }
 
@@ -1750,7 +1778,8 @@ std::string commands_help() {
         "  {0} play CONSOLE [--host ADDRESS] [--passcode DIGITS] [--resolution 360|540|720|1080] [--fps 30|60]\n"
         "          [--bitrate KBPS] [--codec h264|hevc|hdr] [--controller auto|dualsense|dualshock4]\n"
         "          [--pacing on|off] [--cushion 0-50] [--haptics-volume 0-100] [--back-left BUTTON]\n"
-        "          [--back-right BUTTON] [--loss-ceiling PERCENT] [--ack-copies 0-2] [--stats] [--wake] [--rest]\n"
+        "          [--back-right BUTTON] [--loss-ceiling PERCENT] [--ack-copies 0-2] [--decoder auto|software]\n"
+        "          [--stats] [--wake] [--rest]\n"
         "      play: the console's picture in a window, its sound, and a controller that is plugged in\n"
         "      or paired; closing the window ends the session (--rest then sends the console to rest mode).\n"
         "      --wake wakes a console that is in rest mode first, and asks one that takes no session yet\n"
@@ -1768,12 +1797,15 @@ std::string commands_help() {
         "      for a burst on a wireless network as for a slow line; 100 tells it all; --ack-copies says\n"
         "      how often each acknowledgment of the console's messages is sent again, 40 and 120 ms later\n"
         "      (2 unless said): one that is lost makes the console wait 200 ms, which it takes as the\n"
-        "      round trip and answers with a lower bitrate; --stats shows the statistics over the picture\n"
-        "      from the start (F3 shows and hides them at any time)\n"
-        "  {0} decode FOLDER [--lose FRAMES]\n"
+        "      round trip and answers with a lower bitrate; --decoder software decodes the pictures in\n"
+        "      software only (auto: on the graphics card where it can, through Vulkan Video, once its\n"
+        "      first pictures were found the same as the software decoder's); --stats shows the statistics\n"
+        "      over the picture from the start (F3 shows and hides them at any time)\n"
+        "  {0} decode FOLDER [--lose FRAMES] [--decoder software|gpu]\n"
         "      decode the picture and the sound that 'session --dump FOLDER' kept, and say what came out;\n"
         "      --lose 100,250-255 leaves those frames out, as if they had not arrived, and compares the\n"
-        "      pictures behind them with the whole stream's\n"
+        "      pictures behind them with the whole stream's; --decoder gpu decodes them on the graphics\n"
+        "      card (Vulkan Video) and compares every picture with the software decoder's\n"
         "  {0} consoles [--json]\n"
         "      list the registered consoles\n"
         "  {0} forget CONSOLE\n"
@@ -1785,7 +1817,10 @@ std::string commands_help() {
         "  {0} controllers [--json] [--watch [--presses]]\n"
         "      list the controllers that are connected, with battery and what each can do; --watch goes\n"
         "      on and says it again whenever that changes; --presses also says what is pressed on one\n"
-        "      (a direction, accept, back, the page before or after)\n",
+        "      (a direction, accept, back, the page before or after)\n"
+        "  {0} diagnose [--json]\n"
+        "      what this computer offers: its graphics devices, whether pictures are decoded on the card\n"
+        "      (and why not), the libraries' versions, and how the last session ended\n",
         PSVP_BINARY);
 }
 

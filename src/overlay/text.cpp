@@ -114,4 +114,35 @@ std::vector<Quad> stats_panel(const std::vector<std::string>& lines, float windo
     return quads;
 }
 
+std::vector<Quad> menu_panel(std::string_view title, const std::vector<std::string>& items, std::size_t selected, std::string_view hint,
+                             float window_width, float window_height) {
+    std::vector<Quad> quads;
+    if (items.empty() || window_width <= 0 || window_height <= 0) return quads;
+    // Larger than the statistics: read from the couch.
+    const float size = std::max(16.0F, std::round(window_height / 28.0F));
+    const float hint_size = std::max(12.0F, std::round(size * 0.62F));
+    const float pad = std::round(size * 1.1F);
+    const float step = std::round(line_height(size) * 1.45F);
+    float widest = std::max(text_width(title, size), text_width(hint, hint_size));
+    for (const std::string& item : items) widest = std::max(widest, text_width(item, size) + pad);
+    const float width = std::min(window_width - 2.0F, std::ceil(widest) + pad * 2);
+    const float title_gap = std::round(step * 0.3F);  // the title stands apart from the items
+    const float height = pad * 2 + step * static_cast<float>(items.size() + 1) + title_gap + std::round(line_height(hint_size) * 1.6F);
+    const float x0 = std::round((window_width - width) / 2), y0 = std::round(std::max(0.0F, (window_height - height) / 2));
+    append_panel(quads, x0, y0, x0 + width, y0 + height, kMenuPanelColor);
+    float top = y0 + pad;
+    append_text(quads, title, x0 + pad, top + std::round(ascender(size)), size, kStatsTitleColor);
+    top += step + title_gap;
+    // The bar sits around the line: a little above its ascender and below its baseline.
+    const float bar_above = std::round((step - line_height(size)) / 2);
+    for (std::size_t i = 0; i < items.size(); ++i) {
+        const bool chosen = i == selected;
+        if (chosen) append_panel(quads, x0 + pad * 0.5F, top - bar_above, x0 + width - pad * 0.5F, top - bar_above + step, kMenuBarColor);
+        append_text(quads, items[i], x0 + pad, top + std::round(ascender(size)), size, chosen ? kMenuChosenTextColor : kStatsTextColor);
+        top += step;
+    }
+    append_text(quads, hint, x0 + pad, top + std::round(ascender(hint_size)) + std::round(line_height(hint_size) * 0.4F), hint_size, kMenuHintColor);
+    return quads;
+}
+
 }  // namespace psvp::overlay

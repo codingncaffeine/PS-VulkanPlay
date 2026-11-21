@@ -60,12 +60,47 @@ public class CoreTests
         var settings = new AppSettings
         {
             Resolution = 720, FramesPerSecond = 30, Codec = "hdr", BitrateKbps = 20000, CushionMs = 20, Controller = "dualsense",
-            HapticsVolume = 60, BackLeft = "cross", BackRight = "r3", WakeFirst = false, RestAfter = true, LossCeiling = 100, ShowStats = true,
+            HapticsVolume = 60, BackLeft = "cross", BackRight = "r3", WakeFirst = false, RestAfter = true, LossCeiling = 100, ShowStats = true, GpuDecoding = false,
         };
-        Assert.Equal(["play", "Den", "--resolution", "720", "--fps", "30", "--codec", "hdr", "--bitrate", "20000", "--controller", "dualsense", "--cushion", "20",
+        Assert.Equal(["play", "Den", "--resolution", "720", "--fps", "30", "--codec", "hdr", "--bitrate", "20000", "--decoder", "software", "--controller", "dualsense", "--cushion", "20",
                       "--loss-ceiling", "100", "--haptics-volume", "60", "--back-left", "cross", "--back-right", "r3", "--stats", "--rest"],
                      settings.PlayArguments("Den", ""));
     }
+
+    [Fact]
+    public void A_console_with_a_picture_of_its_own_plays_with_it_and_the_others_with_the_apps()
+    {
+        var settings = new AppSettings { Resolution = 1080, Codec = "hevc" };
+        settings.PerConsole["Den"] = new ConsolePicture { Resolution = 720, FramesPerSecond = 30, Codec = "h264", BitrateKbps = 10000 };
+        settings.PerConsole[""] = new ConsolePicture { Resolution = 360 };          // no console's: left out
+        settings.PerConsole["Attic"] = new ConsolePicture { Resolution = 999, Codec = "vp9" };  // made valid
+        IReadOnlyList<string> den = settings.PlayArguments("Den", "");
+        Assert.Equal(["720", "30", "h264", "10000"], [Option(den, "--resolution"), Option(den, "--fps"), Option(den, "--codec"), Option(den, "--bitrate")]);
+        IReadOnlyList<string> living = settings.PlayArguments("Living Room", "");
+        Assert.Equal(["1080", "60", "hevc"], [Option(living, "--resolution"), Option(living, "--fps"), Option(living, "--codec")]);
+        Assert.DoesNotContain("--bitrate", living);
+        AppSettings valid = settings.Valid();
+        Assert.Equal(["Attic", "Den"], valid.PerConsole.Keys.Order());
+        Assert.Equal(1080, valid.PerConsole["Attic"].Resolution);
+        Assert.Equal("hevc", valid.PerConsole["Attic"].Codec);
+
+        // Kept in the file and read back.
+        string folder = Path.Combine(Path.GetTempPath(), "psvp-per-console-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var store = new SettingsStore(Path.Combine(folder, "app.json"));
+            Assert.Equal("", store.Save(settings));
+            AppSettings read = store.Load();
+            Assert.Equal(30, read.PerConsole["Den"].FramesPerSecond);
+            Assert.Equal("h264", read.PerConsole["Den"].Codec);
+        }
+        finally
+        {
+            Directory.Delete(folder, true);
+        }
+    }
+
+    private static string Option(IReadOnlyList<string> arguments, string name) => arguments[arguments.ToList().IndexOf(name) + 1];
 
     [Fact]
     public void A_ps4_is_not_told_a_codec_and_pacing_off_takes_the_cushion_with_it()

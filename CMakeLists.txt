@@ -94,6 +94,7 @@ add_library(psvp_media STATIC
     src/media/color.cpp
     src/media/frame_pacer.cpp
     src/media/frame_refs.cpp
+    src/media/gpu_device.cpp
     src/media/haptics.cpp
     src/media/sound_decoder.cpp
     src/media/sound_buffer.cpp
@@ -101,6 +102,24 @@ add_library(psvp_media STATIC
     src/media/video_decoder.cpp)
 target_include_directories(psvp_media PUBLIC src)
 target_link_libraries(psvp_media PRIVATE PkgConfig::PSVP_FFMPEG PkgConfig::PSVP_OPUS)
+# Decoding on a graphics card: FFmpeg's Vulkan device (an FFmpeg built with Vulkan installs its
+# header) and the Vulkan headers. Without either, the decoders run in software only.
+find_package(Vulkan QUIET)
+set(PSVP_HAVE_VULKAN_HEADERS 0)
+set(PSVP_GPU_DECODE 0)
+if(TARGET Vulkan::Headers)
+    set(PSVP_HAVE_VULKAN_HEADERS 1)
+    target_link_libraries(psvp_media PUBLIC Vulkan::Headers)
+    include(CheckIncludeFileCXX)
+    set(CMAKE_REQUIRED_INCLUDES ${PSVP_FFMPEG_INCLUDE_DIRS} ${Vulkan_INCLUDE_DIRS})
+    check_include_file_cxx("libavutil/hwcontext_vulkan.h" PSVP_FFMPEG_HAS_VULKAN)
+    unset(CMAKE_REQUIRED_INCLUDES)
+    if(PSVP_FFMPEG_HAS_VULKAN)
+        set(PSVP_GPU_DECODE 1)
+    endif()
+endif()
+target_compile_definitions(psvp_media PUBLIC PSVP_HAVE_VULKAN_HEADERS=${PSVP_HAVE_VULKAN_HEADERS} PRIVATE PSVP_GPU_DECODE=${PSVP_GPU_DECODE})
+message(STATUS "Decoding on a graphics card: ${PSVP_GPU_DECODE}")
 psvp_setup_target(psvp_media)
 
 # What the application needs besides a window: options, folders, the log, the
@@ -118,6 +137,7 @@ add_library(psvp_core STATIC
     src/app/paths.cpp
     src/app/controller_list.cpp
     src/app/controller_presses.cpp
+    src/app/stream_menu.cpp
     src/app/window_place.cpp
     src/overlay/text.cpp)
 target_include_directories(psvp_core PUBLIC src "${CMAKE_CURRENT_BINARY_DIR}/generated")
@@ -148,6 +168,7 @@ if(PSVP_BUILD_APP)
 
     add_library(psvp_render STATIC
         src/render/overlay_pass.cpp
+        src/render/video_device.cpp
         src/render/video_pass.cpp
         src/render/vk_window.cpp
         ${PSVP_SHADER_FILES})
@@ -159,9 +180,11 @@ if(PSVP_BUILD_APP)
 
     add_executable(ps-vulkanplay
         src/app/controllers.cpp
+        src/app/diagnose.cpp
         src/app/haptics_volume.cpp
         src/app/main.cpp
-        src/app/player.cpp)
+        src/app/player.cpp
+        src/app/pretend.cpp)
     target_link_libraries(ps-vulkanplay PRIVATE psvp_core psvp_proto psvp_render SDL3::SDL3)
     # Asking the desktop's sound service for a controller's haptics volume: where its client
     # library is there. Without it the program is the same, less that one step.

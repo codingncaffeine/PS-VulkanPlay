@@ -165,6 +165,80 @@ public class WindowTests : IDisposable
     });
 
     [Fact]
+    public void Diagnostics_say_where_pictures_are_decoded_and_how_the_last_session_ended() => Ui.Run(() =>
+    {
+        FakeRunner fake = FakeRunner.WithTwoConsoles();
+        (MainWindow window, MainViewModel model) = Ui.Open(fake, _folder);
+        string? copied = null, opened = null;
+        model.Diagnostics.CopyText = text => copied = text;
+        model.Diagnostics.OpenFolder = folder => opened = folder;
+        Ui.Click(window, window.FindControl<Button>("NavDiagnostics")!);
+        Assert.True(model.IsDiagnostics);
+        Ui.Until(() => Ui.Shows(window, "On NVIDIA GeForce RTX 5080 (H.264, HEVC). Each session checks the card's first two seconds against software decoding."),
+                 "the page says the card decodes");
+        Assert.True(Ui.Shows(window, "PS VulkanPlay 0.0.3  ·  FFmpeg 9.1  ·  SDL 3.4.20  ·  Vulkan loader 1.4.363"));
+        Assert.True(Ui.Shows(window, "NVIDIA GeForce RTX 5080 (discrete GPU, Vulkan 1.4.357)"));
+        Assert.StartsWith("The last session, started ", model.Diagnostics.LastSessionTitle);
+        Assert.Contains("Smoothness: the picture stood for over 30 ms 330 times.", window.FindControl<TextBox>("LastSessionBox")!.Text);
+        Assert.Equal(["diagnose", "--json"], fake.Last("diagnose"));
+        Ui.Capture(window, "diagnostics-dark");
+        Ui.Click(window, window.FindControl<Button>("DiagnosticsCopy")!);
+        Assert.NotNull(copied);
+        Assert.Contains("Decoding: On NVIDIA GeForce RTX 5080", copied);
+        Assert.Contains("Played (HEVC", copied);
+        Ui.Click(window, window.FindControl<Button>("OpenLogsButton")!);
+        Assert.Equal("/home/someone/.local/state/ps-vulkanplay/logs", opened);
+
+        // A computer whose card does not decode, and no session yet: said as such.
+        fake.Answers["diagnose"] = _ => new RunResult(0, """{"version": "0.0.3","vulkan_loader": "1.4.363","vulkan_error": "","devices": [{"name": "llvmpipe","kind": "software","vulkan": "1.4.363"}],"gpu_decoding": "","gpu_decoding_why_not": "the device has no VK_KHR_video_queue","ffmpeg": "9.1","sdl": "3.4.20","last_session_started": "","last_session": [],"logs_folder": ""}""", "");
+        Ui.Click(window, window.FindControl<Button>("DiagnosticsAgain")!);
+        Ui.Until(() => Ui.Shows(window, "In software: the device has no VK_KHR_video_queue."), "the page says why it decodes in software");
+        Assert.True(Ui.Shows(window, "No session was played yet"));
+        Assert.False(window.FindControl<TextBox>("LastSessionBox")!.IsEffectivelyVisible);
+        Assert.False(window.FindControl<Button>("OpenLogsButton")!.IsEffectivelyVisible);
+
+        // The program that does not answer: said, the page keeps what it knew.
+        fake.Answers["diagnose"] = _ => new RunResult(1, "", "diagnose: this build has no graphics part to ask\n");
+        Ui.Click(window, window.FindControl<Button>("DiagnosticsAgain")!);
+        Ui.Until(() => Ui.Shows(window, "The stream program did not answer: diagnose: this build has no graphics part to ask"), "the failure is said");
+    });
+
+    [Fact]
+    public void One_console_gets_a_picture_of_its_own_on_the_settings_page() => Ui.Run(() =>
+    {
+        FakeRunner fake = FakeRunner.WithTwoConsoles();
+        (MainWindow window, MainViewModel model) = Ui.Open(fake, _folder);
+        Ui.Until(() => model.Consoles.Count == 2, "the two consoles are listed");
+        Ui.Click(window, window.FindControl<Button>("NavSettings")!);
+        Ui.Until(() => Ui.Shows(window, "One console's picture"), "the card is on the settings page");
+        var console = window.FindControl<ComboBox>("ConsolePictureConsole")!;
+        Assert.Equal(["Living Room", "Den"], model.Settings.ConsoleNames);
+        console.SelectedItem = "Den";
+        var own = window.FindControl<ToggleSwitch>("ConsoleOwnPictureSwitch")!;
+        own.BringIntoView();
+        Ui.Settle();
+        Ui.Click(window, own);
+        Assert.True(model.Settings.ConsoleOwnPicture);
+        model.Settings.ConsoleResolution = model.Settings.Resolutions.First(choice => choice.Value == "720");
+        model.Settings.ConsoleBitrate = model.Settings.Bitrates.First(choice => choice.Value == "10000");
+        Ui.Settle();
+        Ui.Capture(window, "settings-console-dark");
+        Assert.Equal(720, model.Settings.Current.PerConsole["Den"].Resolution);
+        // Living Room keeps the app's picture; switching between them shows each one's own.
+        console.SelectedItem = "Living Room";
+        Ui.Settle();
+        Assert.False(model.Settings.ConsoleOwnPicture);
+        Assert.Equal("1080", model.Settings.ConsoleResolution.Value);
+        console.SelectedItem = "Den";
+        Ui.Settle();
+        Assert.True(model.Settings.ConsoleOwnPicture);
+        Assert.Equal("720", model.Settings.ConsoleResolution.Value);
+        // Off again: the app's picture for it too.
+        Ui.Click(window, own);
+        Assert.False(model.Settings.Current.PerConsole.ContainsKey("Den"));
+    });
+
+    [Fact]
     public void Settings_are_one_page_and_the_look_changes_at_once() => Ui.Run(() =>
     {
         FakeRunner fake = FakeRunner.WithTwoConsoles();

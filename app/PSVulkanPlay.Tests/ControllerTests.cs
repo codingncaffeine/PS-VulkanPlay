@@ -301,7 +301,7 @@ public class ControllerTests : IDisposable
     {
         Ui.Settle();
         ControllerNavigator navigator = window.Navigator;
-        Control root = new[] { "HomeScroll", "SettingsScroll", "AddScroll" }.Select(name => window.FindControl<ScrollViewer>(name)!).First(scroll => scroll.IsVisible);
+        Control root = new[] { "HomeScroll", "SettingsScroll", "DiagnosticsScroll", "AddScroll" }.Select(name => window.FindControl<ScrollViewer>(name)!).First(scroll => scroll.IsVisible);
         List<Control> stops = root.GetVisualDescendants().OfType<Control>()
                                   .Where(control => ControllerNavigator.IsStop(control) && control.Focusable && control.IsEffectivelyVisible && control.IsEffectivelyEnabled).ToList();
         Assert.NotEmpty(stops);
@@ -325,7 +325,10 @@ public class ControllerTests : IDisposable
         }
         List<string> missed = stops.Where(stop => !reached.Contains(stop))
                                    .Select(stop => stop.Name ?? (stop as Button)?.Content as string ?? stop.GetType().Name).ToList();
-        Assert.True(missed.Count == 0, $"{pageName}: the controller cannot get to: {string.Join(", ", missed)} ({reached.Count} reached of {stops.Count} on the page)");
+        List<string> beyond = reached.Where(control => !stops.Contains(control))
+                                     .Select(control => control.Name ?? (control as Button)?.Content as string ?? control.GetType().Name).ToList();
+        Assert.True(missed.Count == 0, $"{pageName}: the controller cannot get to: {string.Join(", ", missed)} ({reached.Count} reached of {stops.Count} on the page" +
+                                       (beyond.Count == 0 ? ")" : $"; reached beyond the page: {string.Join(", ", beyond)})"));
     }
 
     [Fact]
@@ -349,6 +352,13 @@ public class ControllerTests : IDisposable
         AssertEverythingIsReached(window, "the settings");
         model.Settings.AutoBitrate = false;
         AssertEverythingIsReached(window, "the settings with a bitrate of one's own");
+
+        Press(fake, "next");
+        Assert.True(model.IsDiagnostics);
+        Ui.Until(() => model.Diagnostics.Known, "the diagnostics are there");
+        AssertEverythingIsReached(window, "the diagnostics");
+        Press(fake, "previous");
+        Assert.True(model.IsSettings);
 
         Press(fake, "back");
         Assert.True(model.IsHome);
@@ -487,8 +497,13 @@ public class ControllerTests : IDisposable
         Assert.True(model.IsHome);
         Press(fake, "previous");
         Assert.True(model.IsHome);
+        // The pages in their order at the top: consoles, settings, diagnostics; past the ends, nowhere.
         Press(fake, "next");
         Press(fake, "next");
+        Assert.True(model.IsDiagnostics);
+        Press(fake, "next");
+        Assert.True(model.IsDiagnostics);
+        Press(fake, "previous");
         Assert.True(model.IsSettings);
         Press(fake, "previous");
         Assert.True(model.IsHome);

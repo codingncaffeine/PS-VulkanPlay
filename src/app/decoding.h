@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "media/gpu_device.h"
 #include "media/sound_decoder.h"
 #include "media/video_decoder.h"
 
@@ -19,6 +20,10 @@ public:
         // The stream is the mock console's generated clip: every picture is compared with
         // the frame of the clip it should be, and the sound with the clip's tone.
         bool expect_clip = false;
+        // Decode on this graphics card (it outlives the decoding); the pictures are read back to be checked.
+        const media::GpuDevice* gpu = nullptr;
+        // Compare every picture of the card with the software decoder's of the same frames (no frames left out).
+        bool compare_gpu = false;
     };
     explicit Decoding(Options options) : options_(options) {}
 
@@ -57,6 +62,10 @@ private:
     std::optional<media::Picture> reference_picture_;
     std::uint16_t reference_index_ = 0;
     std::uint64_t compared_ = 0, same_ = 0, missing_ = 0;
+    // Pictures of the graphics card against the software decoder's, in every plane.
+    std::uint64_t gpu_pictures_ = 0, gpu_unreadable_ = 0, gpu_compared_ = 0, gpu_identical_ = 0;
+    unsigned gpu_largest_ = 0;
+    std::optional<std::uint16_t> gpu_first_different_;
     double difference_sum_ = 0.0, worst_difference_ = 0.0;
     std::uint16_t worst_index_ = 0;
     // The clip.

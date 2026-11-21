@@ -3,6 +3,23 @@ using System.Text.Json.Serialization;
 
 namespace PSVulkanPlay.Core;
 
+/// <summary>One console's own picture: used for it in place of the app's when it is there.</summary>
+public sealed class ConsolePicture
+{
+    public int Resolution { get; set; } = 1080;
+    public int FramesPerSecond { get; set; } = 60;
+    public string Codec { get; set; } = "hevc";
+    public int BitrateKbps { get; set; }                // 0: the program's own choice
+
+    public ConsolePicture Valid() => new()
+    {
+        Resolution = AppSettings.Resolutions.Contains(Resolution) ? Resolution : 1080,
+        FramesPerSecond = AppSettings.FrameRates.Contains(FramesPerSecond) ? FramesPerSecond : 60,
+        Codec = AppSettings.Codecs.Contains(Codec) ? Codec : "hevc",
+        BitrateKbps = BitrateKbps == 0 ? 0 : Math.Clamp(BitrateKbps, 500, 100000),
+    };
+}
+
 /// <summary>What the user has chosen. Every value is one the stream program takes as an option.</summary>
 public sealed class AppSettings
 {
@@ -10,6 +27,7 @@ public sealed class AppSettings
     public int FramesPerSecond { get; set; } = 60;      // 30, 60
     public string Codec { get; set; } = "hevc";         // h264, hevc, hdr
     public int BitrateKbps { get; set; }                // 0: the program's own choice
+    public bool GpuDecoding { get; set; } = true;       // on the graphics card where it can (checked against software first)
     public bool Pacing { get; set; } = true;
     public int CushionMs { get; set; }                  // 0 to 50
     public int LossCeiling { get; set; } = DefaultLossCeiling;   // percent, 0 to 100: the most loss the console is told of
@@ -21,6 +39,8 @@ public sealed class AppSettings
     public bool RestAfter { get; set; }
     public bool ShowStats { get; set; }                 // the statistics over the picture from the start (F3 at any time)
     public string Theme { get; set; } = "system";       // "system", or a look's id (Theming/Themes.cs)
+    /// <summary>The consoles that have a picture of their own, by name.</summary>
+    public Dictionary<string, ConsolePicture> PerConsole { get; set; } = [];
 
     public const int DefaultLossCeiling = 5;
     public static readonly int[] Resolutions = [360, 540, 720, 1080];
@@ -41,6 +61,7 @@ public sealed class AppSettings
             FramesPerSecond = FrameRates.Contains(FramesPerSecond) ? FramesPerSecond : 60,
             Codec = Codecs.Contains(Codec) ? Codec : "hevc",
             BitrateKbps = BitrateKbps == 0 ? 0 : Math.Clamp(BitrateKbps, 500, 100000),
+            GpuDecoding = GpuDecoding,
             Pacing = Pacing,
             CushionMs = Math.Clamp(CushionMs, 0, 50),
             LossCeiling = Math.Clamp(LossCeiling, 0, 100),
@@ -53,6 +74,8 @@ public sealed class AppSettings
             ShowStats = ShowStats,
             // An id of an earlier version, or of a look that is gone, follows the desktop.
             Theme = Theming.Themes.Ids.Contains(Theme) ? Theme : Theming.Themes.FollowDesktop,
+            PerConsole = (PerConsole ?? []).Where(entry => entry.Key.Length > 0 && entry.Value is not null)
+                                           .ToDictionary(entry => entry.Key, entry => entry.Value.Valid()),
         };
     }
 
@@ -63,10 +86,15 @@ public sealed class AppSettings
         var arguments = new List<string> { "play", console };
         if (address.Length > 0) arguments.AddRange(["--host", address]);
         if (s.WakeFirst) arguments.Add("--wake");
-        arguments.AddRange(["--resolution", s.Resolution.ToString(), "--fps", s.FramesPerSecond.ToString()]);
+        // The console's own picture where it has one, the app's otherwise.
+        ConsolePicture picture = s.PerConsole.TryGetValue(console, out ConsolePicture? own)
+            ? own
+            : new ConsolePicture { Resolution = s.Resolution, FramesPerSecond = s.FramesPerSecond, Codec = s.Codec, BitrateKbps = s.BitrateKbps };
+        arguments.AddRange(["--resolution", picture.Resolution.ToString(), "--fps", picture.FramesPerSecond.ToString()]);
         // A PS4 streams H.264 only; the program picks that by itself when no codec is named.
-        if (!ps4) arguments.AddRange(["--codec", s.Codec]);
-        if (s.BitrateKbps > 0) arguments.AddRange(["--bitrate", s.BitrateKbps.ToString()]);
+        if (!ps4) arguments.AddRange(["--codec", picture.Codec]);
+        if (picture.BitrateKbps > 0) arguments.AddRange(["--bitrate", picture.BitrateKbps.ToString()]);
+        if (!s.GpuDecoding) arguments.AddRange(["--decoder", "software"]);
         arguments.AddRange(["--controller", s.Controller]);
         if (!s.Pacing) arguments.AddRange(["--pacing", "off"]);
         else if (s.CushionMs > 0) arguments.AddRange(["--cushion", s.CushionMs.ToString()]);

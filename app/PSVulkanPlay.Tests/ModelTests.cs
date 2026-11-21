@@ -231,6 +231,31 @@ public class ModelTests : IDisposable
         Until(() => model.Consoles.Count == 1, "the new console is on the home page");
     }
 
+    [Fact]
+    public void The_keys_on_the_page_type_an_address_and_an_account_id()
+    {
+        var fake = new FakeRunner();
+        fake.Answers["consoles"] = _ => new RunResult(0, "[]", "");
+        fake.Answers["account"] = _ => new RunResult(0, "{}", "");
+        fake.Answers["discover"] = _ => new RunResult(0, "[]", "");
+        MainViewModel model = Model(fake);
+        model.GoAddConsole.Execute(null);
+        AddConsoleViewModel add = model.AddConsole;
+        foreach (string key in new[] { "1", "9", "2", ".", "1", "6", "8", "x", "7" }) add.AddressKey.Execute(key);
+        Assert.Equal("192.1687", add.Address);   // a key that is no digit or dot types nothing
+        add.AddressErase.Execute(null);
+        add.AddressKey.Execute(".");
+        add.AddressKey.Execute("5");
+        Assert.Equal("192.168.5", add.Address);
+        Assert.True(add.UseAddress.CanExecute(null));
+        foreach (string key in new[] { "1", ".", "2", "3" }) add.AccountKey.Execute(key);
+        Assert.Equal("123", add.AccountId);      // the account ID is digits only
+        add.AccountErase.Execute(null);
+        Assert.Equal("12", add.AccountId);
+        for (int i = 0; i < 30; i++) add.AccountKey.Execute("9");
+        Assert.Equal(20, add.AccountId.Length);  // no account ID is longer
+    }
+
     private static readonly FoundConsole LivingRoom = new("Living Room", "PS5", "ready", "192.0.2.10", "02005e102030", "", false, true);
 
     [Fact]
