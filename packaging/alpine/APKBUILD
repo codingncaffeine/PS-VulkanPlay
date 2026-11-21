@@ -38,4 +38,6 @@ package() {
 	install -Dm644 LICENSE "$pkgdir"/usr/share/licenses/$pkgname/LICENSE
 }
 
-sha512sums="SKIP"
+sha512sums="
+b2dd088e8e96de669bf6668c96dc33e6ebb42080cc00d93af33aee0aae4b90796947f99abb42b53c7652ac35012bde0e6e514d8431c02ef2baf51652a5ce4ed0  ps-vulkanplay-0.0.3.tar.gz
+"

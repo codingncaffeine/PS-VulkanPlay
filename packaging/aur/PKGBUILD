@@ -37,7 +37,7 @@ source=("$url/releases/download/v$pkgver/PS-VulkanPlay-$pkgver-linux-x64.tar.gz"
         "ps-vulkanplay-$pkgver-64.png::$_raw/icons/hicolor/64x64/apps/$_id.png"
         "ps-vulkanplay-$pkgver-128.png::$_raw/icons/hicolor/128x128/apps/$_id.png"
         "ps-vulkanplay-$pkgver-256.png::$_raw/icons/hicolor/256x256/apps/$_id.png")
-sha256sums=('a072dbedffc4b780e1970f979f87a6cfb86d5fa462579d238ff09d74f601003c'
+sha256sums=('40a6ce2c889a8ef28d24242379ba80c8fe5e48219d6a2630ae6e5721f390b9c6'
             'c3598296fbc11a9e828ff8ab6521445fc22f78bbd380fd20fd516f90e714f18e'
             '87e6e1e3cd03157ee0d7a1349882b2a2cbbe8c36766644f76182f6c8faa9cdfb'
             'f20847f3df2dd0e13075a7b569ad2a754e438719756bbef5cf63cf96c0ac5f95'
