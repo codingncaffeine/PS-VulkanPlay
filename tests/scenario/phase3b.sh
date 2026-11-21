@@ -58,6 +58,10 @@ pid=$!
 for _ in $(seq 80); do grep -aq "first picture shown" "$work/play.err" 2>/dev/null && break; kill -0 $pid 2>/dev/null || break; sleep 0.1; done
 check "a picture was shown, by the scaler asked for" has "$work/play.err" "render: first picture shown, 416x240, 8 bits, limited range, BT.709, drawn at 1248x720 by bilinear"
 sleep 1
+# The clip moves: the white blocks are not where they were a second ago. First, while the session surely
+# runs: the counts below take a while under a sanitizer (CI 44956114488: the five seconds had ended).
+cp "$PSVP_TEST_FB" "$work/screen-1.xwd"; sleep 1
+cmp -s "$PSVP_TEST_FB" "$work/screen-1.xwd" && fail "the screen did not change in a second" || ok "the screen changed within a second: the clip moves"
 for patch in "red 191 0 1" "green 0 191 0" "blue 0 0 191"; do
     set -- $patch
     n=$(count "$2" "$3" "$4")
@@ -67,9 +71,6 @@ n=$(count 56 56 56)
 between "$n" $((349 * 46 * 46)) $((349 * 48 * 48)) && ok "on the screen: $n pixels of the clip's gray" || fail "gray: '$n' pixels"
 # The control for the statistics below: without --stats none of their colors is drawn.
 check "without --stats no statistics are on the screen" [ "$(count 236 239 244) $(count 240 112 45)" = "0 0" ]
-# The clip moves: the white blocks are not where they were a second ago.
-cp "$PSVP_TEST_FB" "$work/screen-1.xwd"; sleep 1
-cmp -s "$PSVP_TEST_FB" "$work/screen-1.xwd" && fail "the screen did not change in a second" || ok "the screen changed within a second: the clip moves"
 wait $pid; rc=$?
 sleep 0.3; stop_mock
 out="$work/play.out"; log="$work/play.log"
