@@ -49,12 +49,22 @@ if [ $app = 1 ]; then
     export DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1
     echo "── .NET SDK $(dotnet --version)"
     psvp_nice dotnet build app/PSVulkanPlay.Tests -c Release -v q --nologo -m:"$PSVP_JOBS"
-    # Twice, as the others. A run that fails shows all it said: which test, and why.
+    # Twice, as the others. A run that fails shows all it said: which test, and why. Every test's start
+    # is said (the last one started is the one a crash came in), and a crash leaves the runtime's own
+    # report of every thread's stack, which is shown (CI 44958130689: a segfault with nothing to go on).
     app_tests() {
-        if app/PSVulkanPlay.Tests/bin/Release/net10.0/PSVulkanPlay.Tests > "$dir/app-tests.log" 2>&1; then
-            tail -2 "$dir/app-tests.log"
+        rm -f "$dir"/app-crash*
+        if DOTNET_DbgEnableMiniDump=1 DOTNET_DbgMiniDumpType=1 DOTNET_EnableCrashReport=1 DOTNET_DbgMiniDumpName="$dir/app-crash-%p" \
+            app/PSVulkanPlay.Tests/bin/Release/net10.0/PSVulkanPlay.Tests -reporter verbose > "$dir/app-tests.log" 2>&1; then
+            grep -a 'Total:' "$dir/app-tests.log" | tail -1
         else
             cat "$dir/app-tests.log"
+            for report in "$dir"/app-crash*.crashreport.json; do
+                [ -f "$report" ] || continue
+                # Its frames by module and name, thread after thread (the whole report is half a megabyte).
+                echo "── the runtime's crash report ($report), its frames:"
+                grep -oE '"(crashed|native_module|method_name|unmanaged_name)": *("[^"]*"|true|false)' "$report" | head -400
+            done
             return 1
         fi
     }

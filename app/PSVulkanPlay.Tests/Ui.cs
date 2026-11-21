@@ -27,15 +27,17 @@ public static class Ui
     /// <summary>The stand-in sign-in service the app's windows in tests ask.</summary>
     public static FakeService Service { get; } = new();
 
-    // As the app's own start does, and for the same reason: the text shaper the app brings must be
-    // opened before the system's font library can open the system's (Platform/NativeLibs.cs).
-    // Without it this program dies at its first window where the system has its own text shaper
-    // and a font library that opens it (Alpine, for one).
-    private static HeadlessUnitTestSession Start()
-    {
-        Platform.NativeLibs.BindHarfBuzzToItself();
-        return HeadlessUnitTestSession.StartNew(typeof(TestEntry));
-    }
+    private static HeadlessUnitTestSession Start() => HeadlessUnitTestSession.StartNew(typeof(TestEntry));
+
+    /// <summary>
+    /// As the app's own start does, and for the same reason: the text shaper the app brings must be
+    /// opened before the system's font library can open the system's (Platform/NativeLibs.cs).
+    /// Without it this program dies at its first window where the system has its own text shaper
+    /// and a font library that opens it (Alpine, for one). Before any test at all: also those
+    /// without a window, which run beside the window tests and may load native libraries first.
+    /// </summary>
+    [System.Runtime.CompilerServices.ModuleInitializer]
+    internal static void BeforeEverything() => Platform.NativeLibs.BindHarfBuzzToItself();
 
     /// <summary>
     /// Runs a test's body on the UI thread, to its end. The body is not async: a session's
