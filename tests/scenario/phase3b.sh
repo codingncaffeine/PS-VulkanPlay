@@ -50,17 +50,18 @@ stop_mock
 echo "the clip is played for five seconds; two buttons are pressed on the way"
 check "before: none of the clip's colors is on the screen" [ "$(count 191 0 1) $(count 56 56 56)" = "0 0" ]
 start_mock play --kind ps5 --clip 416x240 --frame-ms 16 --media-ms 10 --lose-every 90 --lose-units 999
-"$app" play "Living Room" --seconds 5 --tap right@1,cross@1.5 > "$work/play.out" 2> "$work/play.err" &
+# Scaled by the tent, not debanded: the counts below are the tent's arithmetic (the defaults are checked further on).
+"$app" play "Living Room" --seconds 5 --tap right@1,cross@1.5 --scaler bilinear --deband off > "$work/play.out" 2> "$work/play.err" &
 pid=$!
 # The picture, read off the screen while it plays. The clip is drawn at three times its size
-# (tools/launch-check.sh has the arithmetic): a block's own color fills 42x42 to 48x48 pixels.
+# (tools/launch-check.sh has the arithmetic): a block's own color fills 40x40 to 48x48 pixels.
 for _ in $(seq 80); do grep -aq "first picture shown" "$work/play.err" 2>/dev/null && break; kill -0 $pid 2>/dev/null || break; sleep 0.1; done
-check "a picture was shown" has "$work/play.err" "render: first picture shown, 416x240, 8 bits, limited range, BT.709, drawn at 1248x720"
+check "a picture was shown, by the scaler asked for" has "$work/play.err" "render: first picture shown, 416x240, 8 bits, limited range, BT.709, drawn at 1248x720 by bilinear"
 sleep 1
 for patch in "red 191 0 1" "green 0 191 0" "blue 0 0 191"; do
     set -- $patch
     n=$(count "$2" "$3" "$4")
-    between "$n" $((42 * 42)) $((48 * 48)) && ok "on the screen: the $1 patch, $n pixels of its color" || fail "the $1 patch: '$n' pixels of ($2,$3,$4)"
+    between "$n" $((40 * 40)) $((48 * 48)) && ok "on the screen: the $1 patch, $n pixels of its color" || fail "the $1 patch: '$n' pixels of ($2,$3,$4)"
 done
 n=$(count 56 56 56)
 between "$n" $((349 * 46 * 46)) $((349 * 48 * 48)) && ok "on the screen: $n pixels of the clip's gray" || fail "gray: '$n' pixels"
@@ -150,6 +151,9 @@ between "$through" 15 500 && ok "with it a picture was $through ms behind its fr
 check "the back buttons are what was asked for" has "$out" "Back buttons: the left one is cross, the right one is r3; they were pressed 0 times."
 check "the controller information says player 2, and strengths 1 and 2" has "$out" "(player 2, haptics strength 1, trigger strength 2, 1 asked to take the controller's position as its rest)"
 check "no error was logged" lacks "$work/feedback.err" " ERROR "
+check "unless said otherwise the picture is scaled by EWA Lanczos and debanded" has "$work/feedback.err" "drawn at 1248x720 by ewa-lanczos, debanded"
+check "a scaler is one of the five" sh -c "! '$app' play 'Living Room' --scaler nearest > /dev/null 2>&1"
+check "debanding is on or off" sh -c "! '$app' play 'Living Room' --deband maybe > /dev/null 2>&1"
 check "what does not go with the option is refused" sh -c "! '$app' play 'Living Room' --controller wheel > /dev/null 2>&1"
 check "a cushion is 50 ms at most" sh -c "! '$app' play 'Living Room' --cushion 80 > /dev/null 2>&1"
 check "and is part of the pacing: not without it" sh -c "! '$app' play 'Living Room' --cushion 20 --pacing off > /dev/null 2>&1"

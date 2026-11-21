@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "media/scaler.h"
 #include "proto/console.h"
 #include "proto/input.h"
 #include "proto/stream_message.h"
@@ -105,6 +106,10 @@ struct PlayOptions {
     // How bright an HDR picture is taken to be at its brightest, in cd/m² (the console's streams do
     // not say): what is brighter than SDR white is fitted between it and that (media/tone_map.h).
     int hdr_peak_nits = 1000;
+    // How the picture is brought to the window's size (media/scaler.h), and whether banding is
+    // smoothed out of it first.
+    media::Scaler scaler = media::kDefaultScaler;
+    bool deband = true;
     // With --wake: while the connection is made again, a console that answers as resting is woken,
     // waiting at most the time given; `on_waking` is called once it is known to rest. Returns 0 when
     // it is on (or did not answer at all).

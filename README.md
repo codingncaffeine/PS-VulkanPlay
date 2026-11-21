@@ -44,13 +44,16 @@ Add a console, sign in with PSN and type the eight digits the console shows.
   console that went to rest meanwhile is woken again
 - straight into a session: "Add to the app menu" on a console's card puts it in the desktop's application
   menu, and `ps-vulkanplay --play CONSOLE` or a link `ps-vulkanplay://play/CONSOLE` starts a session with the
-  app's settings and no window of the app's (for launchers that start a program)
+  app's settings and no window of the app's (for launchers that start a program); "Add to Steam" puts it in
+  Steam's library as a non-Steam game with its pictures (Steam closed while it is added), for Game Mode too
 - decoding on the graphics card through Vulkan Video, with the pictures drawn straight from the card's memory.
   The card's first two seconds of pictures are checked against software decoding, sample for sample, and
   software takes over if they differ. "Decode on the graphics card" in the app turns it off
 - HDR pictures (the "HEVC with HDR" coding) shown on the desktop as SDR with the industry's tone mapping:
   ITU-R BT.2390's curve, BT.2408's reference white, BT.2020 colors brought into BT.709. Consoles do not say how
   bright their picture gets: "HDR brightness" in the app (1000 cd/m² unless changed) says it
+- the picture scaled to the window by EWA Lanczos (as chiaki-ng does), or by Lanczos, Catmull-Rom or bilinear,
+  and the bands a low bitrate cuts skies into smoothed out ("Scaling" and "Smooth out banding" in the app)
 - a DualSense on USB gets what a PS5 sends for it: haptics on the controller's own sound device, the effects
   of its adaptive triggers, the light bar's color; other controllers get rumble
 

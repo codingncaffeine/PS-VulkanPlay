@@ -26,6 +26,8 @@ struct DeviceRequest {
     std::string device_name;
     bool gpu_decoding = true;  // set up the video queue where the device has one
     std::vector<const char*> extensions;  // the program's own (the swapchain for a window)
+    // Features of those extensions to turn on: a chain of feature structures (their pNext free), or nothing.
+    void* features = nullptr;
 };
 
 struct MadeDevice {

@@ -71,8 +71,18 @@
                                         <Button Grid.Column="1" Content="Wake" Command="{Binding Wake}" IsVisible="{Binding !IsReady}" Margin="10,0,0,0" Padding="16,11" />
                                         <Button Grid.Column="3" Classes="quiet" Content="Forget" Command="{Binding AskForget}" />
                                     </Grid>
+                                    <!-- One above the other: a controller moves up and down between them. -->
                                     <Button Classes="quiet" FontSize="13" Content="{Binding ShortcutText}" Command="{Binding ToggleShortcut}" Margin="-8,8,0,0" HorizontalAlignment="Left"
                                             IsVisible="{Binding !ConfirmForget}" ToolTip.Tip="An entry of its own in the desktop's application menu that starts a session with this console straight away, with these settings" />
+                                    <Button Classes="quiet" FontSize="13" Content="{Binding SteamText}" Command="{Binding ToggleSteam}" Margin="-8,0,0,0" HorizontalAlignment="Left"
+                                            ToolTip.Tip="A non-Steam game in Steam's library, with pictures, that starts a session with this console straight away, with these settings (Steam must be closed while it is added)">
+                                        <Button.IsVisible>
+                                            <MultiBinding Converter="{x:Static BoolConverters.And}">
+                                                <Binding Path="HasSteam" />
+                                                <Binding Path="!ConfirmForget" />
+                                            </MultiBinding>
+                                        </Button.IsVisible>
+                                    </Button>
                                     <StackPanel Margin="0,14,0,0" IsVisible="{Binding ConfirmForget}">
                                         <TextBlock Classes="secondary small" Text="Forget this console? To play on it again you would register with its PIN once more." />
                                         <StackPanel Orientation="Horizontal" Spacing="10" Margin="0,10,0,0">
@@ -130,6 +140,22 @@
                                 <TextBlock Classes="secondary small" Text="{Binding HdrPeakText}" Foreground="{DynamicResource Accent}" Margin="0,4,0,0" />
                             </StackPanel>
                             <Slider Grid.Column="1" Minimum="400" Maximum="4000" TickFrequency="100" IsSnapToTickEnabled="True" Value="{Binding HdrPeak}" />
+                        </Grid>
+                        <Border Classes="rule" />
+                        <Grid ColumnDefinitions="*,Auto">
+                            <StackPanel VerticalAlignment="Center" Margin="0,0,20,0">
+                                <TextBlock Text="Scaling" />
+                                <TextBlock Classes="secondary small" TextWrapping="Wrap" Text="How the picture is brought to the window's size. The sharper ones show more detail and take more of the graphics card." />
+                            </StackPanel>
+                            <ComboBox Grid.Column="1" ItemsSource="{Binding Scalers}" SelectedItem="{Binding Scaler}" MinWidth="330" />
+                        </Grid>
+                        <Border Classes="rule" />
+                        <Grid ColumnDefinitions="*,Auto">
+                            <StackPanel VerticalAlignment="Center" Margin="0,0,20,0">
+                                <TextBlock Text="Smooth out banding" />
+                                <TextBlock Classes="secondary small" TextWrapping="Wrap" Text="A low bitrate cuts skies and other smooth areas into flat bands; this blends them back together and leaves edges alone." />
+                            </StackPanel>
+                            <ToggleSwitch Grid.Column="1" IsChecked="{Binding Deband}" OnContent="" OffContent="" MinWidth="0" />
                         </Grid>
                         <Border Classes="rule" />
                         <Grid ColumnDefinitions="*,Auto">

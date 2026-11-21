@@ -62,6 +62,33 @@ public class WindowTests : IDisposable
     });
 
     [Fact]
+    public void A_console_goes_into_Steam_from_its_card() => Ui.Run(() =>
+    {
+        // A stand-in Steam folder with one account: never the user's.
+        string root = Path.Combine(_folder, "Steam");
+        Directory.CreateDirectory(Path.Combine(root, "userdata", "2222", "config"));
+        App.SteamOverride = new SteamShortcuts(root, "/opt/PS VulkanPlay/ps-vulkanplay", () => false, SteamShortcuts.Resource("banner.png"), SteamShortcuts.Resource("icon.png"));
+        try
+        {
+            FakeRunner fake = FakeRunner.WithTwoConsoles();
+            (MainWindow window, MainViewModel model) = Ui.Open(fake, _folder);
+            Ui.Until(() => Ui.Shows(window, "In rest mode") && Ui.Shows(window, "On"), "the consoles are on the page");
+            Ui.Click(window, Ui.ButtonSaying(window, "Add to Steam"));
+            Ui.Until(() => Ui.Shows(window, "is in Steam's library now"), "the page says it is in Steam");
+            Assert.True(model.Steam!.Has(model.Consoles.First(card => card.InSteam).Console));
+            Assert.True(File.Exists(Path.Combine(root, "userdata", "2222", "config", "shortcuts.vdf")));
+            Ui.Capture(window, "home-steam-dark");
+            Ui.Click(window, Ui.ButtonSaying(window, "Remove from Steam"));
+            Ui.Until(() => Ui.Shows(window, "is no longer in Steam's library"), "the page says it left Steam");
+            window.Close();
+        }
+        finally
+        {
+            App.SteamOverride = null;
+        }
+    });
+
+    [Fact]
     public void A_session_that_fails_says_why_on_the_page() => Ui.Run(() =>
     {
         FakeRunner fake = FakeRunner.WithTwoConsoles();

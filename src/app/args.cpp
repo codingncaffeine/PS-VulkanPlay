@@ -29,6 +29,13 @@ std::expected<Options, std::string> parse_args(std::span<const std::string_view>
             }
             options.test_clip = true;
             options.test_clip_frame = value;
+        } else if (arg == "--scaler") {
+            if (i + 1 >= args.size()) return std::unexpected(std::string("--scaler needs a name"));
+            options.scaler = media::scaler_from_name(args[++i]);
+            if (!options.scaler) return std::unexpected(std::format("--scaler takes bilinear, catmull-rom, lanczos, ewa-lanczos or ewa-lanczos-sharp, not '{}'", args[i]));
+        } else if (arg == "--deband") {
+            if (i + 1 >= args.size() || (args[i + 1] != "on" && args[i + 1] != "off")) return std::unexpected(std::string("--deband takes on or off"));
+            options.deband = args[++i] == "on";
         } else if (arg == "--frames") {
             if (i + 1 >= args.size()) return std::unexpected(std::string("--frames needs a number"));
             const std::string_view text = args[++i];
@@ -60,7 +67,8 @@ std::string help_text() {
         "  --frames N     present N frames, then exit (for automated checks)\n"
         "  --test-clip    show a generated clip instead of a console's picture: moving blocks,\n"
         "                 color patches (a check that pictures are decoded and drawn right)\n"
-        "  --test-clip-frame N   show only frame N of that clip, standing still\n",
+        "  --test-clip-frame N   show only frame N of that clip, standing still\n"
+        "  --scaler NAME, --deband on|off   how that clip is scaled and debanded (as for play)\n",
         PSVP_NAME, PSVP_VERSION, PSVP_BINARY, PSVP_BINARY, PSVP_BINARY, PSVP_BINARY);
 }
 

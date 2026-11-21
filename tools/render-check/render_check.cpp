@@ -6,6 +6,7 @@
 //
 //   psvp_render_check FOLDER|CLIP [--every N] [--checks N]
 //   psvp_render_check --pattern [--peak NITS]...   (tone mapping: see run_pattern; any Vulkan device)
+//   psvp_render_check --scaling [--time]           (scalers and debanding: see run_scaling; any Vulkan device)
 //       FOLDER as 'session --dump' wrote it, or CLIP: a stream file laid out as tests/data/clip.h265
 //       (its parameter sets, then a frame per unit); every Nth picture of the card is drawn twice
 //       (10); --checks: how many of the card's first pictures the decoder compares (as when playing)
@@ -21,6 +22,7 @@
 #include <cstring>
 #include <filesystem>
 #include <format>
+#include <functional>
 #include <fstream>
 #include <iterator>
 #include <map>
@@ -36,6 +38,7 @@
 #include "media/delta_e.h"
 #include "media/gpu_device.h"
 #include "media/gpu_share.h"
+#include "media/scaler.h"
 #include "media/video_decoder.h"
 #include "render/video_device.h"
 #include "render/video_pass.h"
@@ -59,14 +62,16 @@ bool good(VkResult result, const char* what) {
 // An image to draw into and a buffer to read it from.
 class Target {
 public:
-    Target(VkPhysicalDevice physical, VkDevice device) : physical_(physical), device_(device) {}
+    // `wide`: 16 bits a channel (for the scaling check, which looks closer than a step of 255).
+    Target(VkPhysicalDevice physical, VkDevice device, bool wide = false)
+        : physical_(physical), device_(device), format_(wide ? VK_FORMAT_R16G16B16A16_UNORM : VK_FORMAT_R8G8B8A8_UNORM), pixel_bytes_(wide ? 8 : 4) {}
     ~Target() { destroy(); }
     Target(const Target&) = delete;
     Target& operator=(const Target&) = delete;
 
     bool create_pass() {
         VkAttachmentDescription color{};
-        color.format = VK_FORMAT_R8G8B8A8_UNORM;
+        color.format = format_;
         color.samples = VK_SAMPLE_COUNT_1_BIT;
         color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -104,7 +109,7 @@ public:
         VkImageCreateInfo image{};
         image.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
         image.imageType = VK_IMAGE_TYPE_2D;
-        image.format = VK_FORMAT_R8G8B8A8_UNORM;
+        image.format = format_;
         image.extent = {width, height, 1};
         image.mipLevels = 1;
         image.arrayLayers = 1;
@@ -122,7 +127,7 @@ public:
         view.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
         view.image = image_;
         view.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        view.format = VK_FORMAT_R8G8B8A8_UNORM;
+        view.format = format_;
         view.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
         if (!good(vkCreateImageView(device_, &view, nullptr, &view_), "vkCreateImageView")) return false;
         VkFramebufferCreateInfo framebuffer{};
@@ -136,7 +141,7 @@ public:
         if (!good(vkCreateFramebuffer(device_, &framebuffer, nullptr, &framebuffer_), "vkCreateFramebuffer")) return false;
         VkBufferCreateInfo buffer{};
         buffer.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        buffer.size = VkDeviceSize{width} * height * 4;
+        buffer.size = VkDeviceSize{width} * height * pixel_bytes_;
         buffer.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
         if (!good(vkCreateBuffer(device_, &buffer, nullptr, &buffer_), "vkCreateBuffer")) return false;
         vkGetBufferMemoryRequirements(device_, buffer_, &needs);
@@ -154,6 +159,14 @@ public:
     [[nodiscard]] VkBuffer buffer() const { return buffer_; }
     [[nodiscard]] const std::uint8_t* pixels() const { return static_cast<const std::uint8_t*>(mapped_); }
     [[nodiscard]] VkExtent2D extent() const { return {width_, height_}; }
+    // A channel of a pixel in steps of 255 (a 16-bit target's values keep their fractions).
+    [[nodiscard]] double value(std::uint32_t x, std::uint32_t y, unsigned channel) const {
+        const std::size_t at = (std::size_t{y} * width_ + x) * pixel_bytes_;
+        if (pixel_bytes_ == 4) return pixels()[at + channel];
+        std::uint16_t sample = 0;
+        std::memcpy(&sample, pixels() + at + 2 * channel, 2);
+        return static_cast<double>(sample) / 257.0;
+    }
 
 private:
     bool allocate(const VkMemoryRequirements& needs, VkMemoryPropertyFlags wanted, VkDeviceMemory& memory) {
@@ -195,6 +208,8 @@ private:
 
     VkPhysicalDevice physical_;
     VkDevice device_;
+    VkFormat format_;
+    std::size_t pixel_bytes_;
     VkRenderPass pass_ = VK_NULL_HANDLE;
     VkImage image_ = VK_NULL_HANDLE;
     VkDeviceMemory image_memory_ = VK_NULL_HANDLE;
@@ -206,18 +221,26 @@ private:
     std::uint32_t width_ = 0, height_ = 0;
 };
 
-// Draws one picture into the target as the window does, and waits until it is there.
+// Draws one picture into the target as the window does, and waits until it is there: a target of
+// `size` (none: the picture's), the times before the conversion, before the drawing and after it
+// written to `timing` (3 timestamps) when given.
 bool draw(VkDevice device, VkQueue queue, std::uint32_t family, const media::GpuDevice* gpu, VkCommandBuffer commands, VkFence fence,
-          render::VideoPass& video, Target& target, const media::Picture& picture) {
+          render::VideoPass& video, Target& target, const media::Picture& picture, VkExtent2D size = {}, VkQueryPool timing = VK_NULL_HANDLE) {
     if (!video.set_picture(picture)) return false;
-    if (!target.size(picture.width, picture.height)) return false;
+    if (size.width == 0) size = {picture.width, picture.height};
+    if (!target.size(size.width, size.height)) return false;
     if (!good(vkResetCommandBuffer(commands, 0), "vkResetCommandBuffer")) return false;
     VkCommandBufferBeginInfo begin{};
     begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     if (!good(vkBeginCommandBuffer(commands, &begin), "vkBeginCommandBuffer")) return false;
     bool submitted = false;
+    if (timing != VK_NULL_HANDLE) {
+        vkCmdResetQueryPool(commands, timing, 0, 3);
+        vkCmdWriteTimestamp(commands, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, timing, 0);
+    }
     video.record_upload(commands);
+    if (timing != VK_NULL_HANDLE) vkCmdWriteTimestamp(commands, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timing, 1);
     VkClearValue clear{};
     VkRenderPassBeginInfo pass{};
     pass.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
@@ -229,6 +252,7 @@ bool draw(VkDevice device, VkQueue queue, std::uint32_t family, const media::Gpu
     vkCmdBeginRenderPass(commands, &pass, VK_SUBPASS_CONTENTS_INLINE);
     video.record_draw(commands, target.extent());
     vkCmdEndRenderPass(commands);
+    if (timing != VK_NULL_HANDLE) vkCmdWriteTimestamp(commands, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timing, 2);
     VkBufferImageCopy copy{};
     copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     copy.imageExtent = {target.extent().width, target.extent().height, 1};
@@ -534,9 +558,339 @@ int run_pattern(const std::vector<double>& peaks) {
     return code;
 }
 
+// A gray 8-bit, limited range picture of the given samples (the color planes even: its red, green
+// and blue are all (y - 16) / 219, so a reference can follow every pixel through both passes).
+struct GrayPicture {
+    std::uint32_t width = 0, height = 0;
+    std::vector<std::uint8_t> y, cb, cr;
+    [[nodiscard]] media::Picture picture() const {
+        media::Picture p;
+        p.width = width;
+        p.height = height;
+        p.bits = 8;
+        p.matrix = media::ColorMatrix::bt709;
+        p.planes[0] = y.data();
+        p.planes[1] = cb.data();
+        p.planes[2] = cr.data();
+        p.strides[0] = width;
+        p.strides[1] = p.strides[2] = (width + 1) / 2;
+        return p;
+    }
+    // Red, green and blue as the conversion makes them (before any debanding), as shares.
+    [[nodiscard]] std::vector<float> shares() const {
+        std::vector<float> out(y.size());
+        for (std::size_t i = 0; i < y.size(); ++i) out[i] = static_cast<float>(std::clamp((static_cast<double>(y[i]) - 16.0) / 219.0, 0.0, 1.0));
+        return out;
+    }
+};
+
+GrayPicture gray_picture(std::uint32_t width, std::uint32_t height, const std::function<int(std::uint32_t, std::uint32_t)>& sample) {
+    GrayPicture g;
+    g.width = width;
+    g.height = height;
+    g.y.resize(std::size_t{width} * height);
+    for (std::uint32_t y = 0; y < height; ++y) {
+        for (std::uint32_t x = 0; x < width; ++x) g.y[std::size_t{y} * width + x] = static_cast<std::uint8_t>(std::clamp(sample(x, y), 0, 255));
+    }
+    const std::size_t color = std::size_t{(width + 1) / 2} * ((height + 1) / 2);
+    g.cb.assign(color, 128);
+    g.cr.assign(color, 128);
+    return g;
+}
+
+
+// --scaling: the scalers and the debanding against media/scaler.h's references.
+//   1. A picture of fine detail (checkerboards of 1, 2 and 4 samples, an edge at a slant, noise, a
+//      ramp) drawn by every scaler larger (1.5 and 2.36 times), as large, and smaller (0.6 and 0.32
+//      times) into a target of 16 bits a channel: every pixel within 0.05 of a step of 255 of the
+//      reference of that scaler (debanding moves values by fractions of a step: an 8-bit target
+//      could not see a wrong offset or seed). The control: the references of every two scalers
+//      differ by more than twice that somewhere at every size but the picture's own, so a pass that
+//      drew with another kernel (or none) could not pass.
+//   2. A ramp cut into bands of one step, over noise and a hard edge, debanded: within 0.05 of a
+//      step of the reference in all but 0.5% of the pixels (a place right at the threshold can go
+//      either way in float). The control: without debanding the bands' edges are whole steps
+//      between columns, with it less than half of that, and the edge and the noise stay.
+//   3. With --time: how long the two passes take for the console's 1080p drawn into a 3440x1440
+//      window, by each scaler, with debanding (the device's own timestamps, the middle of 7 draws).
+int run_scaling(bool time) {
+    VkApplicationInfo app{};
+    app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+    app.pApplicationName = "psvp_render_check";
+    app.apiVersion = render::kVideoApi;
+    VkInstanceCreateInfo instance_info{};
+    instance_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+    instance_info.pApplicationInfo = &app;
+    VkInstance instance = VK_NULL_HANDLE;
+    if (!good(vkCreateInstance(&instance_info, nullptr, &instance), "vkCreateInstance")) return 3;
+    std::uint32_t count = 0;
+    vkEnumeratePhysicalDevices(instance, &count, nullptr);
+    std::vector<VkPhysicalDevice> physicals(count);
+    vkEnumeratePhysicalDevices(instance, &count, physicals.data());
+    std::optional<render::MadeDevice> made;
+    VkPhysicalDevice physical = VK_NULL_HANDLE;
+    std::uint32_t family = 0;
+    VkPhysicalDeviceProperties properties{};
+    std::uint32_t timestamp_bits = 0;
+    for (const VkPhysicalDevice candidate : physicals) {
+        vkGetPhysicalDeviceProperties(candidate, &properties);
+        std::uint32_t family_count = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(candidate, &family_count, nullptr);
+        std::vector<VkQueueFamilyProperties> families(family_count);
+        vkGetPhysicalDeviceQueueFamilyProperties(candidate, &family_count, families.data());
+        const auto graphics = std::ranges::find_if(families, [](const VkQueueFamilyProperties& f) { return (f.queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0; });
+        if (graphics == families.end()) continue;
+        const auto index = static_cast<std::uint32_t>(graphics - families.begin());
+        auto attempt = render::make_device(render::DeviceRequest{instance, render::kVideoApi, {}, candidate, properties.apiVersion, index, properties.deviceName, false, {}});
+        if (!attempt) continue;
+        made = std::move(*attempt);
+        physical = candidate;
+        family = index;
+        timestamp_bits = graphics->timestampValidBits;
+        break;
+    }
+    if (!made) {
+        vkDestroyInstance(instance, nullptr);
+        return fail(3, "no Vulkan device here can draw");
+    }
+    const VkDevice device = made->device;
+    int code = 0;
+    {
+        VkCommandPoolCreateInfo pool_info{};
+        pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+        pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+        pool_info.queueFamilyIndex = family;
+        VkCommandPool pool = VK_NULL_HANDLE;
+        vkCreateCommandPool(device, &pool_info, nullptr, &pool);
+        VkCommandBufferAllocateInfo allocate{};
+        allocate.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        allocate.commandPool = pool;
+        allocate.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        allocate.commandBufferCount = 1;
+        VkCommandBuffer commands = VK_NULL_HANDLE;
+        vkAllocateCommandBuffers(device, &allocate, &commands);
+        VkFenceCreateInfo fence_info{};
+        fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        VkFence fence = VK_NULL_HANDLE;
+        vkCreateFence(device, &fence_info, nullptr, &fence);
+        VkQueryPool timing = VK_NULL_HANDLE;
+        if (timestamp_bits != 0) {
+            VkQueryPoolCreateInfo query{};
+            query.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+            query.queryType = VK_QUERY_TYPE_TIMESTAMP;
+            query.queryCount = 3;
+            if (!good(vkCreateQueryPool(device, &query, nullptr, &timing), "vkCreateQueryPool")) timing = VK_NULL_HANDLE;
+        }
+        {
+            render::VideoPass pass;
+            Target target(physical, device, true);
+            bool broken = false;  // nothing more can be drawn
+            if (!pass.create(physical, device, false) || !target.create_pass() || !pass.create_pipeline(target.pass(), false)) {
+                code = fail(1, "the pass could not be set up");
+                broken = true;
+            }
+            const auto draw_at = [&](const GrayPicture& g, VkExtent2D size, VkQueryPool query = VK_NULL_HANDLE) {
+                const media::Picture picture = g.picture();
+                return draw(device, made->queue, family, nullptr, commands, fence, pass, target, picture, size, query);
+            };
+            std::printf("render-check: scaling and debanding on %s\n", properties.deviceName);
+            const std::vector<float> tables = media::weight_tables();
+
+            // 1. The scalers.
+            const GrayPicture detail = gray_picture(96, 64, [](std::uint32_t x, std::uint32_t y) {
+                if (y < 32) {
+                    const std::uint32_t cell = x < 32 ? 1 : x < 64 ? 2 : 4;
+                    return ((x / cell + y / cell) % 2 == 0) ? 40 : 210;
+                }
+                if (x < 32) return 3.0 * static_cast<double>(x) > 2.0 * static_cast<double>(y - 32) + 20.0 ? 220 : 30;
+                if (x < 64) return 30 + static_cast<int>(media::hash32(x * 977U + y) % 190U);
+                return 20 + static_cast<int>((x - 64) * 6U + (y - 32));
+            });
+            // As the converted picture holds them: 16 bits a channel (half floats where a device cannot draw into those).
+            const bool unorm = pass.converted_format() == VK_FORMAT_R16G16B16A16_UNORM;
+            const auto stored = [&](float share) { return unorm ? std::round(std::clamp(share, 0.0F, 1.0F) * 65535.0F) / 65535.0F : share; };
+            std::vector<float> detail_shares = detail.shares();
+            for (float& share : detail_shares) share = stored(share);
+            // How close a pixel must be, in steps of 255: a few hundredths, which half floats' own steps exceed.
+            const double most = unorm ? 0.05 : 0.3;
+            const VkExtent2D sizes[] = {{144, 96}, {227, 151}, {96, 64}, {58, 39}, {31, 21}};
+            pass.set_deband(false);
+            for (const VkExtent2D size : sizes) {
+                if (broken) break;
+                std::map<media::Scaler, std::vector<float>> references;
+                media::Placement placed;
+                for (const media::Scaler scaler : media::kScalers) {
+                    pass.set_scaler(scaler);
+                    if (!draw_at(detail, size)) {
+                        code = fail(1, "the picture could not be drawn at {}x{}", size.width, size.height);
+                        broken = true;
+                        break;
+                    }
+                    placed = pass.placement();
+                    auto& reference = references[scaler];
+                    reference = media::scale_plane(detail_shares, detail.width, detail.height, placed.width, placed.height, scaler, tables);
+                    double worst = 0.0;
+                    std::string where;
+                    for (std::uint32_t y = 0; y < placed.height; ++y) {
+                        for (std::uint32_t x = 0; x < placed.width; ++x) {
+                            const double want = std::clamp(static_cast<double>(reference[std::size_t{y} * placed.width + x]), 0.0, 1.0) * 255.0;
+                            for (unsigned c = 0; c < 3; ++c) {
+                                const double got = target.value(x + static_cast<std::uint32_t>(placed.x), y + static_cast<std::uint32_t>(placed.y), c);
+                                if (std::abs(got - want) > worst) {
+                                    worst = std::abs(got - want);
+                                    where = std::format(" (at {},{}: drawn {:.3f}, wanted {:.3f})", x, y, got, want);
+                                }
+                            }
+                        }
+                    }
+                    std::printf("render-check: scaler %s at %ux%u: the largest difference from the reference %.3f of a step of 255%s: %s\n",
+                                std::string(media::scaler_name(scaler)).c_str(), placed.width, placed.height, worst, worst > most ? where.c_str() : "",
+                                worst <= most ? "same" : "DIFFERENT");
+                    if (worst > most) code = 1;
+                }
+                if (broken || (placed.width == detail.width && placed.height == detail.height)) continue;
+                // The control: every two scalers' references apart somewhere by more than the check lets pass.
+                std::size_t fewest = SIZE_MAX;
+                std::string closest;
+                for (std::size_t a = 0; a < media::kScalers.size(); ++a) {
+                    for (std::size_t b = a + 1; b < media::kScalers.size(); ++b) {
+                        const auto& one = references[media::kScalers[a]];
+                        const auto& other = references[media::kScalers[b]];
+                        std::size_t apart = 0;
+                        for (std::size_t k = 0; k < one.size(); ++k) apart += std::abs(static_cast<double>(one[k] - other[k])) * 255.0 > 2.0 * most ? 1U : 0U;
+                        if (apart < fewest) {
+                            fewest = apart;
+                            closest = std::format("{} and {}", media::scaler_name(media::kScalers[a]), media::scaler_name(media::kScalers[b]));
+                        }
+                    }
+                }
+                std::printf("render-check: control at %ux%u: the closest two scalers (%s) differ by more than %.2f in %zu pixels\n", placed.width, placed.height,
+                            closest.c_str(), 2.0 * most, fewest);
+                if (fewest < 5) {
+                    std::printf("render-check: the control failed: the check could not tell %s apart\n", closest.c_str());
+                    code = 1;
+                }
+            }
+
+            // 2. Debanding.
+            const std::uint32_t band_width = 256, band_height = 128;
+            const GrayPicture banded = gray_picture(band_width, band_height, [](std::uint32_t x, std::uint32_t y) {
+                if (y < 64) return 100 + static_cast<int>(x / 16);
+                if (x < 128) return 60 + static_cast<int>(media::hash32(x * 131U + y * 7U) % 41U);
+                return ((x / 8 + y / 8) % 2 == 0) ? 50 : 190;
+            });
+            // Each drawing's gray, in steps of 255.
+            const auto gray_of = [&] {
+                std::vector<double> gray(std::size_t{band_width} * band_height);
+                for (std::uint32_t y = 0; y < band_height; ++y) {
+                    for (std::uint32_t x = 0; x < band_width; ++x) gray[std::size_t{y} * band_width + x] = target.value(x, y, 0);
+                }
+                return gray;
+            };
+            std::vector<double> plain, smoothed;
+            pass.set_scaler(media::kDefaultScaler);
+            pass.set_deband(false);
+            if (!broken && draw_at(banded, {})) plain = gray_of();
+            pass.set_deband(true);
+            if (!broken && draw_at(banded, {})) smoothed = gray_of();
+            if (!broken && (plain.empty() || smoothed.empty())) {
+                code = fail(1, "the banded picture could not be drawn");
+                broken = true;
+            }
+            if (!broken) {
+                const media::Deband settings;
+                std::vector<float> samples(banded.y.size());
+                for (std::size_t k = 0; k < samples.size(); ++k) samples[k] = static_cast<float>(banded.y[k]) / 255.0F;
+                const std::vector<float> debanded = media::deband_plane(samples, band_width, band_height, settings, pass.seed());
+                std::size_t off = 0;
+                double worst = 0.0;
+                for (std::uint32_t y = 0; y < band_height; ++y) {
+                    for (std::uint32_t x = 0; x < band_width; ++x) {
+                        const std::size_t k = std::size_t{y} * band_width + x;
+                        const double rgb = std::clamp((static_cast<double>(debanded[k]) * 255.0 - 16.0) / 219.0, 0.0, 1.0);
+                        const float with_grain = stored(static_cast<float>(rgb) + media::deband_grain(media::place_hash(x, y, pass.seed()), settings.grain));
+                        const double apart = std::abs(smoothed[k] - static_cast<double>(with_grain) * 255.0);
+                        worst = std::max(worst, apart);
+                        off += apart > most ? 1U : 0U;
+                    }
+                }
+                const double off_share = static_cast<double>(off) / static_cast<double>(band_width * band_height);
+                std::printf("render-check: debanding: %.2f%% of the pixels more than %.2f of a step of 255 from the reference (the largest %.3f)\n", 100.0 * off_share, most, worst);
+                if (off_share > 0.005) code = 1;
+                // The control: in the banded half, each column's mean over its rows (the grain averages out),
+                // and the largest step between two columns side by side: a band's edge (1.16 of 255) without
+                // debanding, much less with it.
+                const auto largest_step = [&](const std::vector<double>& gray) {
+                    std::vector<double> column(band_width, 0.0);
+                    for (std::uint32_t y = 8; y < 56; ++y) {
+                        for (std::uint32_t x = 0; x < band_width; ++x) column[x] += gray[std::size_t{y} * band_width + x] / 48.0;
+                    }
+                    double step = 0.0;
+                    for (std::uint32_t x = 24; x + 1 < band_width - 24; ++x) step = std::max(step, std::abs(column[x + 1] - column[x]));
+                    return step;
+                };
+                const double plain_error = largest_step(plain), smoothed_error = largest_step(smoothed);
+                std::size_t kept = 0, detail_pixels = 0;
+                for (std::uint32_t y = 64; y < band_height; ++y) {
+                    for (std::uint32_t x = 0; x < band_width; ++x, ++detail_pixels) {
+                        const std::size_t k = std::size_t{y} * band_width + x;
+                        kept += std::abs(plain[k] - smoothed[k]) <= 1.0 ? 1U : 0U;
+                    }
+                }
+                const double kept_share = static_cast<double>(kept) / static_cast<double>(detail_pixels);
+                std::printf("render-check: control: the bands' largest step between columns is %.3f of 255 without debanding, %.3f with; %.1f%% of the edge and noise kept\n",
+                            plain_error, smoothed_error, 100.0 * kept_share);
+                if (!(smoothed_error < 0.5 * plain_error) || plain_error < 1.0 || kept_share < 0.9) {
+                    std::printf("render-check: the control failed\n");
+                    code = 1;
+                }
+            }
+
+            // 3. What it costs.
+            if (!broken && time && timing != VK_NULL_HANDLE) {
+                const GrayPicture console = gray_picture(1920, 1080, [](std::uint32_t x, std::uint32_t y) { return 16 + static_cast<int>(media::hash32(x + y * 1920U) % 220U); });
+                pass.set_deband(true);
+                for (const media::Scaler scaler : media::kScalers) {
+                    pass.set_scaler(scaler);
+                    std::vector<double> convert_ms, draw_ms;
+                    for (int i = 0; i < 7 && !broken; ++i) {
+                        if (!draw_at(console, {3440, 1440}, timing)) {
+                            code = fail(1, "the 1080p picture could not be drawn");
+                            broken = true;
+                            break;
+                        }
+                        std::uint64_t stamps[3]{};
+                        if (vkGetQueryPoolResults(device, timing, 0, 3, sizeof stamps, stamps, sizeof stamps[0], VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT) != VK_SUCCESS) break;
+                        const double period = static_cast<double>(properties.limits.timestampPeriod) / 1e6;
+                        convert_ms.push_back(static_cast<double>(stamps[1] - stamps[0]) * period);
+                        draw_ms.push_back(static_cast<double>(stamps[2] - stamps[1]) * period);
+                    }
+                    if (convert_ms.size() != 7) break;
+                    std::ranges::sort(convert_ms);
+                    std::ranges::sort(draw_ms);
+                    std::printf("render-check: time: 1920x1080 to %ux%u by %s: converting (with the copy and debanding) %.3f ms, drawing %.3f ms\n", pass.placement().width,
+                                pass.placement().height, std::string(media::scaler_name(scaler)).c_str(), convert_ms[3], draw_ms[3]);
+                }
+            }
+            vkDeviceWaitIdle(device);
+            pass.destroy();
+        }
+        if (timing != VK_NULL_HANDLE) vkDestroyQueryPool(device, timing, nullptr);
+        vkDestroyFence(device, fence, nullptr);
+        vkDestroyCommandPool(device, pool, nullptr);
+    }
+    vkDestroyDevice(device, nullptr);
+    vkDestroyInstance(instance, nullptr);
+    return code;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
+    if (argc >= 2 && std::string_view(argv[1]) == "--scaling") {
+        if (argc > 3 || (argc == 3 && std::string_view(argv[2]) != "--time")) return fail(2, "usage: psvp_render_check --scaling [--time]");
+        return run_scaling(argc == 3);
+    }
     if (argc >= 2 && std::string_view(argv[1]) == "--pattern") {
         std::vector<double> peaks;
         for (int i = 2; i + 1 < argc; i += 2) {
@@ -546,7 +900,7 @@ int main(int argc, char** argv) {
         if (peaks.empty()) peaks.push_back(media::kAssumedHdrPeakNits);
         return run_pattern(peaks);
     }
-    if (argc < 2) return fail(2, "usage: psvp_render_check FOLDER|CLIP [--every N] [--checks N] | --pattern [--peak NITS]...");
+    if (argc < 2) return fail(2, "usage: psvp_render_check FOLDER|CLIP [--every N] [--checks N] | --pattern [--peak NITS]... | --scaling [--time]");
     const std::filesystem::path folder(argv[1]);
     unsigned every = 10;
     int checks = -1;

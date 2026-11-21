@@ -8,6 +8,8 @@
 #include <string>
 #include <string_view>
 
+#include "media/scaler.h"
+
 namespace psvp::app {
 
 struct Options {
@@ -20,6 +22,9 @@ struct Options {
     bool test_clip = false;
     // One frame of that clip, standing still: for a check that reads the colors off the screen.
     std::optional<std::uint32_t> test_clip_frame;
+    // How that picture is scaled and whether it is debanded (as play's --scaler and --deband).
+    std::optional<media::Scaler> scaler;
+    std::optional<bool> deband;
 };
 
 // The arguments after the program name. The error is a sentence for the user.

@@ -41,11 +41,28 @@ else fail "the layer reported $reports lines:"; grep -a 'VUID\|Validation' "$out
 PSVP_WALL_GPU=1 timeout 300 tools/wall.sh env VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation VK_LOADER_LAYERS_ENABLE='*validation*' \
     "$check" --pattern --peak 1000 --peak 4000 --peak 400 > "$out" 2>&1
 rc=$?
-within=$(grep -ac 'patches within 1 of 255' "$out")
+within=$(grep -ac 'patches within [01] of 255' "$out")
 [ $rc = 0 ] && [ "$within" = 5 ] && ok "tone mapping on $(grep -ao 'picture on .*' "$out" | head -1 | cut -c12-): SDR, HLG and PQ at three peaks within 1 of 255" \
     || fail "tone mapping on the card: exit $rc, $within of 5 pictures within 1 of 255"
 reports=$(grep -ac 'VUID\|Validation Error\|Validation Warning' "$out")
 [ "$reports" = 0 ] && ok "the layer reported nothing while the patterns were drawn" || fail "the layer reported $reports lines while the patterns were drawn"
+
+
+# Scaling and debanding (psvp_render_check --scaling): five scalers at five sizes against the
+# references of src/media/scaler.cpp, debanding against its reference, each with its control.
+timeout 300 env PSVP_WALL_GPU=1 tools/wall.sh env VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation VK_LOADER_LAYERS_ENABLE='*validation*' "$check" --scaling --time > "$out" 2>&1
+rc=$?
+within=$(grep -ac 'render-check: scaler .*: same$' "$out")
+[ $rc = 0 ] && [ "$within" = 25 ] && ok "on the card: every scaler at every size within 0.05 of a step of 255 of its reference" \
+    || fail "scaling on the card: exit $rc, $within of 25 drawings the same as their reference:"$'\n'"$(grep -a 'render-check:' "$out" | grep -v ': same$' | cut -c1-240 | head -8)"
+controls=$(grep -ac 'control at .*differ by more than' "$out")
+[ "$controls" = 4 ] && ! grep -aq 'control failed' "$out" && ok "the control: every two scalers' references differ at the four sizes that scale" || fail "the scalers' control: $controls of 4 sizes, $(grep -a 'control failed' "$out" | head -1)"
+line="$(grep -a 'debanding: ' "$out")"
+grep -aq 'control: the bands' "$out" && ! grep -aq 'control failed' "$out" && ok "${line#render-check: }; $(grep -a 'control: the bands' "$out" | sed 's/^render-check: //')" \
+    || fail "debanding: ${line#render-check: } $(grep -a 'control' "$out" | tail -2)"
+reports=$(grep -ac 'VUID\|Validation Error\|Validation Warning' "$out")
+[ "$reports" = 0 ] && ok "the layer reported nothing while scaling and debanding" || fail "the layer reported $reports lines while scaling and debanding: $(grep -a 'VUID' "$out" | head -2 | cut -c1-240)"
+grep -a 'time: ' "$out" | sed 's/^render-check: /  --    /'
 
 [ $failed = 0 ] && echo "GPU CHECK PASSED" || echo "GPU CHECK FAILED"
 exit $failed

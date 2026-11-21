@@ -4,6 +4,8 @@ add_executable(psvp_tests
     unit/test_base64.cpp
     unit/test_color.cpp
     unit/test_tone_map.cpp
+    unit/test_scaler.cpp
+    unit/test_present_clock.cpp
     unit/test_connection_view.cpp
     unit/test_controller_feedback.cpp
     unit/test_decoder.cpp

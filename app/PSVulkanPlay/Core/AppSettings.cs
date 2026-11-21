@@ -33,6 +33,8 @@ public sealed class AppSettings
     public int CushionMs { get; set; }                  // 0 to 50
     public int LossCeiling { get; set; } = DefaultLossCeiling;   // percent, 0 to 100: the most loss the console is told of
     public int HdrPeakNits { get; set; } = DefaultHdrPeakNits;   // how bright an HDR picture is taken to be at its brightest
+    public string Scaler { get; set; } = DefaultScaler;   // how the picture is brought to the window's size (Scalers)
+    public bool Deband { get; set; } = true;            // banding smoothed out of the picture
     public string Controller { get; set; } = "auto";    // auto, dualsense, dualshock4
     public int HapticsVolume { get; set; } = 100;       // 0 to 100
     public string BackLeft { get; set; } = "";          // a button's name, or nothing
@@ -50,6 +52,8 @@ public sealed class AppSettings
     public static readonly int[] Resolutions = [360, 540, 720, 1080];
     public static readonly int[] FrameRates = [30, 60];
     public static readonly string[] Codecs = ["h264", "hevc", "hdr"];
+    public const string DefaultScaler = "ewa-lanczos";
+    public static readonly string[] Scalers = ["bilinear", "catmull-rom", "lanczos", "ewa-lanczos", "ewa-lanczos-sharp"];
     public static readonly string[] Controllers = ["auto", "dualsense", "dualshock4"];
     public static readonly int[] Scales = [100, 125, 150, 175, 200];
 
@@ -72,6 +76,8 @@ public sealed class AppSettings
             CushionMs = Math.Clamp(CushionMs, 0, 50),
             LossCeiling = Math.Clamp(LossCeiling, 0, 100),
             HdrPeakNits = Math.Clamp(HdrPeakNits, LeastHdrPeakNits, MostHdrPeakNits),
+            Scaler = Scalers.Contains(Scaler) ? Scaler : DefaultScaler,
+            Deband = Deband,
             Controller = Controllers.Contains(Controller) ? Controller : "auto",
             HapticsVolume = Math.Clamp(HapticsVolume, 0, 100),
             BackLeft = Buttons.Contains(BackLeft) ? BackLeft : "",
@@ -109,6 +115,8 @@ public sealed class AppSettings
         else if (s.CushionMs > 0) arguments.AddRange(["--cushion", s.CushionMs.ToString()]);
         if (s.LossCeiling != DefaultLossCeiling) arguments.AddRange(["--loss-ceiling", s.LossCeiling.ToString()]);
         if (s.HdrPeakNits != DefaultHdrPeakNits) arguments.AddRange(["--hdr-peak", s.HdrPeakNits.ToString()]);
+        if (s.Scaler != DefaultScaler) arguments.AddRange(["--scaler", s.Scaler]);
+        if (!s.Deband) arguments.AddRange(["--deband", "off"]);
         arguments.AddRange(["--haptics-volume", s.HapticsVolume.ToString()]);
         if (s.BackLeft.Length > 0) arguments.AddRange(["--back-left", s.BackLeft]);
         if (s.BackRight.Length > 0) arguments.AddRange(["--back-right", s.BackRight]);

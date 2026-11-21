@@ -110,6 +110,9 @@ public:
         jobs_wake_.notify_all();
     }
     // Before the window's device goes: decoding ends, and every picture decoded on it is let go.
+    // The window's line about when pictures reached the screen (the driver's own times), on its thread
+    // before the report is made on the same one.
+    void set_screen_times(const std::string& line) { screen_times_ = line; }
     void drop_gpu() {
         finish();
         if (decoder_) {
@@ -377,6 +380,7 @@ private:
     bool late_before_ = false;
     std::uint64_t late_on_the_way_ = 0, late_sent_ = 0;
     Spacing handed_spacing_;                         // on the decode thread, until it has ended
+    std::string screen_times_;                       // the driver's own times of the pictures on the screen, when the window closed
     std::optional<Clock::time_point> last_keyframe_ask_;
     std::atomic<bool> keyframe_needed_{false};
 
@@ -1198,6 +1202,7 @@ std::vector<std::string> Player::report() {
                                     "sent late (the next one kept its distance: the game's own pace).",
                                     late_on_the_way_, late_sent_));
         lines.push_back(std::format("Pictures went to the screen this far apart: {}.", handed_spacing_.text()));
+        if (!screen_times_.empty()) lines.push_back(screen_times_ + ".");
         const double through_ms = static_cast<double>(through_microseconds_) / 1000.0 / static_cast<double>(std::max<std::uint64_t>(through_, 1));
         if (pacer_) {
             const auto cushion = std::chrono::duration_cast<std::chrono::milliseconds>(pacer_->cushion()).count();
@@ -1354,8 +1359,11 @@ int run_player(SessionPlan plan, const PlayOptions& options) {
             window.overlay_notice = [&] { return player.notice_text(); };
             window.gpu_decoding = options.decoder == PlayOptions::Decoder::automatic;
             window.hdr_peak_nits = options.hdr_peak_nits;
+            window.scaler = options.scaler;
+            window.deband = options.deband;
             window.on_gpu = [&](std::optional<media::GpuDevice> gpu, const std::string& why_not) { player.set_gpu(std::move(gpu), why_not); };
             window.before_device_gone = [&] { player.drop_gpu(); };
+            window.on_screen_times = [&](const std::string& line) { player.set_screen_times(line); };
             if (const auto file = window_place_file()) {
                 window.place = load_window_place(*file);
                 window.on_place = [file = *file](const WindowPlace& place) {

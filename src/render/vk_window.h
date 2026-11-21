@@ -13,6 +13,7 @@
 #include "app/stream_menu.h"
 #include "app/window_place.h"
 #include "media/gpu_device.h"
+#include "media/scaler.h"
 #include "media/video_decoder.h"
 
 union SDL_Event;
@@ -50,6 +51,10 @@ struct WindowOptions {
     std::function<std::string()> overlay_notice;
     // How bright an HDR picture is taken to be at its brightest, in cd/m² (VideoPass::set_hdr_peak).
     double hdr_peak_nits = 1000.0;
+    // How the picture is brought to the window's size, and whether banding is smoothed out of it
+    // (VideoPass::set_scaler, set_deband).
+    media::Scaler scaler = media::kDefaultScaler;
+    bool deband = true;
     // Lend the window's Vulkan device to FFmpeg for decoding on the graphics card, where the device
     // can (a video decode queue for H.264 or HEVC, Vulkan 1.3).
     bool gpu_decoding = true;
@@ -59,6 +64,9 @@ struct WindowOptions {
     // Told before the device goes, after `on_gpu` gave one: every decoder opened on it and every
     // picture decoded on it must be gone when this returns.
     std::function<void()> before_device_gone;
+    // Told when the window closes, where the driver said when pictures reached the screen
+    // (VK_EXT_present_timing): a line about it for the session's report (media::PresentClock).
+    std::function<void(const std::string&)> on_screen_times;
 };
 
 // From any thread: there is a new picture, or the answer of `finished` changed. The window

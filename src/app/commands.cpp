@@ -1420,7 +1420,7 @@ PlayRunner play_runner = nullptr;
 
 // The stream in a window, with its sound and a controller: what the program is for.
 int command_play(std::span<const std::string_view> args) {
-    const Parsed parsed = parse(args, {"--host", "--seconds", "--passcode", "--resolution", "--fps", "--bitrate", "--codec", "--tap", "--frames", "--controller", "--pacing", "--cushion", "--haptics-volume", "--back-left", "--back-right", "--loss-ceiling", "--ack-copies", "--decoder", "--pretend", "--pretend-taps", "--reconnect", "--hdr-peak"},
+    const Parsed parsed = parse(args, {"--host", "--seconds", "--passcode", "--resolution", "--fps", "--bitrate", "--codec", "--tap", "--frames", "--controller", "--pacing", "--cushion", "--haptics-volume", "--back-left", "--back-right", "--loss-ceiling", "--ack-copies", "--decoder", "--pretend", "--pretend-taps", "--reconnect", "--hdr-peak", "--scaler", "--deband"},
                                 {"--rest", "--wake", "--stats"}, 1);
     if (!parsed.error.empty()) return usage("play: {}", parsed.error);
     SessionPlan plan;
@@ -1485,6 +1485,15 @@ int command_play(std::span<const std::string_view> args) {
         const auto nits = parse_number(*text, 400, 10000);
         if (!nits) return usage("play: --hdr-peak takes a brightness in cd/m² from 400 to 10000");
         options.hdr_peak_nits = static_cast<int>(*nits);
+    }
+    if (const auto text = parsed.option("--scaler")) {
+        const auto scaler = media::scaler_from_name(*text);
+        if (!scaler) return usage("play: --scaler takes bilinear, catmull-rom, lanczos, ewa-lanczos or ewa-lanczos-sharp");
+        options.scaler = *scaler;
+    }
+    if (const auto text = parsed.option("--deband")) {
+        if (*text != "on" && *text != "off") return usage("play: --deband takes on or off");
+        options.deband = *text == "on";
     }
     // A PS4 streams H.264 only: for one, the codec nobody chose is that.
     if (!parsed.option("--codec")) {
@@ -1812,7 +1821,8 @@ std::string commands_help() {
         "          [--bitrate KBPS] [--codec h264|hevc|hdr] [--controller auto|dualsense|dualshock4]\n"
         "          [--pacing on|off] [--cushion 0-50] [--haptics-volume 0-100] [--back-left BUTTON]\n"
         "          [--back-right BUTTON] [--loss-ceiling PERCENT] [--ack-copies 0-2] [--decoder auto|software]\n"
-        "          [--reconnect SECONDS] [--hdr-peak 400-10000] [--stats] [--wake] [--rest]\n"
+        "          [--reconnect SECONDS] [--hdr-peak 400-10000] [--scaler NAME] [--deband on|off]\n"
+        "          [--stats] [--wake] [--rest]\n"
         "      play: the console's picture in a window, its sound, and a controller that is plugged in\n"
         "      or paired; closing the window ends the session (--rest then sends the console to rest mode).\n"
         "      --wake wakes a console that is in rest mode first, and asks one that takes no session yet\n"
@@ -1838,7 +1848,10 @@ std::string commands_help() {
         "      over the picture from the start (F3 shows and hides them at any time); --hdr-peak says how\n"
         "      bright an HDR picture is taken to be at its brightest, in cd/m² (1000 unless said; consoles\n"
         "      do not say): an HDR picture is shown on the screen as SDR, white paper at SDR white and\n"
-        "      what is brighter fitted between that and white (ITU-R BT.2390, BT.2408)\n"
+        "      what is brighter fitted between that and white (ITU-R BT.2390, BT.2408); --scaler says how\n"
+        "      the picture is brought to the window's size: bilinear (soft, the least work), catmull-rom,\n"
+        "      lanczos, ewa-lanczos (unless said) or ewa-lanczos-sharp; --deband off leaves the bands a\n"
+        "      low bitrate cuts smooth areas such as skies into (smoothed out unless said)\n"
         "  {0} decode FOLDER [--lose FRAMES] [--decoder software|gpu]\n"
         "      decode the picture and the sound that 'session --dump FOLDER' kept, and say what came out;\n"
         "      --lose 100,250-255 leaves those frames out, as if they had not arrived, and compares the\n"

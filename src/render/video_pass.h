@@ -1,5 +1,7 @@
-// Draws a decoded picture into the window: its three planes are copied into
-// textures, and a shader turns their samples into the screen's colors.
+// Draws a decoded picture into the window, in two steps: its three planes (copied into textures, or
+// read from a graphics card decoder's image) are converted to red, green and blue at the picture's
+// own size, debanded where asked for (convert.frag, once per picture), and that is drawn at the
+// size it takes in the window by the scaler chosen, then tone mapped (video.frag, every frame).
 #pragma once
 
 #include <algorithm>
@@ -12,6 +14,7 @@
 
 #include "media/color.h"
 #include "media/gpu_share.h"
+#include "media/scaler.h"
 #include "media/video_decoder.h"
 
 namespace psvp::render {
@@ -35,7 +38,8 @@ public:
     [[nodiscard]] bool set_picture(const media::Picture& picture);
     [[nodiscard]] bool has_picture() const noexcept { return width_ != 0; }
     // Copies the picture taken last into the textures, or, for a picture decoded on the graphics
-    // card, makes its image ready to be read. Outside a render pass.
+    // card, makes its image ready to be read; then converts it (its own render pass). Only once
+    // per picture, or after a setting it depends on changed. Outside a render pass.
     void record_upload(VkCommandBuffer commands);
     // For a picture decoded on the graphics card, what the submission of this frame must wait for
     // (from `record_upload` on) and signal: its frame stays locked until `after_submit`.
@@ -52,6 +56,19 @@ public:
     // say): what is brighter than SDR white is fitted between it and that (media/tone_map.h).
     void set_hdr_peak(double nits) noexcept { hdr_peak_nits_ = std::clamp(nits, media::kLeastHdrPeakNits, media::kMostHdrPeakNits); }
     [[nodiscard]] double hdr_peak() const noexcept { return hdr_peak_nits_; }
+    // How the picture is brought to the size it is drawn at (media/scaler.h).
+    void set_scaler(media::Scaler scaler) noexcept { scaler_ = scaler; }
+    [[nodiscard]] media::Scaler scaler() const noexcept { return scaler_; }
+    // Whether banding is smoothed out of the picture (media::Deband's settings).
+    void set_deband(bool on) noexcept {
+        if (on != deband_) convert_due_ = true;
+        deband_ = on;
+    }
+    [[nodiscard]] bool deband() const noexcept { return deband_; }
+    // The seed the last conversion drew its random numbers from (one per conversion).
+    [[nodiscard]] std::uint32_t seed() const noexcept { return seed_; }
+    // What the converted picture is held in (16-bit UNORM, or half floats where a device cannot draw into that).
+    [[nodiscard]] VkFormat converted_format() const noexcept { return converted_format_; }
     // Where the picture was drawn last, and a line about it for the log.
     [[nodiscard]] const media::Placement& placement() const noexcept { return placement_; }
     [[nodiscard]] std::string describe() const;
@@ -67,6 +84,10 @@ private:
     [[nodiscard]] bool create_textures(std::uint32_t width, std::uint32_t height, bool wide);
     void destroy_textures();
     [[nodiscard]] bool set_gpu_picture(const media::Picture& picture);
+    [[nodiscard]] bool make_pipeline(VkRenderPass render_pass, VkShaderModule fragment, VkPipelineLayout layout, VkPipeline& pipeline);
+    [[nodiscard]] bool create_converted(std::uint32_t width, std::uint32_t height);
+    void destroy_converted();
+    void record_convert(VkCommandBuffer commands);
     void release_gpu_picture();
     void write_descriptors(VkImageView y, VkImageView cb, VkImageView cr);
     [[nodiscard]] std::uint32_t memory_type(std::uint32_t allowed, VkMemoryPropertyFlags wanted) const;
@@ -83,6 +104,30 @@ private:
     VkShaderModule fragment_ = VK_NULL_HANDLE;
     VkPipeline pipeline_ = VK_NULL_HANDLE;
     bool target_encodes_ = false;
+
+    // The conversion (pass A): its own render pass into the converted picture, at the picture's size.
+    VkShaderModule convert_fragment_ = VK_NULL_HANDLE;
+    VkPipelineLayout convert_layout_ = VK_NULL_HANDLE;
+    VkRenderPass convert_pass_ = VK_NULL_HANDLE;
+    VkPipeline convert_pipeline_ = VK_NULL_HANDLE;
+    VkFormat converted_format_ = VK_FORMAT_UNDEFINED;
+    VkImage converted_ = VK_NULL_HANDLE;
+    VkDeviceMemory converted_memory_ = VK_NULL_HANDLE;
+    VkImageView converted_view_ = VK_NULL_HANDLE;
+    VkFramebuffer converted_framebuffer_ = VK_NULL_HANDLE;
+    std::uint32_t converted_width_ = 0, converted_height_ = 0;
+    bool convert_due_ = false;   // the converted picture is not the picture taken last (or its settings)
+    bool converted_ready_ = false;  // it holds a picture
+    bool deband_ = false;
+    std::uint32_t seed_ = 0;
+
+    // The drawing (pass B): the converted picture and the kernels' weights.
+    VkSampler nearest_ = VK_NULL_HANDLE;
+    VkDescriptorSetLayout draw_set_layout_ = VK_NULL_HANDLE;
+    VkDescriptorSet draw_set_ = VK_NULL_HANDLE;
+    VkBuffer weights_ = VK_NULL_HANDLE;
+    VkDeviceMemory weights_memory_ = VK_NULL_HANDLE;
+    media::Scaler scaler_ = media::kDefaultScaler;
     double hdr_peak_nits_ = media::kAssumedHdrPeakNits;
 
     Plane planes_[3];

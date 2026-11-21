@@ -129,9 +129,10 @@ std::expected<MadeDevice, std::string> make_device(const DeviceRequest& request)
     VkPhysicalDeviceVideoMaintenance1FeaturesKHR maintenance1{};
     maintenance1.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VIDEO_MAINTENANCE_1_FEATURES_KHR;
     maintenance1.videoMaintenance1 = VK_TRUE;
-    void* const after_v13 = share.video_maintenance1 ? &maintenance1 : nullptr;
+    void* const after_v13 = share.video_maintenance1 ? &maintenance1 : request.features;
+    maintenance1.pNext = request.features;
 #else
-    void* const after_v13 = nullptr;
+    void* const after_v13 = request.features;
 #endif
     VkPhysicalDeviceVulkan13Features v13{};
     v13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
@@ -152,7 +153,7 @@ std::expected<MadeDevice, std::string> make_device(const DeviceRequest& request)
 
     VkDeviceCreateInfo info{};
     info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-    info.pNext = video ? &features : nullptr;
+    info.pNext = video ? &features : request.features;
     info.queueCreateInfoCount = queue_count;
     info.pQueueCreateInfos = queues;
     info.enabledExtensionCount = static_cast<std::uint32_t>(extensions.size());
@@ -164,7 +165,7 @@ std::expected<MadeDevice, std::string> make_device(const DeviceRequest& request)
         why_not = "the device could not be made with its video queue";
         decode_family.reset();
         share = media::VulkanShare{};
-        info.pNext = nullptr;
+        info.pNext = request.features;
         info.queueCreateInfoCount = 1;
         extensions = request.extensions;
         info.ppEnabledExtensionNames = extensions.data();

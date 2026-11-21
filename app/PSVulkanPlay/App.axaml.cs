@@ -16,6 +16,7 @@ public sealed class App : Application
     public static string? SettingsFileOverride { get; set; }
     public static PsnSignIn? SignInOverride { get; set; }
     public static Shortcuts? ShortcutsOverride { get; set; }
+    public static SteamShortcuts? SteamOverride { get; set; }
 
     private string _theme = Themes.FollowDesktop;
 
@@ -46,8 +47,10 @@ public sealed class App : Application
         IProgramRunner runner = RunnerOverride ?? new ProgramRunner();
         // The desktop's own applications folder only for the real app: a test's settings file has its shortcuts beside it.
         Shortcuts? shortcuts = ShortcutsOverride ?? (SettingsFileOverride is null ? new Shortcuts(Shortcuts.DefaultFolder(), Shortcuts.ProgramForEntries(runner.Location)) : null);
+        // This user's Steam likewise only for the real app; a test gives its own or none.
+        SteamShortcuts? steam = SteamOverride ?? (SettingsFileOverride is null ? SteamShortcuts.ForThisUser(runner.Location) : null);
         var model = new MainViewModel(runner, new SettingsStore(SettingsFileOverride ?? SettingsStore.DefaultFile()),
-                                      action => Dispatcher.UIThread.Post(action), SignInOverride, shortcuts);
+                                      action => Dispatcher.UIThread.Post(action), SignInOverride, shortcuts, steam);
         ApplyTheme(model.Settings.Current.Theme);
         model.Settings.ThemeChanged += ApplyTheme;
         return model;

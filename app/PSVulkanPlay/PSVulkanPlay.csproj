@@ -31,6 +31,9 @@
 
   <ItemGroup>
     <AvaloniaResource Include="Assets\**" />
+    <!-- What Steam's library pictures are made from (Core/Steam.cs), readable without the toolkit started. -->
+    <EmbeddedResource Include="..\..\assets\banner.png" LogicalName="banner.png" />
+    <EmbeddedResource Include="Assets\icon.png" LogicalName="icon.png" />
     <InternalsVisibleTo Include="PSVulkanPlay.Tests" />
   </ItemGroup>
 

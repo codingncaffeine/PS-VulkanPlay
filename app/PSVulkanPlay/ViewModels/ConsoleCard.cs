@@ -8,7 +8,7 @@ public sealed class ConsoleCard : Observable
     private readonly MainViewModel _main;
     private ConsoleState _state = ConsoleState.Looking;
     private string _address, _runningApp = "";
-    private bool _confirmForget, _hasShortcut;
+    private bool _confirmForget, _hasShortcut, _inSteam;
 
     public ConsoleCard(MainViewModel main, RegisteredConsole console)
     {
@@ -21,6 +21,7 @@ public sealed class ConsoleCard : Observable
         CancelForget = new Command(() => ConfirmForget = false);
         Forget = new Command(() => _main.Forget(this));
         ToggleShortcut = new Command(() => _main.ToggleShortcut(this));
+        ToggleSteam = new Command(() => _main.ToggleSteam(this));
     }
 
     public RegisteredConsole Console { get; }
@@ -34,6 +35,7 @@ public sealed class ConsoleCard : Observable
     public Command CancelForget { get; }
     public Command Forget { get; }
     public Command ToggleShortcut { get; }
+    public Command ToggleSteam { get; }
 
     /// <summary>The console has its own entry in the desktop's application menu.</summary>
     public bool HasShortcut
@@ -43,6 +45,17 @@ public sealed class ConsoleCard : Observable
     }
 
     public string ShortcutText => HasShortcut ? "Remove from the app menu" : "Add to the app menu";
+
+    /// <summary>The console is in Steam's library as a non-Steam game.</summary>
+    public bool InSteam
+    {
+        get => _inSteam;
+        set { if (Set(ref _inSteam, value)) Changed(nameof(SteamText)); }
+    }
+
+    public string SteamText => InSteam ? "Remove from Steam" : "Add to Steam";
+    /// <summary>Steam is installed for this user.</summary>
+    public bool HasSteam => _main.Steam is not null;
 
     public ConsoleState State
     {

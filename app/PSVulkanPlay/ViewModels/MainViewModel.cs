@@ -29,9 +29,12 @@ public sealed class MainViewModel : Observable
     /// <param name="post">Runs an action on the UI thread.</param>
     /// <param name="signIn">The PSN sign-in; tests give one that asks a stand-in service.</param>
     /// <param name="shortcuts">Where the consoles' menu shortcuts go; none given, a folder beside the settings file (for tests: never the desktop's).</param>
-    public MainViewModel(IProgramRunner runner, SettingsStore store, Action<Action> post, PsnSignIn? signIn = null, Shortcuts? shortcuts = null)
+    /// <param name="steam">The Steam library consoles can be added to; none: no Steam (and never the user's for a test that gives none).</param>
+    public MainViewModel(IProgramRunner runner, SettingsStore store, Action<Action> post, PsnSignIn? signIn = null, Shortcuts? shortcuts = null,
+                         SteamShortcuts? steam = null)
     {
         _runner = runner;
+        Steam = steam;
         Shortcuts = shortcuts ?? new Shortcuts(Path.Combine(Path.GetDirectoryName(Path.GetFullPath(store.File))!, "applications"),
                                                Shortcuts.ProgramForEntries(runner.Location));
         _directory = new ConsoleDirectory(runner);
@@ -52,6 +55,7 @@ public sealed class MainViewModel : Observable
 
     public ObservableCollection<ConsoleCard> Consoles { get; } = [];
     public Shortcuts Shortcuts { get; }
+    public SteamShortcuts? Steam { get; }
     public SettingsViewModel Settings { get; }
     public AddConsoleViewModel AddConsole { get; }
     public DiagnosticsViewModel Diagnostics { get; }
@@ -292,7 +296,7 @@ public sealed class MainViewModel : Observable
         for (int i = Consoles.Count - 1; i >= 0; --i)
             if (registered.All(console => console.Mac != Consoles[i].Console.Mac)) Consoles.RemoveAt(i);
         foreach (RegisteredConsole console in registered)
-            if (Consoles.All(card => card.Console.Mac != console.Mac)) Consoles.Add(new ConsoleCard(this, console) { HasShortcut = Shortcuts.Has(console) });
+            if (Consoles.All(card => card.Console.Mac != console.Mac)) Consoles.Add(new ConsoleCard(this, console) { HasShortcut = Shortcuts.Has(console), InSteam = Steam?.Has(console) ?? false });
         Changed(nameof(ShowEmpty));
         Settings.SetConsoles(Consoles.Select(card => card.Console.Name));
     }
@@ -397,6 +401,18 @@ public sealed class MainViewModel : Observable
                         : $"{card.Name} is in the application menu now: it starts a session with these settings straight away.", false);
     }
 
+    /// <summary>Adds the console to Steam's library as a non-Steam game, or takes it away.</summary>
+    public void ToggleSteam(ConsoleCard card)
+    {
+        if (Steam is null) return;
+        bool had = Steam.Has(card.Console);
+        string problem = had ? Steam.Remove(card.Console) : Steam.Add(card.Console);
+        card.InSteam = Steam.Has(card.Console);
+        if (problem.Length > 0) Notify(problem, true);
+        else Notify(had ? $"{card.Name} is no longer in Steam's library."
+                        : $"{card.Name} is in Steam's library now, with its pictures: it starts a session with these settings, also in Steam's Game Mode.", false);
+    }
+
     public void Forget(ConsoleCard card)
     {
         if (Busy) return;
@@ -405,6 +421,8 @@ public sealed class MainViewModel : Observable
             RunResult result = done.Result;
             // A shortcut to a console that is no longer registered would only fail.
             if (result.Ok && Shortcuts.Has(card.Console)) _ = Shortcuts.Remove(card.Console);
+            // In Steam too, where Steam lets it be changed now (else the entry stays and says so when started).
+            if (result.Ok && Steam is not null && Steam.Has(card.Console)) _ = Steam.Remove(card.Console);
             Notify(result.Ok ? $"{card.Name} is no longer registered here." : result.Reason, !result.Ok);
             _ = RefreshAsync();
         }), TaskScheduler.Default);

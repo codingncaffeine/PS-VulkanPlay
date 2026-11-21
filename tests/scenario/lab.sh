@@ -55,7 +55,11 @@ lab_run() {   # lab_run NAME [PLAY_OPTIONS...] [-- MOCK_OPTIONS...]: eight secon
     while [ $# -gt 0 ] && [ "$1" != "--" ]; do play_options+=("$1"); shift; done
     [ $# -gt 0 ] && shift
     mock_options=("$@")
-    set -- "${play_options[@]}"
+    # Drawn by the tent, not debanded: the lab measures time, and on the wall's software Vulkan the
+    # default EWA Lanczos with debanding costs about 6 ms a picture of the CPU (0.5 ms on a graphics
+    # card), which made the lab a measure of the software renderer and, under load, of torn reads
+    # (gate 2026-11-21). How the scalers draw is psvp_render_check --scaling's to say.
+    set -- "${play_options[@]}" --scaler bilinear --deband off
     : > "$taps"; rm -f "$work/$name.found"
     start_mock "$name-mock" --kind ps5 --clip 416x240 --fps 60 --media-ms 10 --timing-log "$work/$name.timing" "${mock_options[@]}" || return
     "$clock" watch "$PSVP_TEST_FB" --clip 416x240 --seconds 11 --out "$work/$name.seen" --ready "$work/$name.found" 2> "$work/$name.clock" &

@@ -181,6 +181,8 @@ int run(int argc, char** argv) {
             window.ask_every = std::chrono::milliseconds(2);
         }
     }
+    if (options->scaler) window.scaler = *options->scaler;
+    if (options->deband) window.deband = *options->deband;
     const int code = psvp::render::run_window(window);
     psvp::log::info("{} exiting with code {}", PSVP_BINARY, code);
     psvp::log::close_file();

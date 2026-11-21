@@ -74,6 +74,9 @@ public sealed class SettingsViewModel : Observable
     public IReadOnlyList<Choice> FrameRates { get; } = [new("60 a second", "60"), new("30 a second", "30")];
     public IReadOnlyList<Choice> Codecs { get; } =
         [new("HEVC (PS5; sharper at the same bitrate)", "hevc"), new("HEVC with HDR (PS5, HDR display)", "hdr"), new("H.264 (PS4, and older graphics cards)", "h264")];
+    public IReadOnlyList<Choice> Scalers { get; } =
+        [new("EWA Lanczos (the default)", "ewa-lanczos"), new("EWA Lanczos, sharper", "ewa-lanczos-sharp"), new("Lanczos", "lanczos"),
+         new("Catmull-Rom", "catmull-rom"), new("Bilinear (soft, the least work)", "bilinear")];
     public IReadOnlyList<Choice> Controllers { get; } =
         [new("Whatever is connected", "auto"), new("A DualSense (haptics, trigger effects)", "dualsense"), new("A DualShock 4", "dualshock4")];
     public IReadOnlyList<Choice> Scales { get; } = AppSettings.Scales.Select(percent => new Choice($"{percent}%", percent.ToString())).ToList();
@@ -158,6 +161,8 @@ public sealed class SettingsViewModel : Observable
     public Choice Resolution { get => Pick(Resolutions, _settings.Resolution.ToString()); set { if (value is not null) Keep(() => _settings.Resolution = int.Parse(value.Value), nameof(Resolution)); } }
     public Choice FrameRate { get => Pick(FrameRates, _settings.FramesPerSecond.ToString()); set { if (value is not null) Keep(() => _settings.FramesPerSecond = int.Parse(value.Value), nameof(FrameRate)); } }
     public Choice Codec { get => Pick(Codecs, _settings.Codec); set { if (value is not null) Keep(() => _settings.Codec = value.Value, nameof(Codec)); } }
+    public Choice Scaler { get => Pick(Scalers, _settings.Scaler); set { if (value is not null) Keep(() => _settings.Scaler = value.Value, nameof(Scaler)); } }
+    public bool Deband { get => _settings.Deband; set => Keep(() => _settings.Deband = value, nameof(Deband)); }
     public Choice Controller { get => Pick(Controllers, _settings.Controller); set { if (value is not null) Keep(() => _settings.Controller = value.Value, nameof(Controller)); } }
     public Choice BackLeft { get => Pick(Buttons, _settings.BackLeft); set { if (value is not null) Keep(() => _settings.BackLeft = value.Value, nameof(BackLeft)); } }
     public Choice BackRight { get => Pick(Buttons, _settings.BackRight); set { if (value is not null) Keep(() => _settings.BackRight = value.Value, nameof(BackRight)); } }

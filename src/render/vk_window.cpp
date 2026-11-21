@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <format>
 #include <optional>
@@ -16,6 +17,7 @@
 
 #include "app/log.h"
 #include "media/gpu_share.h"
+#include "media/present_clock.h"
 #include "psvp/version.h"
 #include "render/overlay_pass.h"
 #include "render/video_device.h"
@@ -103,8 +105,14 @@ private:
     bool create_instance();
     bool pick_device();
     // Says in the log whether the device and this window's surface can tell when each picture reached
-    // the screen (VK_EXT_present_timing): what pacing to the display's own refresh will need.
-    void report_present_timing() const;
+    // the screen (VK_EXT_present_timing), and asks for it where both can (PLAN D37).
+    void offer_present_timing();
+    // With present timing: after the swapchain was made, its queue of reports, time domain and
+    // refresh; after every present, the reports that came. A call that fails turns it off for the
+    // rest of the session (the swapchain is made again without it).
+    void start_present_timing();
+    void read_present_timing();
+    void give_up_present_timing(std::string_view why);
     bool create_device();
     void share_with_decoder();
     bool create_frame_objects();
@@ -160,6 +168,20 @@ private:
     std::vector<VkSemaphore> render_done_;  // one per swapchain image
     bool swapchain_stale_ = true;
     const char* present_mode_name_ = "";
+
+    // When pictures reached the screen, as the driver says (VK_EXT_present_timing).
+    struct PresentTiming {
+        bool wanted = false;    // the device and the surface offer it: asked for when the device is made
+        bool enabled = false;   // the device was made with it
+        bool on = false;        // the swapchain is made with it
+        bool given_up = false;  // a call failed: off for the rest of the session
+        std::uint32_t stages = 0;           // what the surface reports (VkPresentStageFlagsEXT)
+        std::uint64_t domain = 0;           // the swapchain's time domain asked for
+        std::uint64_t properties_seen = 0;  // the swapchain's timing properties' counter when read last
+        std::uint64_t next_id = 1;
+        PFN_vkVoidFunction set_queue_size = nullptr, timing_properties = nullptr, domain_properties = nullptr, past_timing = nullptr;
+    } timing_;
+    media::PresentClock present_clock_;
 
     VideoPass video_;
     bool picture_refused_ = false;  // said once
@@ -293,7 +315,7 @@ bool Window::pick_device() {
     return true;
 }
 
-void Window::report_present_timing() const {
+void Window::offer_present_timing() {
 #ifdef VK_EXT_present_timing
     std::uint32_t count = 0;
     vkEnumerateDeviceExtensionProperties(physical_, nullptr, &count, nullptr);
@@ -343,15 +365,173 @@ void Window::report_present_timing() const {
               "it reports: {}",
               timing.presentAtAbsoluteTimeSupported == VK_TRUE ? "yes" : "no", timing.presentAtRelativeTimeSupported == VK_TRUE ? "yes" : "no",
               stages.empty() ? "no stage" : stages);
+    // Asked for where the screen's own stage is reported, with what it needs: present ids (the second
+    // form) and calibrated timestamps, each offered, and their features there.
+    const VkPresentStageFlagsEXT screen = VK_PRESENT_STAGE_IMAGE_FIRST_PIXEL_OUT_BIT_EXT | VK_PRESENT_STAGE_IMAGE_FIRST_PIXEL_VISIBLE_BIT_EXT;
+    const bool calibrated = has(VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME) || has(VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
+    VkPhysicalDevicePresentId2FeaturesKHR id2{};
+    id2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_2_FEATURES_KHR;
+    VkPhysicalDevicePresentTimingFeaturesEXT features{};
+    features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_TIMING_FEATURES_EXT;
+    features.pNext = &id2;
+    VkPhysicalDeviceFeatures2 all{};
+    all.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    all.pNext = &features;
+    vkGetPhysicalDeviceFeatures2(physical_, &all);
+    std::string missing;
+    if ((timing.presentStageQueries & screen) == 0) missing = "no stage on the screen is reported";
+    else if (!has(VK_KHR_PRESENT_ID_2_EXTENSION_NAME)) missing = std::format("no {}", VK_KHR_PRESENT_ID_2_EXTENSION_NAME);
+    else if (!calibrated) missing = "no calibrated timestamps";
+    else if (features.presentTiming != VK_TRUE || id2.presentId2 != VK_TRUE) missing = "its features are not there";
+    if (!missing.empty()) {
+        log::info("render: present timing: not used ({})", missing);
+        return;
+    }
+    timing_.wanted = true;
+    timing_.stages = timing.presentStageQueries & (VK_PRESENT_STAGE_QUEUE_OPERATIONS_END_BIT_EXT | screen);
 #else
     log::info("render: present timing: this build's Vulkan headers do not know it");
 #endif
 }
 
+void Window::give_up_present_timing(std::string_view why) {
+    if (timing_.given_up) return;
+    log::warn("render: present timing: turned off for this session: {}", why);
+    timing_.given_up = true;
+    timing_.on = false;
+    swapchain_stale_ = true;
+}
+
+void Window::start_present_timing() {
+#ifdef VK_EXT_present_timing
+    if (!timing_.on) return;
+    const auto set_size = reinterpret_cast<PFN_vkSetSwapchainPresentTimingQueueSizeEXT>(timing_.set_queue_size);
+    const auto domains = reinterpret_cast<PFN_vkGetSwapchainTimeDomainPropertiesEXT>(timing_.domain_properties);
+    // Room for a second's reports at the fastest displays; they are read after every present.
+    if (const VkResult result = set_size(device_, swapchain_, 256); result != VK_SUCCESS) {
+        give_up_present_timing(std::format("its queue could not be made ({})", result_name(result)));
+        return;
+    }
+    VkSwapchainTimeDomainPropertiesEXT domain{};
+    domain.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_TIME_DOMAIN_PROPERTIES_EXT;
+    std::uint64_t counter = 0;
+    if (const VkResult result = domains(device_, swapchain_, &domain, &counter); result != VK_SUCCESS || domain.timeDomainCount == 0) {
+        give_up_present_timing(std::format("the swapchain names no time domain ({})", result_name(result)));
+        return;
+    }
+    std::vector<VkTimeDomainKHR> kinds(domain.timeDomainCount);
+    std::vector<std::uint64_t> ids(domain.timeDomainCount);
+    domain.pTimeDomains = kinds.data();
+    domain.pTimeDomainIds = ids.data();
+    if (const VkResult result = domains(device_, swapchain_, &domain, &counter); result != VK_SUCCESS && result != VK_INCOMPLETE) {
+        give_up_present_timing(std::format("its time domains could not be read ({})", result_name(result)));
+        return;
+    }
+    // The steady clock where the swapchain reports in it (then the delay from the hand-off is measured
+    // too), else its first domain.
+    const auto steady = std::ranges::find(kinds, VK_TIME_DOMAIN_CLOCK_MONOTONIC_KHR);
+    const std::size_t chosen = steady != kinds.end() ? static_cast<std::size_t>(steady - kinds.begin()) : 0;
+    timing_.domain = ids[chosen];
+    timing_.properties_seen = 0;
+    present_clock_.set_steady_domain(steady != kinds.end());
+    log::info("render: present timing: on, {} time domains, reported {}", domain.timeDomainCount,
+              steady != kinds.end() ? "on this program's clock" : std::format("in domain kind {}", static_cast<int>(kinds[chosen])));
+#endif
+}
+
+void Window::read_present_timing() {
+#ifdef VK_EXT_present_timing
+    if (!timing_.on) return;
+    const auto past = reinterpret_cast<PFN_vkGetPastPresentationTimingEXT>(timing_.past_timing);
+    constexpr std::uint32_t kAtOnce = 16;
+    VkPresentStageTimeEXT stages[kAtOnce][4]{};
+    VkPastPresentationTimingEXT timings[kAtOnce]{};
+    for (std::uint32_t i = 0; i < kAtOnce; ++i) {
+        timings[i].sType = VK_STRUCTURE_TYPE_PAST_PRESENTATION_TIMING_EXT;
+        timings[i].presentStageCount = 4;
+        timings[i].pPresentStages = stages[i];
+    }
+    VkPastPresentationTimingPropertiesEXT properties{};
+    properties.sType = VK_STRUCTURE_TYPE_PAST_PRESENTATION_TIMING_PROPERTIES_EXT;
+    properties.presentationTimingCount = kAtOnce;
+    properties.pPresentationTimings = timings;
+    VkPastPresentationTimingInfoEXT info{};
+    info.sType = VK_STRUCTURE_TYPE_PAST_PRESENTATION_TIMING_INFO_EXT;
+    info.swapchain = swapchain_;
+    const VkResult result = past(device_, &info, &properties);
+    if (result != VK_SUCCESS && result != VK_INCOMPLETE) {
+        give_up_present_timing(std::format("its reports could not be read ({})", result_name(result)));
+        return;
+    }
+    // The refresh, when the swapchain's timing properties are new (or not read yet).
+    if (properties.timingPropertiesCounter != timing_.properties_seen || timing_.properties_seen == 0) {
+        VkSwapchainTimingPropertiesEXT swapchain_timing{};
+        swapchain_timing.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_TIMING_PROPERTIES_EXT;
+        std::uint64_t counter = 0;
+        const auto read = reinterpret_cast<PFN_vkGetSwapchainTimingPropertiesEXT>(timing_.timing_properties);
+        if (read(device_, swapchain_, &swapchain_timing, &counter) == VK_SUCCESS) {
+            timing_.properties_seen = std::max<std::uint64_t>(counter, 1);
+            present_clock_.set_refresh(swapchain_timing.refreshDuration);
+            log::debug("render: present timing: refresh {} ns, interval {} ns", swapchain_timing.refreshDuration, swapchain_timing.refreshInterval);
+        }
+    }
+    for (std::uint32_t i = 0; i < std::min(properties.presentationTimingCount, kAtOnce); ++i) {
+        const VkPastPresentationTimingEXT& timing = timings[i];
+        if (timing.reportComplete != VK_TRUE) continue;
+        std::uint64_t first_pixel = 0;
+        for (std::uint32_t s = 0; s < std::min(timing.presentStageCount, 4U); ++s) {
+            const VkPresentStageTimeEXT& stage = timing.pPresentStages[s];
+            if (stage.stage == VK_PRESENT_STAGE_IMAGE_FIRST_PIXEL_OUT_BIT_EXT || (first_pixel == 0 && stage.stage == VK_PRESENT_STAGE_IMAGE_FIRST_PIXEL_VISIBLE_BIT_EXT)) {
+                first_pixel = stage.time;
+            }
+        }
+        present_clock_.reported(timing.presentId, first_pixel);
+    }
+#endif
+}
+
 bool Window::create_device() {
     const bool wanted = options_ != nullptr && options_->gpu_decoding;
-    auto made = make_device(DeviceRequest{instance_, instance_api_, instance_extensions_, physical_, device_api_, queue_family_, device_name_, wanted,
-                                          {VK_KHR_SWAPCHAIN_EXTENSION_NAME}});
+    DeviceRequest request{instance_, instance_api_, instance_extensions_, physical_, device_api_, queue_family_, device_name_, wanted,
+                          {VK_KHR_SWAPCHAIN_EXTENSION_NAME}};
+    std::expected<MadeDevice, std::string> made = std::unexpected(std::string());
+#ifdef VK_EXT_present_timing
+    // Present timing and what it needs, where it was offered; without it when the device cannot be made so.
+    if (timing_.wanted) {
+        std::uint32_t count = 0;
+        vkEnumerateDeviceExtensionProperties(physical_, nullptr, &count, nullptr);
+        std::vector<VkExtensionProperties> offered(count);
+        vkEnumerateDeviceExtensionProperties(physical_, nullptr, &count, offered.data());
+        const bool khr_calibrated = std::ranges::any_of(offered, [](const VkExtensionProperties& e) {
+            return std::string_view(e.extensionName) == VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME;
+        });
+        DeviceRequest timed = request;
+        timed.extensions.push_back(VK_EXT_PRESENT_TIMING_EXTENSION_NAME);
+        timed.extensions.push_back(VK_KHR_PRESENT_ID_2_EXTENSION_NAME);
+        timed.extensions.push_back(khr_calibrated ? VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME : VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
+        VkPhysicalDevicePresentId2FeaturesKHR id2{};
+        id2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_2_FEATURES_KHR;
+        id2.presentId2 = VK_TRUE;
+        VkPhysicalDevicePresentTimingFeaturesEXT features{};
+        features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_TIMING_FEATURES_EXT;
+        features.presentTiming = VK_TRUE;
+        features.pNext = &id2;
+        timed.features = &features;
+        made = make_device(timed);
+        if (made) {
+            timing_.set_queue_size = vkGetDeviceProcAddr(made->device, "vkSetSwapchainPresentTimingQueueSizeEXT");
+            timing_.timing_properties = vkGetDeviceProcAddr(made->device, "vkGetSwapchainTimingPropertiesEXT");
+            timing_.domain_properties = vkGetDeviceProcAddr(made->device, "vkGetSwapchainTimeDomainPropertiesEXT");
+            timing_.past_timing = vkGetDeviceProcAddr(made->device, "vkGetPastPresentationTimingEXT");
+            timing_.enabled = timing_.set_queue_size != nullptr && timing_.timing_properties != nullptr && timing_.domain_properties != nullptr &&
+                              timing_.past_timing != nullptr;
+            if (!timing_.enabled) log::info("render: present timing: not used (the device made with it lacks its functions)");
+        } else {
+            log::info("render: present timing: not used (the device could not be made with it: {})", made.error());
+        }
+    }
+#endif
+    if (!made) made = make_device(request);
     if (!made) {
         log::error("render: {}", made.error());
         return false;
@@ -498,13 +678,31 @@ bool Window::create_swapchain() {
     }
     info.clipped = VK_TRUE;
     info.oldSwapchain = previous;
+#ifdef VK_EXT_present_timing
+    timing_.on = timing_.enabled && !timing_.given_up;
+    if (timing_.on) info.flags |= VK_SWAPCHAIN_CREATE_PRESENT_TIMING_BIT_EXT | VK_SWAPCHAIN_CREATE_PRESENT_ID_2_BIT_KHR;
+#endif
     VkSwapchainKHR created = VK_NULL_HANDLE;
-    const bool ok = check(vkCreateSwapchainKHR(device_, &info, nullptr, &created), "vkCreateSwapchainKHR");
+    VkResult made = vkCreateSwapchainKHR(device_, &info, nullptr, &created);
+#ifdef VK_EXT_present_timing
+    if (made != VK_SUCCESS && timing_.on) {
+        // Made again without it: the picture matters more than knowing when it was shown.
+        log::warn("render: present timing: turned off for this session: the swapchain could not be made with it ({})", result_name(made));
+        timing_.on = false;
+        timing_.given_up = true;
+        info.flags &= ~static_cast<VkSwapchainCreateFlagsKHR>(VK_SWAPCHAIN_CREATE_PRESENT_TIMING_BIT_EXT | VK_SWAPCHAIN_CREATE_PRESENT_ID_2_BIT_KHR);
+        // The one before was retired by the failed call, made or not: it can be named no more.
+        info.oldSwapchain = VK_NULL_HANDLE;
+        made = vkCreateSwapchainKHR(device_, &info, nullptr, &created);
+    }
+#endif
+    const bool ok = check(made, "vkCreateSwapchainKHR");
     if (previous != VK_NULL_HANDLE) vkDestroySwapchainKHR(device_, previous, nullptr);
     swapchain_ = created;
     if (!ok) return false;
     format_ = chosen.format;
     extent_ = extent;
+    start_present_timing();
 
     VkAttachmentDescription color{};
     color.format = format_;
@@ -704,15 +902,48 @@ bool Window::draw_frame(bool& presented, const media::Picture* fresh) {
     present.swapchainCount = 1;
     present.pSwapchains = &swapchain_;
     present.pImageIndices = &index;
+#ifdef VK_EXT_present_timing
+    // With present timing: an id for the present, and the stages to report (when the queue was done
+    // with it, when its first pixel went out); no time to present at: as soon as it can be.
+    const std::uint64_t present_id = timing_.next_id;
+    VkPresentId2KHR id{};
+    id.sType = VK_STRUCTURE_TYPE_PRESENT_ID_2_KHR;
+    id.swapchainCount = 1;
+    id.pPresentIds = &present_id;
+    VkPresentTimingInfoEXT when{};
+    when.sType = VK_STRUCTURE_TYPE_PRESENT_TIMING_INFO_EXT;
+    when.timeDomainId = timing_.domain;
+    when.presentStageQueries = timing_.stages;
+    VkPresentTimingsInfoEXT timings{};
+    timings.sType = VK_STRUCTURE_TYPE_PRESENT_TIMINGS_INFO_EXT;
+    timings.pNext = &id;
+    timings.swapchainCount = 1;
+    timings.pTimingInfos = &when;
+    const bool timed = timing_.on;
+    if (timed) {
+        present.pNext = &timings;
+        ++timing_.next_id;
+        present_clock_.handed(present_id, static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                                         std::chrono::steady_clock::now().time_since_epoch())
+                                                                         .count()));
+    }
+#else
+    const bool timed = false;
+#endif
     lock_queue();
     const VkResult shown = vkQueuePresentKHR(queue_, &present);
     unlock_queue();
     if (shown == VK_ERROR_OUT_OF_DATE_KHR || shown == VK_SUBOPTIMAL_KHR) {
         swapchain_stale_ = true;
+    } else if (shown != VK_SUCCESS && timed) {
+        // Refused with the timing asked for: the session goes on without it (the swapchain is made again).
+        give_up_present_timing(std::format("a present was refused ({})", result_name(shown)));
+        return true;
     } else if (shown != VK_SUCCESS) {
         return check(shown, "vkQueuePresentKHR");
     }
     presented = shown != VK_ERROR_OUT_OF_DATE_KHR;
+    read_present_timing();
     return true;
 }
 
@@ -840,7 +1071,7 @@ int Window::open(const WindowOptions& options) {
                                 "an updated graphics driver usually provides it.",
                                 PSVP_NAME, version_text(kMinimumApi)));
     }
-    report_present_timing();
+    offer_present_timing();
     if (!create_device() || !create_frame_objects() || !video_.create(physical_, device_, gpu_why_not_.empty()) || !overlay_.create(physical_, device_)) {
         return fail(kExitVulkanFailed, PSVP_NAME " cannot start",
                     std::format("The graphics device {} could not be set up. The log has the details.", device_name_));
@@ -853,6 +1084,8 @@ int Window::run(const WindowOptions& options) {
     options_ = &options;
     if (const int code = open(options); code != 0) return code;
     video_.set_hdr_peak(options.hdr_peak_nits);
+    video_.set_scaler(options.scaler);
+    video_.set_deband(options.deband);
     if (wake_event.load() == 0) wake_event.store(SDL_RegisterEvents(1));
 
     std::uint64_t frames = 0;
@@ -872,6 +1105,18 @@ int Window::run(const WindowOptions& options) {
             // F11, as everywhere: the whole screen, and back.
             if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_F11 && !event.key.repeat) {
                 SDL_SetWindowFullscreen(window_, (SDL_GetWindowFlags(window_) & SDL_WINDOW_FULLSCREEN) == 0);
+            }
+            // A double click on the picture, as in a video player: the same.
+            if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN && event.button.button == SDL_BUTTON_LEFT && event.button.clicks == 2) {
+                SDL_SetWindowFullscreen(window_, (SDL_GetWindowFlags(window_) & SDL_WINDOW_FULLSCREEN) == 0);
+            }
+            // The title bar's maximize button: a maximized window stays inside the desktop's work area,
+            // under its panels, which is not what the stream is maximized for: the whole screen
+            // instead (borderless, no mode change). Restored first, so that leaving the full screen
+            // comes back to the window's own size.
+            if (event.type == SDL_EVENT_WINDOW_MAXIMIZED && (SDL_GetWindowFlags(window_) & SDL_WINDOW_FULLSCREEN) == 0) {
+                SDL_RestoreWindow(window_);
+                SDL_SetWindowFullscreen(window_, true);
             }
             if (options.on_event) options.on_event(event);
         }
@@ -906,6 +1151,10 @@ int Window::run(const WindowOptions& options) {
         if (options.frame_limit && frames >= *options.frame_limit) running = false;
     }
     log::info("render: stopped after {} frames, {} pictures", frames, pictures);
+    if (const std::string screen = present_clock_.text(); !screen.empty()) {
+        log::info("render: {}", screen);
+        if (options.on_screen_times) options.on_screen_times(screen);
+    }
     const SDL_WindowFlags flags = SDL_GetWindowFlags(window_);
     place_.maximized = (flags & SDL_WINDOW_MAXIMIZED) != 0;
     place_.fullscreen = (flags & SDL_WINDOW_FULLSCREEN) != 0;

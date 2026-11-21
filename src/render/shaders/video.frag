@@ -1,26 +1,62 @@
 #version 450
-// A decoded picture: brightness and two color differences, each in a plane of
-// its own, turned into the red, green and blue the screen takes.
+// The picture (red, green and blue as it encodes them, at its own size: convert.frag made it) drawn
+// at the size it takes in the window, by the scaler chosen, then into the colors the screen takes.
 layout(location = 0) in vec2 uv;
 layout(location = 0) out vec4 color;
 
-layout(set = 0, binding = 0) uniform sampler2D plane_y;
-layout(set = 0, binding = 1) uniform sampler2D plane_cb;
-layout(set = 0, binding = 2) uniform sampler2D plane_cr;
+layout(set = 0, binding = 0) uniform sampler2D picture;  // read sample by sample (texelFetch) only
+layout(std430, set = 0, binding = 1) readonly buffer Weights {
+    float weights[];  // media::weight_tables(): each kernel's weights from distance 0 to its radius
+};
 
 layout(push_constant) uniform Constants {
-    mat4 to_rgb;   // from (y, cb, cr, 1) to red, green, blue as the screen encodes them
-    vec4 options;  // x: what a sample is multiplied by first
-                   // y: how far right of a color sample's place it is read, in picture widths
-                   // z: above 0.5 when the target encodes what is written to it
-                   // w: above 0.5 when both color differences are in one plane, side by side
-                   //    (a graphics card's decoder): the second of them is that plane's green
-    vec4 scale;    // xy: the share of the textures the picture fills (a decoder's image may be larger)
+    vec4 size;     // xy: the picture's size in samples, zw: the size it is drawn at in pixels
+    vec4 kernel;   // x: the kernel's radius in samples, y: its first entry in the weights,
+                   // z: 0 drawn as it is (as large as the picture), 1 separable, 2 polar,
+                   // w: entries per sample of distance
+    vec4 stretch;  // xy: how much the kernel is stretched across and down (media::stretch_for)
                    // z: the picture's transfer function: 0 SDR, 1 PQ, 2 HLG
                    // w: for PQ, the light the picture is taken to reach at its brightest, in cd/m²
-    vec4 limit;    // xy: the last brightness sample's middle, zw: the last color sample's, in the textures'
-                   // coordinates: nothing beyond the picture is blended in at its edges
+    vec4 options;  // x: above 0.5 when the target encodes what is written to it
 } constants;
+
+// media::kTableEntries.
+const int kTableEntries = 1024;
+
+// media::table_weight: linear between the table's entries, 0 from the radius on. A distance just
+// short of the radius can come out at the last entry: read between the last two (its weight is 0).
+float weight_at(float distance) {
+    if (!(distance < constants.kernel.x)) return 0.0;
+    float at = distance * constants.kernel.w;
+    int i = min(int(at), kTableEntries - 2);
+    float f = at - float(i);
+    int base = int(constants.kernel.y);
+    return weights[base + i] * (1.0 - f) + weights[base + i + 1] * f;
+}
+
+// media::scale_plane: the samples inside the stretched radius around the place, edges repeated.
+vec3 scaled() {
+    ivec2 last = ivec2(constants.size.xy) - 1;
+    if (constants.kernel.z < 0.5) return texelFetch(picture, clamp(ivec2(uv * constants.size.xy), ivec2(0), last), 0).rgb;
+    vec2 place = uv * constants.size.xy - 0.5;
+    vec2 reach = constants.kernel.x * constants.stretch.xy;
+    ivec2 from = ivec2(ceil(place - reach)), to = ivec2(floor(place + reach));
+    bool polar = constants.kernel.z > 1.5;
+    vec3 sum = vec3(0.0);
+    float total = 0.0;
+    for (int y = from.y; y <= to.y; ++y) {
+        float dy = (float(y) - place.y) / constants.stretch.y;
+        float wy = polar ? 1.0 : weight_at(abs(dy));
+        if (wy == 0.0) continue;
+        for (int x = from.x; x <= to.x; ++x) {
+            float dx = (float(x) - place.x) / constants.stretch.x;
+            float w = polar ? weight_at(sqrt(dx * dx + dy * dy)) : wy * weight_at(abs(dx));
+            sum += w * texelFetch(picture, clamp(ivec2(x, y), ivec2(0), last), 0).rgb;
+            total += w;
+        }
+    }
+    return total != 0.0 ? sum / total : vec3(0.0);
+}
 
 // From the screen's encoding to linear light (IEC 61966-2-1).
 vec3 to_linear(vec3 encoded) {
@@ -96,52 +132,16 @@ vec3 to_encoded(vec3 linear) {
     return mix(12.92 * linear, 1.055 * pow(linear, vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), linear));
 }
 
-// Linear filtering worked here in single precision from the four samples around a place, read as
-// they are stored (textureGather does not filter). A graphics card's own filtering of 16-bit samples
-// can be coarser: seen 2026-11-21 on an RTX 5080, a card decoder's samples (in the high ten bits of
-// sixteen) came out up to half a step of ten bits off, which tone mapping made up to 4 steps of 255
-// in a bright sky. The same places as the sampler's: half a sample in, the edges repeated.
-vec4 corners(vec2 at, vec2 size, out vec2 weight) {
-    vec2 t = at * size - 0.5;
-    weight = fract(t);
-    return vec4((floor(t) + 1.0) / size, 0.0, 0.0);
-}
-
-float blend(vec4 g, vec2 weight) {
-    // textureGather's order: (left, below), (right, below), (right, above), (left, above).
-    return mix(mix(g.w, g.z, weight.x), mix(g.x, g.y, weight.x), weight.y);
-}
-
-float gathered_r(sampler2D plane, vec2 at) {
-    vec2 weight;
-    vec2 middle = corners(at, vec2(textureSize(plane, 0)), weight).xy;
-    return blend(textureGather(plane, middle, 0), weight);
-}
-
-vec2 gathered_rg(sampler2D plane, vec2 at) {
-    vec2 weight;
-    vec2 middle = corners(at, vec2(textureSize(plane, 0)), weight).xy;
-    return vec2(blend(textureGather(plane, middle, 0), weight), blend(textureGather(plane, middle, 1), weight));
-}
 
 void main() {
-    vec2 picture_uv = min(uv * constants.scale.xy, constants.limit.xy);
-    vec2 color_uv = min(uv * constants.scale.xy + vec2(constants.options.y, 0.0), constants.limit.zw);
-    vec3 sampled;
-    if (constants.scale.z > 0.5) {
-        // HDR: filtered here (see gathered_*); the tone curve makes small errors of the samples large.
-        vec2 cr = gathered_rg(plane_cr, color_uv);
-        sampled = vec3(gathered_r(plane_y, picture_uv), gathered_r(plane_cb, color_uv), constants.options.w > 0.5 ? cr.g : cr.r);
+    vec3 rgb = scaled();
+    if (constants.stretch.z > 0.5) {
+        // Ringing of the sharper kernels can reach a little past the signal's range: hdr_to_sdr_linear cuts it.
+        rgb = hdr_to_sdr_linear(rgb, constants.stretch.z, constants.stretch.w);
+        if (constants.options.x < 0.5) rgb = to_encoded(rgb);
     } else {
-        vec2 cr = texture(plane_cr, color_uv).rg;
-        sampled = vec3(texture(plane_y, picture_uv).r, texture(plane_cb, color_uv).r, constants.options.w > 0.5 ? cr.g : cr.r);
-    }
-    vec3 rgb = clamp((constants.to_rgb * vec4(sampled * constants.options.x, 1.0)).rgb, 0.0, 1.0);
-    if (constants.scale.z > 0.5) {
-        rgb = hdr_to_sdr_linear(rgb, constants.scale.z, constants.scale.w);
-        if (constants.options.z < 0.5) rgb = to_encoded(rgb);
-    } else if (constants.options.z > 0.5) {
-        rgb = to_linear(rgb);
+        rgb = clamp(rgb, 0.0, 1.0);
+        if (constants.options.x > 0.5) rgb = to_linear(rgb);
     }
     color = vec4(rgb, 1.0);
 }
