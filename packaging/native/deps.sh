@@ -77,8 +77,9 @@ tar -xJf "/cache/ffmpeg-$FFMPEG_VER.tar.xz" -C "$WORK"
   # Decoding without the processor's own instructions, or on one core, is several times slower;
   # without Vulkan, never on the graphics card: a build that came out that way is not a release build.
   # (FFmpeg opens the Vulkan loader the program already needs at run time, through the program's own device.)
+  # (Decoders, parsers and hwaccels are named in config_components.h, the rest in config.h.)
   for have in HAVE_X86ASM HAVE_PTHREADS CONFIG_VULKAN CONFIG_H264_VULKAN_HWACCEL CONFIG_HEVC_VULKAN_HWACCEL; do
-      grep -q "^#define $have 1" config.h || { echo "!! FFmpeg was configured without $have" >&2; exit 1; }
+      grep -q "^#define $have 1" config.h config_components.h || { echo "!! FFmpeg was configured without $have" >&2; exit 1; }
   done
   quiet "$WORK/ffmpeg-build.log" make -j "$JOBS"
   quiet "$WORK/ffmpeg-install.log" make install )
