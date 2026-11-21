@@ -6,6 +6,7 @@ add_executable(psvp_tests
     unit/test_tone_map.cpp
     unit/test_scaler.cpp
     unit/test_present_clock.cpp
+    unit/test_peak_detect.cpp
     unit/test_connection_view.cpp
     unit/test_controller_feedback.cpp
     unit/test_decoder.cpp

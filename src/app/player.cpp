@@ -1399,7 +1399,7 @@ int run_player(SessionPlan plan, const PlayOptions& options) {
             window.overlay_menu = [&] { return player.menu_view(); };
             window.overlay_notice = [&] { return player.notice_text(); };
             window.gpu_decoding = options.decoder == PlayOptions::Decoder::automatic;
-            window.hdr_peak_nits = options.hdr_peak_nits;
+            if (options.hdr_peak_nits) window.hdr_peak_nits = *options.hdr_peak_nits;
             window.scaler = options.scaler;
             window.deband = options.deband;
             window.on_gpu = [&](std::optional<media::GpuDevice> gpu, const std::string& why_not) { player.set_gpu(std::move(gpu), why_not); };

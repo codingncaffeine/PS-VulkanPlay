@@ -55,6 +55,17 @@ public class CoreTests
     }
 
     [Fact]
+    public void A_file_that_set_a_brightness_before_measuring_existed_keeps_it()
+    {
+        Assert.Equal(true, new AppSettings().Valid().HdrPeakMeasured);
+        Assert.Equal(false, new AppSettings { HdrPeakNits = 1500 }.Valid().HdrPeakMeasured);
+        Assert.Contains("--hdr-peak", new AppSettings { HdrPeakNits = 1500 }.PlayArguments("Den", ""));
+        Assert.DoesNotContain("--hdr-peak", new AppSettings().PlayArguments("Den", ""));
+        // A brightness chosen with measuring off goes along even when it is 1000.
+        Assert.Equal(["--hdr-peak", "1000"], new AppSettings { HdrPeakMeasured = false }.PlayArguments("Den", "").SkipWhile(a => a != "--hdr-peak").Take(2));
+    }
+
+    [Fact]
     public void Controller_settings_the_program_would_refuse_fall_back_to_their_defaults()
     {
         AppSettings valid = new AppSettings { LightBar = "blue", DeadZone = 99, FnLeft = "screenshot", FnRight = "menu" }.Valid();

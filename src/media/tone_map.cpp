@@ -81,7 +81,7 @@ std::array<double, 3> hdr_to_sdr_linear(const std::array<double, 3>& encoded, co
         const double gain = ys > 0.0 ? kHlgPeakNits * std::pow(ys, kHlgGamma - 1.0) : 0.0;
         for (std::size_t i = 0; i < 3; ++i) nits[i] = gain * scene[i];
     } else {
-        source_peak = std::clamp(tone.source_peak_nits, kLeastHdrPeakNits, kMostHdrPeakNits);
+        source_peak = std::clamp(tone.source_peak_nits, kSdrWhiteNits, kMostHdrPeakNits);  // a measured peak can be as low as white
         for (std::size_t i = 0; i < 3; ++i) nits[i] = pq_to_nits(encoded[i]);
     }
     // 2. BT.709 primaries, what is outside them cut off. First: converted after the tone mapping, a

@@ -113,7 +113,7 @@ vec3 hdr_to_sdr_linear(vec3 encoded, float transfer, float source_peak_nits) {
     if (transfer > 1.5) {
         nits = hlg_to_nits(encoded);
     } else {
-        source_peak = clamp(source_peak_nits, 400.0, 10000.0);
+        source_peak = clamp(source_peak_nits, kSdrWhite, 10000.0);  // a picture no brighter than white is left alone
         nits = pq_to_nits(encoded);
     }
     // GLSL matrices are given column by column: these columns are the rows of media::bt2020_to_bt709's.

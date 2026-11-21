@@ -1482,9 +1482,11 @@ int command_play(std::span<const std::string_view> args) {
         if (options.cushion_ms > 0 && !options.pacing) return usage("play: --cushion needs the pacing it is part of (not --pacing off)");
     }
     if (const auto text = parsed.option("--hdr-peak")) {
-        const auto nits = parse_number(*text, 400, 10000);
-        if (!nits) return usage("play: --hdr-peak takes a brightness in cd/m² from 400 to 10000");
-        options.hdr_peak_nits = static_cast<int>(*nits);
+        if (*text != "auto") {
+            const auto nits = parse_number(*text, 400, 10000);
+            if (!nits) return usage("play: --hdr-peak takes auto or a brightness in cd/m² from 400 to 10000");
+            options.hdr_peak_nits = static_cast<int>(*nits);
+        }
     }
     if (const auto text = parsed.option("--scaler")) {
         const auto scaler = media::scaler_from_name(*text);
@@ -1847,7 +1849,7 @@ std::string commands_help() {
         "          [--bitrate KBPS] [--codec h264|hevc|hdr] [--controller auto|dualsense|dualshock4]\n"
         "          [--pacing on|off] [--cushion 0-50] [--haptics-volume 0-100] [--back-left BUTTON]\n"
         "          [--back-right BUTTON] [--loss-ceiling PERCENT] [--ack-copies 0-2] [--decoder auto|software]\n"
-        "          [--reconnect SECONDS] [--hdr-peak 400-10000] [--scaler NAME] [--deband on|off]\n"
+        "          [--reconnect SECONDS] [--hdr-peak auto|400-10000] [--scaler NAME] [--deband on|off]\n"
         "          [--trigger-effects on|off] [--light-bar console|off|RRGGBB] [--player-lights on|off]\n"
         "          [--motion on|off] [--touchpad on|off] [--dead-zone 0-30] [--fn-left ACTION] [--fn-right ACTION]\n"
         "          [--stats] [--wake] [--rest]\n"
@@ -1874,9 +1876,10 @@ std::string commands_help() {
         "      software only (auto: on the graphics card where it can, through Vulkan Video, once its\n"
         "      first pictures were found the same as the software decoder's); --stats shows the statistics\n"
         "      over the picture from the start (F3 shows and hides them at any time); --hdr-peak says how\n"
-        "      bright an HDR picture is taken to be at its brightest, in cd/m² (1000 unless said; consoles\n"
-        "      do not say): an HDR picture is shown on the screen as SDR, white paper at SDR white and\n"
-        "      what is brighter fitted between that and white (ITU-R BT.2390, BT.2408); --scaler says how\n"
+        "      bright an HDR picture is taken to be at its brightest, in cd/m² (consoles do not say; auto,\n"
+        "      unless said: each picture is measured): an HDR picture is shown on the screen as SDR, white\n"
+        "      paper at SDR white and what is brighter fitted between that and white (ITU-R BT.2390,\n"
+        "      BT.2408); --scaler says how\n"
         "      the picture is brought to the window's size: bilinear (soft, the least work), catmull-rom,\n"
         "      lanczos, ewa-lanczos (unless said) or ewa-lanczos-sharp; --deband off leaves the bands a\n"
         "      low bitrate cuts smooth areas such as skies into (smoothed out unless said); on a software\n"

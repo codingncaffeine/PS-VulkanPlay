@@ -33,6 +33,8 @@ public sealed class AppSettings
     public int CushionMs { get; set; }                  // 0 to 50
     public int LossCeiling { get; set; } = DefaultLossCeiling;   // percent, 0 to 100: the most loss the console is told of
     public int HdrPeakNits { get; set; } = DefaultHdrPeakNits;   // how bright an HDR picture is taken to be at its brightest
+    // Each HDR picture measured instead. Not in a file of an earlier version: measured, unless that file set a brightness.
+    public bool? HdrPeakMeasured { get; set; }
     public string Scaler { get; set; } = DefaultScaler;   // how the picture is brought to the window's size (Scalers)
     public bool Deband { get; set; } = true;            // banding smoothed out of the picture
     public string Controller { get; set; } = "auto";    // auto, dualsense, dualshock4
@@ -90,6 +92,7 @@ public sealed class AppSettings
             CushionMs = Math.Clamp(CushionMs, 0, 50),
             LossCeiling = Math.Clamp(LossCeiling, 0, 100),
             HdrPeakNits = Math.Clamp(HdrPeakNits, LeastHdrPeakNits, MostHdrPeakNits),
+            HdrPeakMeasured = HdrPeakMeasured ?? HdrPeakNits == DefaultHdrPeakNits,
             Scaler = Scalers.Contains(Scaler) ? Scaler : DefaultScaler,
             Deband = Deband,
             Controller = Controllers.Contains(Controller) ? Controller : "auto",
@@ -136,7 +139,7 @@ public sealed class AppSettings
         if (!s.Pacing) arguments.AddRange(["--pacing", "off"]);
         else if (s.CushionMs > 0) arguments.AddRange(["--cushion", s.CushionMs.ToString()]);
         if (s.LossCeiling != DefaultLossCeiling) arguments.AddRange(["--loss-ceiling", s.LossCeiling.ToString()]);
-        if (s.HdrPeakNits != DefaultHdrPeakNits) arguments.AddRange(["--hdr-peak", s.HdrPeakNits.ToString()]);
+        if (s.HdrPeakMeasured == false) arguments.AddRange(["--hdr-peak", s.HdrPeakNits.ToString()]);
         if (s.Scaler != DefaultScaler) arguments.AddRange(["--scaler", s.Scaler]);
         if (!s.Deband) arguments.AddRange(["--deband", "off"]);
         arguments.AddRange(["--haptics-volume", s.HapticsVolume.ToString()]);

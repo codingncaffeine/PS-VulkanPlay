@@ -23,9 +23,15 @@ rc=$?
 grep -a 'render-check: drawing' "$out" | sed 's/^render-check: /  --    /'
 [ $rc = 0 ] && ok "exit 0" || fail "exit $rc: $(tail -3 "$out")"
 # Five pictures, each patch within 1 of 255 of the numbers, each HDR one unlike the untouched colors.
-within=$(grep -ac 'patches within [01] of 255' "$out")
+within=$(grep -ac 'patches within [01] of 255 of media::screen_color;' "$out")
 [ "$within" = 5 ] && ok "SDR, HLG and PQ at 1000, 4000 and 400 cd/m²: every patch within 1 of 255" || fail "$within of 5 pictures within 1 of 255:"$'\n'"$(grep -a 'render-check:' "$out" | cut -c1-240)"
 grep -aq 'control failed' "$out" && fail "$(grep -a 'control failed' "$out")" || ok "the control: tone mapped pictures differ from the untouched colors"
+# Measured (each PQ picture's own peak): the peak the card counted is the machine's, the patches tone mapped from it.
+line="$(grep -a 'PQ measured: the peak' "$out")"
+# (The two peaks compared as text: BusyBox's grep has no back-references.)
+got=$(printf '%s' "$line" | sed -n 's/.*the peak measured \([0-9.]*\) cd.*/\1/p'); counted=$(printf '%s' "$line" | sed -n "s/.*the machine's count: \([0-9.]*\)).*/\1/p")
+if [ -n "$got" ] && [ "$got" = "$counted" ] && printf '%s' "$line" | grep -qE 'patches within [01] of 255' && ! grep -aq 'PQ measured: the control failed' "$out"; then ok "${line#render-check: }"
+else fail "PQ measured: '${line#render-check: }' $(grep -a 'PQ measured:' "$out" | grep -v 'the peak' | head -2)"; fi
 
 # Scaling and debanding (psvp_render_check --scaling): five scalers at five sizes against the
 # references of src/media/scaler.cpp, debanding against its reference, each with its control.

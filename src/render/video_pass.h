@@ -14,6 +14,7 @@
 
 #include "media/color.h"
 #include "media/gpu_share.h"
+#include "media/peak_detect.h"
 #include "media/scaler.h"
 #include "media/video_decoder.h"
 
@@ -27,7 +28,8 @@ public:
 
     // What does not depend on the swapchain. False (with the reason logged) when a call failed.
     // `gpu_pictures`: the device can draw pictures decoded on it (Vulkan 1.3, synchronization2).
-    [[nodiscard]] bool create(VkPhysicalDevice physical, VkDevice device, bool gpu_pictures = false);
+    // `compute`: the queue the pass is recorded for runs compute work (measuring HDR pictures).
+    [[nodiscard]] bool create(VkPhysicalDevice physical, VkDevice device, bool gpu_pictures = false, bool compute = true);
     // The pipeline for a render pass; `target_encodes` when the target's format encodes what is written to it.
     [[nodiscard]] bool create_pipeline(VkRenderPass render_pass, bool target_encodes);
     void destroy_pipeline();
@@ -54,7 +56,16 @@ public:
     void record_draw(VkCommandBuffer commands, VkExtent2D target);
     // How bright a PQ picture is taken to be at its brightest, in cd/m² (the console's streams do not
     // say): what is brighter than SDR white is fitted between it and that (media/tone_map.h).
-    void set_hdr_peak(double nits) noexcept { hdr_peak_nits_ = std::clamp(nits, media::kLeastHdrPeakNits, media::kMostHdrPeakNits); }
+    void set_hdr_peak(double nits) noexcept {
+        hdr_peak_nits_ = std::clamp(nits, media::kLeastHdrPeakNits, media::kMostHdrPeakNits);
+        measure_ = false;
+    }
+    // Instead: every PQ picture measured (media/peak_detect.h) and tone mapped from what was measured
+    // (from the picture before: its counts are read when the next one is taken).
+    void set_hdr_peak_measured() noexcept { measure_ = true; }
+    // Whether PQ pictures are measured (asked for, and the device can run the compute pass).
+    [[nodiscard]] bool hdr_peak_measured() const noexcept { return measure_ && compute_ != VK_NULL_HANDLE; }
+    [[nodiscard]] std::optional<double> measured_peak() const noexcept { return detector_.peak_nits(); }
     [[nodiscard]] double hdr_peak() const noexcept { return hdr_peak_nits_; }
     // How the picture is brought to the size it is drawn at (media/scaler.h).
     void set_scaler(media::Scaler scaler) noexcept { scaler_ = scaler; }
@@ -120,6 +131,22 @@ private:
     bool converted_ready_ = false;  // it holds a picture
     bool deband_ = false;
     std::uint32_t seed_ = 0;
+
+    // Measuring HDR pictures: a compute pass over the converted picture into a histogram the machine reads.
+    bool measure_ = false;
+    VkShaderModule peak_module_ = VK_NULL_HANDLE;
+    VkDescriptorSetLayout peak_set_layout_ = VK_NULL_HANDLE;
+    VkDescriptorSet peak_set_ = VK_NULL_HANDLE;
+    VkPipelineLayout peak_layout_ = VK_NULL_HANDLE;
+    VkPipeline compute_ = VK_NULL_HANDLE;
+    VkBuffer histogram_ = VK_NULL_HANDLE;
+    VkDeviceMemory histogram_memory_ = VK_NULL_HANDLE;
+    std::uint32_t* histogram_counts_ = nullptr;
+    bool histogram_due_ = false;  // a measurement was recorded whose counts are not read yet
+    media::PeakDetector detector_;
+    void read_histogram();
+    [[nodiscard]] bool create_measuring();
+    void record_measure(VkCommandBuffer commands);
 
     // The drawing (pass B): the converted picture and the kernels' weights.
     VkSampler nearest_ = VK_NULL_HANDLE;

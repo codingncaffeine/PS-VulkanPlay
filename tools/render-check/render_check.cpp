@@ -38,6 +38,7 @@
 #include "media/delta_e.h"
 #include "media/gpu_device.h"
 #include "media/gpu_share.h"
+#include "media/peak_detect.h"
 #include "media/scaler.h"
 #include "media/video_decoder.h"
 #include "render/video_device.h"
@@ -545,6 +546,68 @@ int run_pattern(const std::vector<double>& peaks) {
                 if (toned ? unlike_untoned < patches.size() / 4 : unlike_untoned != 0) {
                     std::printf("render-check: %s: the control failed (%u patches unlike the untouched colors)\n", run.name, unlike_untoned);
                     code = 1;
+                }
+            }
+
+            // Measured: a PQ picture of gray patches only (each sample's brightest channel is its own
+            // brightness, so the machine counts what the graphics card counts), drawn twice: the first
+            // drawing measures it, the second is tone mapped from that. Its peak must be the one
+            // media::PeakDetector takes from the same counts, every patch media::screen_color's at that
+            // peak; the control: the bright patches unlike what the assumed 1000 cd/m² gives.
+            if (!broken) {
+                // Grays up to about 600 cd/m² (PQ 0.69), each code a few bins' middle away from a bin's edge.
+                std::vector<unsigned> grays;
+                for (unsigned y = 64; y <= 670; y += 13) grays.push_back(y);
+                const unsigned across = 8, side = 8, rows = static_cast<unsigned>((grays.size() + across - 1) / across);
+                const unsigned gw = across * side, gh = rows * side;
+                std::vector<std::uint16_t> gy(std::size_t{gw} * gh, 64), gcb(std::size_t{gw / 2} * (gh / 2), 512), gcr(std::size_t{gw / 2} * (gh / 2), 512);
+                std::array<std::uint32_t, media::PeakDetector::kBins> counts{};
+                for (unsigned y = 0; y < gh; ++y) {
+                    for (unsigned x = 0; x < gw; ++x) {
+                        const std::size_t i = std::size_t{y / side} * across + x / side;
+                        const unsigned sample = i < grays.size() ? grays[i] : 64;
+                        gy[std::size_t{y} * gw + x] = static_cast<std::uint16_t>(sample);
+                        ++counts[media::PeakDetector::bin_of(std::clamp((static_cast<double>(sample) - 64.0) / 876.0, 0.0, 1.0))];
+                    }
+                }
+                media::PeakDetector expected;
+                const double want_peak = expected.add(counts);
+                media::Picture picture;
+                picture.width = gw;
+                picture.height = gh;
+                picture.bits = 10;
+                picture.matrix = media::ColorMatrix::bt2020;
+                picture.transfer = media::ColorTransfer::pq;
+                picture.planes[0] = reinterpret_cast<const std::uint8_t*>(gy.data());
+                picture.planes[1] = reinterpret_cast<const std::uint8_t*>(gcb.data());
+                picture.planes[2] = reinterpret_cast<const std::uint8_t*>(gcr.data());
+                picture.strides[0] = std::size_t{gw} * 2;
+                picture.strides[1] = picture.strides[2] = std::size_t{gw / 2} * 2;
+                pass.set_hdr_peak_measured();
+                if (!draw(device, made->queue, family, nullptr, commands, fence, pass, target, picture) ||
+                    !draw(device, made->queue, family, nullptr, commands, fence, pass, target, picture)) {
+                    code = fail(1, "the measured picture could not be drawn");
+                } else if (!pass.hdr_peak_measured() || !pass.measured_peak()) {
+                    code = fail(1, "PQ measured: nothing was measured ({})", pass.describe());
+                } else {
+                    const double got_peak = *pass.measured_peak();
+                    unsigned worst = 0, unlike_fixed = 0;
+                    for (std::size_t i = 0; i < grays.size(); ++i) {
+                        const unsigned x = static_cast<unsigned>(i % across) * side + side / 2, y = static_cast<unsigned>(i / across) * side + side / 2;
+                        const std::uint8_t* pixel = target.pixels() + (std::size_t{y} * gw + x) * 4;
+                        const auto want = media::screen_color(transform, 10, grays[i], 512, 512, media::ToneMap{media::ColorTransfer::pq, got_peak});
+                        const auto fixed = media::screen_color(transform, 10, grays[i], 512, 512, media::ToneMap{media::ColorTransfer::pq, media::kAssumedHdrPeakNits});
+                        worst = std::max(worst, static_cast<unsigned>(std::abs(want[1] - pixel[1])));
+                        unlike_fixed += std::abs(fixed[1] - pixel[1]) > 4 ? 1U : 0U;
+                    }
+                    std::printf("render-check: PQ measured: the peak measured %.1f cd/m² (the machine's count: %.1f); %zu patches within %u of 255 of media::screen_color "
+                                "at it; %u unlike the assumed %.0f cd/m²\n",
+                                got_peak, want_peak, grays.size(), worst, unlike_fixed, media::kAssumedHdrPeakNits);
+                    if (std::abs(got_peak - want_peak) > 1e-6 * want_peak || worst > 1) code = 1;
+                    if (unlike_fixed < 3) {
+                        std::printf("render-check: PQ measured: the control failed (%u patches unlike the assumed peak)\n", unlike_fixed);
+                        code = 1;
+                    }
                 }
             }
             vkDeviceWaitIdle(device);

@@ -1085,7 +1085,8 @@ int Window::open(const WindowOptions& options) {
 int Window::run(const WindowOptions& options) {
     options_ = &options;
     if (const int code = open(options); code != 0) return code;
-    video_.set_hdr_peak(options.hdr_peak_nits);
+    if (options.hdr_peak_nits) video_.set_hdr_peak(*options.hdr_peak_nits);
+    else video_.set_hdr_peak_measured();
     video_.set_scaler(options.scaler.value_or(software_device_ ? media::Scaler::bilinear : media::kDefaultScaler));
     video_.set_deband(options.deband.value_or(!software_device_));
     if (software_device_ && (!options.scaler || !options.deband)) {

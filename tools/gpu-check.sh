@@ -41,11 +41,16 @@ else fail "the layer reported $reports lines:"; grep -a 'VUID\|Validation' "$out
 PSVP_WALL_GPU=1 timeout 300 tools/wall.sh env VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation VK_LOADER_LAYERS_ENABLE='*validation*' \
     "$check" --pattern --peak 1000 --peak 4000 --peak 400 > "$out" 2>&1
 rc=$?
-within=$(grep -ac 'patches within [01] of 255' "$out")
+within=$(grep -ac 'patches within [01] of 255 of media::screen_color;' "$out")
 [ $rc = 0 ] && [ "$within" = 5 ] && ok "tone mapping on $(grep -ao 'picture on .*' "$out" | head -1 | cut -c12-): SDR, HLG and PQ at three peaks within 1 of 255" \
     || fail "tone mapping on the card: exit $rc, $within of 5 pictures within 1 of 255"
+line="$(grep -a 'PQ measured: the peak' "$out")"
+# (The two peaks compared as text: BusyBox's grep has no back-references.)
+got=$(printf '%s' "$line" | sed -n 's/.*the peak measured \([0-9.]*\) cd.*/\1/p'); counted=$(printf '%s' "$line" | sed -n "s/.*the machine's count: \([0-9.]*\)).*/\1/p")
+if [ -n "$got" ] && [ "$got" = "$counted" ] && printf '%s' "$line" | grep -qE 'patches within [01] of 255' && ! grep -aq 'PQ measured: the control failed' "$out"; then ok "on the card: ${line#render-check: }"
+else fail "PQ measured on the card: '${line#render-check: }'"; fi
 reports=$(grep -ac 'VUID\|Validation Error\|Validation Warning' "$out")
-[ "$reports" = 0 ] && ok "the layer reported nothing while the patterns were drawn" || fail "the layer reported $reports lines while the patterns were drawn"
+[ "$reports" = 0 ] && ok "the layer reported nothing while the patterns were drawn" || fail "the layer reported $reports lines while the patterns were drawn: $(grep -a 'VUID' "$out" | head -2 | cut -c1-240)"
 
 
 # Scaling and debanding (psvp_render_check --scaling): five scalers at five sizes against the

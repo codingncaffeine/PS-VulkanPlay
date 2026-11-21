@@ -50,7 +50,8 @@ struct WindowOptions {
     // A notice at the top (the connection was lost, and is being made again); empty: none.
     std::function<std::string()> overlay_notice;
     // How bright an HDR picture is taken to be at its brightest, in cd/m² (VideoPass::set_hdr_peak).
-    double hdr_peak_nits = 1000.0;
+    // Nothing: each PQ picture measured (VideoPass::set_hdr_peak_measured).
+    std::optional<double> hdr_peak_nits;
     // How the picture is brought to the window's size, and whether banding is smoothed out of it
     // (VideoPass::set_scaler, set_deband). Not chosen: EWA Lanczos and debanding on a graphics card;
     // the tent without debanding on a software device (Vulkan on the processor), where the sharper

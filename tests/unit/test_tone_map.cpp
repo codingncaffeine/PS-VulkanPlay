@@ -91,9 +91,10 @@ PSVP_TEST(tone_map_pq_to_sdr) {
     CHECK(close(gray(0.0)[0], 0.0, 1e-6));
     // A brighter stated peak leaves less room below white: the same light comes out darker.
     CHECK(hdr_to_sdr_linear({nits_to_pq(400.0), nits_to_pq(400.0), nits_to_pq(400.0)}, ToneMap{ColorTransfer::pq, 4000.0})[0] < gray(400.0)[0]);
-    // A peak out of range is taken as the nearest that is not.
+    // A peak out of range is taken as the nearest that is not: reference white at the least (a measured
+    // peak can be that low), where the curve leaves the picture as it is.
     CHECK(close(hdr_to_sdr_linear({0.7, 0.7, 0.7}, ToneMap{ColorTransfer::pq, 5.0})[0],
-                hdr_to_sdr_linear({0.7, 0.7, 0.7}, ToneMap{ColorTransfer::pq, kLeastHdrPeakNits})[0], 1e-12));
+                hdr_to_sdr_linear({0.7, 0.7, 0.7}, ToneMap{ColorTransfer::pq, kSdrWhiteNits})[0], 1e-12));
     // A color keeps its proportions: all three channels scaled by the same amount (hue and saturation stay).
     const std::array<double, 3> nits{600.0, 300.0, 120.0};
     const auto out = hdr_to_sdr_linear({nits_to_pq(nits[0]), nits_to_pq(nits[1]), nits_to_pq(nits[2])}, tone);

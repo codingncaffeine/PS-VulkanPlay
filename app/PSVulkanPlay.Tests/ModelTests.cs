@@ -374,13 +374,15 @@ public class ModelTests : IDisposable
         model.Settings.BitrateMbps = 22;
         Assert.Equal("Up to 5% (the default)", model.Settings.LossCeilingText);
         model.Settings.LossCeiling = 12;
-        Assert.Equal("1000 cd/m² (the default)", model.Settings.HdrPeakText);
+        Assert.Equal("Measured from each picture (the default)", model.Settings.HdrPeakText);
+        Assert.True(model.Settings.HdrPeakMeasured);
+        model.Settings.HdrPeakMeasured = false;
         model.Settings.HdrPeak = 1500;
         Assert.Equal("ewa-lanczos", model.Settings.Scaler.Value);
         Assert.True(model.Settings.Deband);
         model.Settings.Scaler = model.Settings.Scalers.First(choice => choice.Value == "lanczos");
         model.Settings.Deband = false;
-        Until(() => File.Exists(file) && new SettingsStore(file).Load() is { CushionMs: 20, BackLeft: "cross", BitrateKbps: 22000, LossCeiling: 12, HdrPeakNits: 1500, Scaler: "lanczos", Deband: false },
+        Until(() => File.Exists(file) && new SettingsStore(file).Load() is { CushionMs: 20, BackLeft: "cross", BitrateKbps: 22000, LossCeiling: 12, HdrPeakNits: 1500, HdrPeakMeasured: false, Scaler: "lanczos", Deband: false },
               "the settings reached the file");
         Assert.Equal("1500 cd/m²", model.Settings.HdrPeakText);
         Assert.Equal("Up to 12%", model.Settings.LossCeilingText);

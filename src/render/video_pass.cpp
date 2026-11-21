@@ -13,6 +13,7 @@ namespace {
 #include "psvp/video_vert.inc"
 #include "psvp/video_frag.inc"
 #include "psvp/convert_frag.inc"
+#include "psvp/peak_comp.inc"
 
 // convert.frag's constants (128 bytes: as many as every device takes).
 struct ConvertConstants {
@@ -58,7 +59,7 @@ std::uint32_t VideoPass::memory_type(std::uint32_t allowed, VkMemoryPropertyFlag
     return UINT32_MAX;
 }
 
-bool VideoPass::create(VkPhysicalDevice physical, VkDevice device, bool gpu_pictures) {
+bool VideoPass::create(VkPhysicalDevice physical, VkDevice device, bool gpu_pictures, bool compute) {
     physical_ = physical;
     device_ = device;
     if (gpu_pictures) {
@@ -101,10 +102,10 @@ bool VideoPass::create(VkPhysicalDevice physical, VkDevice device, bool gpu_pict
     set_layout.bindingCount = 2;
     if (!good(vkCreateDescriptorSetLayout(device_, &set_layout, nullptr, &draw_set_layout_), "vkCreateDescriptorSetLayout")) return false;
 
-    const VkDescriptorPoolSize sizes[2] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1}};
+    const VkDescriptorPoolSize sizes[2] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 5}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2}};
     VkDescriptorPoolCreateInfo pool{};
     pool.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    pool.maxSets = 2;
+    pool.maxSets = 3;
     pool.poolSizeCount = 2;
     pool.pPoolSizes = sizes;
     if (!good(vkCreateDescriptorPool(device_, &pool, nullptr, &pool_), "vkCreateDescriptorPool")) return false;
@@ -200,14 +201,14 @@ bool VideoPass::create(VkPhysicalDevice physical, VkDevice device, bool gpu_pict
     // Not before the drawing of the frame before has read it, nor before the planes are there.
     dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
     dependencies[0].dstSubpass = 0;
-    dependencies[0].srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependencies[0].srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     dependencies[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     dependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
     dependencies[1].srcSubpass = 0;
     dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
     dependencies[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     dependencies[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    dependencies[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    dependencies[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
     dependencies[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
     VkRenderPassCreateInfo pass{};
     pass.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
@@ -218,7 +219,124 @@ bool VideoPass::create(VkPhysicalDevice physical, VkDevice device, bool gpu_pict
     pass.dependencyCount = 2;
     pass.pDependencies = dependencies;
     if (!good(vkCreateRenderPass(device_, &pass, nullptr, &convert_pass_), "vkCreateRenderPass")) return false;
-    return make_pipeline(convert_pass_, convert_fragment_, convert_layout_, convert_pipeline_);
+    if (!make_pipeline(convert_pass_, convert_fragment_, convert_layout_, convert_pipeline_)) return false;
+    // Measuring HDR pictures: where the queue runs compute work; without it, the peak stays the one given.
+    if (compute && !create_measuring()) log::warn("render: HDR pictures cannot be measured here: they are tone mapped from the peak given");
+    return true;
+}
+
+bool VideoPass::create_measuring() {
+    VkDescriptorSetLayoutBinding bindings[2]{};
+    bindings[0] = {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    bindings[1] = {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    VkDescriptorSetLayoutCreateInfo set_layout{};
+    set_layout.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    set_layout.bindingCount = 2;
+    set_layout.pBindings = bindings;
+    if (!good(vkCreateDescriptorSetLayout(device_, &set_layout, nullptr, &peak_set_layout_), "vkCreateDescriptorSetLayout")) return false;
+    VkDescriptorSetAllocateInfo allocate{};
+    allocate.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocate.descriptorPool = pool_;
+    allocate.descriptorSetCount = 1;
+    allocate.pSetLayouts = &peak_set_layout_;
+    if (!good(vkAllocateDescriptorSets(device_, &allocate, &peak_set_), "vkAllocateDescriptorSets")) return false;
+    VkPushConstantRange range{VK_SHADER_STAGE_COMPUTE_BIT, 0, 2 * sizeof(std::int32_t)};
+    VkPipelineLayoutCreateInfo layout{};
+    layout.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    layout.setLayoutCount = 1;
+    layout.pSetLayouts = &peak_set_layout_;
+    layout.pushConstantRangeCount = 1;
+    layout.pPushConstantRanges = &range;
+    if (!good(vkCreatePipelineLayout(device_, &layout, nullptr, &peak_layout_), "vkCreatePipelineLayout")) return false;
+    VkShaderModuleCreateInfo module{};
+    module.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    module.codeSize = sizeof kPeakComputeShader;
+    module.pCode = kPeakComputeShader;
+    if (!good(vkCreateShaderModule(device_, &module, nullptr, &peak_module_), "vkCreateShaderModule")) return false;
+    VkComputePipelineCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    info.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    info.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    info.stage.module = peak_module_;
+    info.stage.pName = "main";
+    info.layout = peak_layout_;
+    if (!good(vkCreateComputePipelines(device_, VK_NULL_HANDLE, 1, &info, nullptr, &compute_), "vkCreateComputePipelines")) return false;
+
+    // The counts, where the machine reads them.
+    VkBufferCreateInfo buffer{};
+    buffer.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    buffer.size = media::PeakDetector::kBins * sizeof(std::uint32_t);
+    buffer.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    buffer.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (!good(vkCreateBuffer(device_, &buffer, nullptr, &histogram_), "vkCreateBuffer")) return false;
+    VkMemoryRequirements needs{};
+    vkGetBufferMemoryRequirements(device_, histogram_, &needs);
+    VkMemoryAllocateInfo memory{};
+    memory.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    memory.allocationSize = needs.size;
+    memory.memoryTypeIndex = memory_type(needs.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    void* mapped = nullptr;
+    if (memory.memoryTypeIndex == UINT32_MAX || !good(vkAllocateMemory(device_, &memory, nullptr, &histogram_memory_), "vkAllocateMemory") ||
+        !good(vkBindBufferMemory(device_, histogram_, histogram_memory_, 0), "vkBindBufferMemory") ||
+        !good(vkMapMemory(device_, histogram_memory_, 0, VK_WHOLE_SIZE, 0, &mapped), "vkMapMemory")) {
+        if (compute_ != VK_NULL_HANDLE) vkDestroyPipeline(device_, compute_, nullptr);
+        compute_ = VK_NULL_HANDLE;
+        return false;
+    }
+    histogram_counts_ = static_cast<std::uint32_t*>(mapped);
+    VkDescriptorBufferInfo counts{histogram_, 0, VK_WHOLE_SIZE};
+    VkWriteDescriptorSet write{};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = peak_set_;
+    write.dstBinding = 1;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    write.pBufferInfo = &counts;
+    vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
+    return true;
+}
+
+void VideoPass::read_histogram() {
+    if (!histogram_due_ || histogram_counts_ == nullptr) return;
+    histogram_due_ = false;
+    std::array<std::uint32_t, media::PeakDetector::kBins> counts{};
+    std::memcpy(counts.data(), histogram_counts_, sizeof counts);
+    detector_.add(counts);
+}
+
+void VideoPass::record_measure(VkCommandBuffer commands) {
+    // The pass's own barriers: the converted picture written (its render pass ends in a layout for reading,
+    // to the fragment and compute stages), the counts cleared before the shader adds to them, and given to
+    // the machine after.
+    VkBufferMemoryBarrier cleared{};
+    cleared.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+    cleared.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    cleared.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+    cleared.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    cleared.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    cleared.buffer = histogram_;
+    cleared.size = VK_WHOLE_SIZE;
+    vkCmdFillBuffer(commands, histogram_, 0, VK_WHOLE_SIZE, 0);
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 1, &cleared, 0, nullptr);
+    VkDescriptorImageInfo picture{nearest_, converted_view_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet write{};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = peak_set_;
+    write.dstBinding = 0;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    write.pImageInfo = &picture;
+    vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
+    const std::int32_t size[2] = {static_cast<std::int32_t>(width_), static_cast<std::int32_t>(height_)};
+    vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, compute_);
+    vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_COMPUTE, peak_layout_, 0, 1, &peak_set_, 0, nullptr);
+    vkCmdPushConstants(commands, peak_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof size, size);
+    vkCmdDispatch(commands, (width_ + 15) / 16, (height_ + 15) / 16, 1);
+    VkBufferMemoryBarrier counted = cleared;
+    counted.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    counted.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 1, &counted, 0, nullptr);
+    histogram_due_ = true;
 }
 
 bool VideoPass::create_pipeline(VkRenderPass render_pass, bool target_encodes) {
@@ -411,6 +529,20 @@ void VideoPass::destroy() {
     destroy_textures();
     destroy_converted();
     release_gpu_picture();
+    if (compute_ != VK_NULL_HANDLE) vkDestroyPipeline(device_, compute_, nullptr);
+    if (peak_layout_ != VK_NULL_HANDLE) vkDestroyPipelineLayout(device_, peak_layout_, nullptr);
+    if (peak_module_ != VK_NULL_HANDLE) vkDestroyShaderModule(device_, peak_module_, nullptr);
+    if (peak_set_layout_ != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device_, peak_set_layout_, nullptr);
+    if (histogram_memory_ != VK_NULL_HANDLE && histogram_counts_ != nullptr) vkUnmapMemory(device_, histogram_memory_);
+    if (histogram_ != VK_NULL_HANDLE) vkDestroyBuffer(device_, histogram_, nullptr);
+    if (histogram_memory_ != VK_NULL_HANDLE) vkFreeMemory(device_, histogram_memory_, nullptr);
+    compute_ = VK_NULL_HANDLE;
+    peak_layout_ = VK_NULL_HANDLE;
+    peak_module_ = VK_NULL_HANDLE;
+    peak_set_layout_ = VK_NULL_HANDLE;
+    histogram_ = VK_NULL_HANDLE;
+    histogram_memory_ = VK_NULL_HANDLE;
+    histogram_counts_ = nullptr;
     if (convert_pipeline_ != VK_NULL_HANDLE) vkDestroyPipeline(device_, convert_pipeline_, nullptr);
     if (convert_pass_ != VK_NULL_HANDLE) vkDestroyRenderPass(device_, convert_pass_, nullptr);
     if (convert_layout_ != VK_NULL_HANDLE) vkDestroyPipelineLayout(device_, convert_layout_, nullptr);
@@ -567,6 +699,10 @@ bool VideoPass::set_gpu_picture(const media::Picture& picture) {
 
 bool VideoPass::set_picture(const media::Picture& picture) {
     if (picture.width == 0 || picture.height == 0 || (picture.bits != 8 && (picture.bits < 9 || picture.bits > 16))) return false;
+    // The picture before is done with (its frame finished): its counts are there to be read. A picture
+    // that is not PQ starts the measuring again.
+    read_histogram();
+    if (picture.transfer != media::ColorTransfer::pq) detector_.reset();
     if (picture.on_gpu) {
         if (!set_gpu_picture(picture)) return false;
         width_ = picture.width;
@@ -756,6 +892,7 @@ void VideoPass::record_convert(VkCommandBuffer commands) {
     vkCmdDraw(commands, 3, 1, 0, 0);
     vkCmdEndRenderPass(commands);
     converted_ready_ = true;
+    if (measure_ && compute_ != VK_NULL_HANDLE && transfer_ == media::ColorTransfer::pq) record_measure(commands);
 }
 
 std::optional<VideoPass::GpuWait> VideoPass::gpu_wait() const {
@@ -802,7 +939,7 @@ void VideoPass::record_draw(VkCommandBuffer commands, VkExtent2D target) {
     constants.stretch[0] = stretch_x;
     constants.stretch[1] = stretch_y;
     constants.stretch[2] = transfer_ == media::ColorTransfer::pq ? 1.0F : transfer_ == media::ColorTransfer::hlg ? 2.0F : 0.0F;
-    constants.stretch[3] = static_cast<float>(hdr_peak_nits_);
+    constants.stretch[3] = static_cast<float>(hdr_peak_measured() && detector_.peak_nits() ? *detector_.peak_nits() : hdr_peak_nits_);
     constants.options[0] = target_encodes_ ? 1.0F : 0.0F;
     vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
     vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0, 1, &draw_set_, 0, nullptr);
@@ -813,7 +950,9 @@ void VideoPass::record_draw(VkCommandBuffer commands, VkExtent2D target) {
 std::string VideoPass::describe() const {
     return std::format("{}x{}, {} bits{}, {} range, {}{}, drawn at {}x{}{}{}{}", width_, height_, bits_, narrowed_ ? " (shown as 8)" : "", full_range_ ? "full" : "limited",
                        matrix_ == media::ColorMatrix::bt2020 ? "BT.2020" : matrix_ == media::ColorMatrix::bt601 ? "BT.601" : "BT.709",
-                       transfer_ == media::ColorTransfer::pq    ? std::format(", HDR (PQ) tone mapped from {:.0f} cd/m² to SDR", hdr_peak_nits_)
+                       transfer_ == media::ColorTransfer::pq    ? (hdr_peak_measured() ? (detector_.peak_nits() ? std::format(", HDR (PQ) tone mapped to SDR from each picture's measured peak (now {:.0f} cd/m²)", *detector_.peak_nits())
+                                                                                                       : std::string(", HDR (PQ) tone mapped to SDR from each picture's measured peak"))
+                                                                                  : std::format(", HDR (PQ) tone mapped from {:.0f} cd/m² to SDR", hdr_peak_nits_))
                        : transfer_ == media::ColorTransfer::hlg ? std::string(", HDR (HLG) tone mapped to SDR")
                                                                  : std::string(),
                        placement_.width, placement_.height,

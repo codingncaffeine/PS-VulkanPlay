@@ -373,9 +373,18 @@ public sealed class SettingsViewModel : Observable
         }
     }
 
-    public string HdrPeakText => _settings.HdrPeakNits == AppSettings.DefaultHdrPeakNits
-        ? $"{AppSettings.DefaultHdrPeakNits} cd/m² (the default)"
-        : $"{_settings.HdrPeakNits} cd/m²";
+    public string HdrPeakText => HdrPeakMeasured ? "Measured from each picture (the default)" : $"{_settings.HdrPeakNits} cd/m²";
+
+    /// <summary>Each HDR picture measured, rather than the brightness on the slider.</summary>
+    public bool HdrPeakMeasured
+    {
+        get => _settings.HdrPeakMeasured ?? _settings.HdrPeakNits == AppSettings.DefaultHdrPeakNits;
+        set
+        {
+            Keep(() => _settings.HdrPeakMeasured = value, nameof(HdrPeakMeasured));
+            Changed(nameof(HdrPeakText));
+        }
+    }
 
     public string CushionText => !_settings.Pacing ? "Off with even pacing" : _settings.CushionMs == 0 ? "None: the least delay" : $"{_settings.CushionMs} ms of added delay";
 

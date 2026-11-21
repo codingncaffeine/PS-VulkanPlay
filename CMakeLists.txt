@@ -97,6 +97,7 @@ add_library(psvp_media STATIC
     src/media/delta_e.cpp
     src/media/frame_pacer.cpp
     src/media/present_clock.cpp
+    src/media/peak_detect.cpp
     src/media/frame_refs.cpp
     src/media/h264_refs.cpp
     src/media/gpu_device.cpp
@@ -170,6 +171,7 @@ if(PSVP_BUILD_APP)
     psvp_shader(src/render/shaders/video.vert video_vert kVideoVertexShader)
     psvp_shader(src/render/shaders/video.frag video_frag kVideoFragmentShader)
     psvp_shader(src/render/shaders/convert.frag convert_frag kConvertFragmentShader)
+    psvp_shader(src/render/shaders/peak.comp peak_comp kPeakComputeShader)
     psvp_shader(src/render/shaders/overlay.vert overlay_vert kOverlayVertexShader)
     psvp_shader(src/render/shaders/overlay.frag overlay_frag kOverlayFragmentShader)
     get_property(PSVP_SHADER_FILES GLOBAL PROPERTY PSVP_SHADERS)

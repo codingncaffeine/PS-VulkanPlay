@@ -106,7 +106,8 @@ struct PlayOptions {
     bool stats = false;
     // How bright an HDR picture is taken to be at its brightest, in cd/m² (the console's streams do
     // not say): what is brighter than SDR white is fitted between it and that (media/tone_map.h).
-    int hdr_peak_nits = 1000;
+    // Nothing: each picture is measured (media/peak_detect.h).
+    std::optional<int> hdr_peak_nits;
     // How the picture is brought to the window's size (media/scaler.h), and whether banding is
     // smoothed out of it first.
     // Nothing: as render::WindowOptions decides by the device.

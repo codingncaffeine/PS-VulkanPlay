@@ -1,0 +1,33 @@
+#version 450
+// How bright an HDR picture is (media/peak_detect.h): each sample's brightest channel, as the PQ
+// signal it is in the converted picture, counted into 1024 bins from 0 to 1. Counted per group of
+// 16 x 16 samples in shared memory first, then added to the picture's histogram.
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(set = 0, binding = 0) uniform sampler2D picture;  // convert.frag's output, read sample by sample
+layout(std430, set = 0, binding = 1) buffer Histogram {
+    uint bins[1024];
+} histogram;
+
+layout(push_constant) uniform Constants {
+    ivec2 size;  // the picture's, in samples
+} constants;
+
+shared uint group_bins[1024];
+
+void main() {
+    uint index = gl_LocalInvocationIndex;
+    for (uint i = index; i < 1024u; i += 256u) group_bins[i] = 0u;
+    barrier();
+    ivec2 at = ivec2(gl_GlobalInvocationID.xy);
+    if (all(lessThan(at, constants.size))) {
+        vec3 rgb = texelFetch(picture, at, 0).rgb;
+        // media::PeakDetector::bin_of.
+        float signal = clamp(max(rgb.r, max(rgb.g, rgb.b)), 0.0, 1.0);
+        atomicAdd(group_bins[min(uint(floor(signal * 1024.0)), 1023u)], 1u);
+    }
+    barrier();
+    for (uint i = index; i < 1024u; i += 256u) {
+        if (group_bins[i] != 0u) atomicAdd(histogram.bins[i], group_bins[i]);
+    }
+}
