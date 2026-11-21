@@ -253,4 +253,5 @@ public sealed class SettingsViewModel : Observable
 
     public bool WakeFirst { get => _settings.WakeFirst; set => Keep(() => _settings.WakeFirst = value, nameof(WakeFirst)); }
     public bool RestAfter { get => _settings.RestAfter; set => Keep(() => _settings.RestAfter = value, nameof(RestAfter)); }
+    public bool ShowStats { get => _settings.ShowStats; set => Keep(() => _settings.ShowStats = value, nameof(ShowStats)); }
 }

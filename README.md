@@ -36,7 +36,8 @@ Add a console, sign in with PSN and type the eight digits the console shows.
 - playing: the console's picture in a window, its sound, and what a controller does (buttons, sticks,
   triggers, touchpad, motion). The picture keeps going over lost frames and is shown evenly; the sound bridges
   short stalls of the network, and a cushion of delay can be asked for that hides the short pauses of a
-  wireless network
+  wireless network. F3 (or "Show statistics while playing" in the app) shows the picture's size and rate,
+  the decoding time and the console's view of the connection over the picture
 - a DualSense on USB gets what a PS5 sends for it: haptics on the controller's own sound device, the effects
   of its adaptive triggers, the light bar's color; other controllers get rumble
 

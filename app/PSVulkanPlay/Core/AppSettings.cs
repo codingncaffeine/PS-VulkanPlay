@@ -19,6 +19,7 @@ public sealed class AppSettings
     public string BackRight { get; set; } = "";
     public bool WakeFirst { get; set; } = true;
     public bool RestAfter { get; set; }
+    public bool ShowStats { get; set; }                 // the statistics over the picture from the start (F3 at any time)
     public string Theme { get; set; } = "system";       // "system", or a look's id (Theming/Themes.cs)
 
     public const int DefaultLossCeiling = 5;
@@ -49,6 +50,7 @@ public sealed class AppSettings
             BackRight = Buttons.Contains(BackRight) ? BackRight : "",
             WakeFirst = WakeFirst,
             RestAfter = RestAfter,
+            ShowStats = ShowStats,
             // An id of an earlier version, or of a look that is gone, follows the desktop.
             Theme = Theming.Themes.Ids.Contains(Theme) ? Theme : Theming.Themes.FollowDesktop,
         };
@@ -72,6 +74,7 @@ public sealed class AppSettings
         arguments.AddRange(["--haptics-volume", s.HapticsVolume.ToString()]);
         if (s.BackLeft.Length > 0) arguments.AddRange(["--back-left", s.BackLeft]);
         if (s.BackRight.Length > 0) arguments.AddRange(["--back-right", s.BackRight]);
+        if (s.ShowStats) arguments.Add("--stats");
         if (s.RestAfter) arguments.Add("--rest");
         return arguments;
     }

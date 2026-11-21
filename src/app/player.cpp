@@ -220,9 +220,22 @@ public:
         const std::lock_guard lock(picture_mutex_);
         if (!std::exchange(fresh_, false)) return std::nullopt;
         ++shown_;
+        if (latest_) {
+            stats_width_ = latest_->width;
+            stats_height_ = latest_->height;
+        }
         return latest_;
     }
+    // The statistics over the picture, while they are shown: worked out again twice a second.
+    std::vector<std::string> stats_lines();
+    void show_stats(bool shown) { stats_shown_.store(shown); }
     void on_event(const SDL_Event& event);
+
+    // ---- on the session's thread ----
+    void on_quality(const proto::ConnectionQuality& quality) {
+        const std::lock_guard lock(stats_mutex_);
+        quality_ = quality;
+    }
 
     // ---- from any thread ----
     void wait_for_stream_or(const std::atomic<bool>& done) const {
@@ -296,6 +309,18 @@ private:
     std::mutex picture_mutex_;
     std::optional<media::Picture> latest_;
     bool fresh_ = false;
+
+    // For the statistics over the picture. The counts are the decoding thread's, read by the window's.
+    std::atomic<bool> stats_shown_{false};
+    std::atomic<std::uint64_t> stats_decoded_{0}, stats_decode_microseconds_{0}, stats_lost_{0};
+    std::mutex stats_mutex_;
+    std::optional<proto::ConnectionQuality> quality_;  // under stats_mutex_
+    std::string stats_codec_;                          // under stats_mutex_
+    // On the window's thread.
+    unsigned stats_width_ = 0, stats_height_ = 0;
+    std::vector<std::string> stats_cache_;
+    std::optional<Clock::time_point> stats_at_;
+    std::uint64_t stats_shown_at_ = 0, stats_decoded_at_ = 0, stats_microseconds_at_ = 0;
     std::uint64_t shown_ = 0, replaced_ = 0;
 
     // Sound: only the session's thread touches these.
@@ -387,6 +412,10 @@ void Player::decode_loop() {
             } else if (auto opened = media::VideoDecoder::open(*codec, job.header)) {
                 decoder_.emplace(std::move(*opened));
                 decoder_text_ = decoder_->description();
+                {
+                    const std::lock_guard stats_lock(stats_mutex_);
+                    stats_codec_ = *codec == media::VideoCodec::h264 ? "H.264" : "HEVC";
+                }
                 log::info("play: decoding with {}", decoder_text_);
             } else {
                 decoder_error_ = opened.error();
@@ -398,6 +427,7 @@ void Player::decode_loop() {
             continue;
         }
         lost_since_ += job.lost_before;
+        stats_lost_.fetch_add(job.lost_before, std::memory_order_relaxed);
         longest_arrival_since_ms_ = std::max(longest_arrival_since_ms_, job.since_arrival_ms);
         const auto began = Clock::now();
         auto decoded = decoder_->decode(job.index, job.data);
@@ -418,6 +448,9 @@ void Player::decode_loop() {
             continue;
         }
         const auto ready = Clock::now();
+        stats_decoded_.fetch_add(1, std::memory_order_relaxed);
+        stats_decode_microseconds_.fetch_add(static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(ready - began).count()),
+                                             std::memory_order_relaxed);
         longest_behind_since_ms_ = std::max(longest_behind_since_ms_, std::chrono::duration<double, std::milli>(ready - job.arrived).count());
         if (pacer_) {
             std::unique_lock lock(jobs_mutex_);
@@ -632,8 +665,65 @@ void Player::play_haptics(const transport::SoundFrame& frame) {
     if (pad_ != nullptr && SDL_RumbleGamepad(pad_, static_cast<Uint16>(peak.left * 257), static_cast<Uint16>(peak.right * 257), kHapticsRumbleLifeMs)) ++haptics_rumbled_;
 }
 
+std::vector<std::string> Player::stats_lines() {
+    if (!stats_shown_.load()) {
+        stats_at_.reset();
+        stats_cache_.clear();
+        return {};
+    }
+    const auto now = Clock::now();
+    if (stats_at_ && now - *stats_at_ < std::chrono::milliseconds(500)) return stats_cache_;
+    std::uint64_t shown = 0;
+    {
+        const std::lock_guard lock(picture_mutex_);
+        shown = shown_;
+    }
+    const std::uint64_t decoded = stats_decoded_.load(std::memory_order_relaxed);
+    const std::uint64_t microseconds = stats_decode_microseconds_.load(std::memory_order_relaxed);
+    std::optional<proto::ConnectionQuality> quality;
+    std::string codec;
+    {
+        const std::lock_guard lock(stats_mutex_);
+        quality = quality_;
+        codec = stats_codec_;
+    }
+    std::vector<std::string> lines{"Statistics (F3 hides them)"};
+    std::string picture = stats_width_ == 0 ? std::string("No picture yet") : std::format("{}\u00d7{}", stats_width_, stats_height_);
+    if (!codec.empty()) picture += " " + codec;
+    if (stats_at_) {
+        const double seconds = std::chrono::duration<double>(now - *stats_at_).count();
+        picture += std::format(" \u00b7 {:.0f} pictures a second", static_cast<double>(shown - stats_shown_at_) / seconds);
+        if (decoded > stats_decoded_at_) {
+            lines.push_back(picture);
+            picture.clear();
+            lines.push_back(std::format("Decoding: {:.1f} ms a picture", static_cast<double>(microseconds - stats_microseconds_at_) /
+                                                                         static_cast<double>(decoded - stats_decoded_at_) / 1000.0));
+        }
+    }
+    if (!picture.empty()) lines.push_back(picture);
+    if (quality && quality->target_bitrate) {
+        lines.push_back(std::format("Console: aims at {:.1f} Mbit/s \u00b7 round trip {:.0f} \u00b7 loss {}",
+                                    static_cast<double>(*quality->target_bitrate) / 1e6, quality->rtt.value_or(0.0), quality->loss.value_or(0)));
+    } else {
+        lines.emplace_back("Console: no view of the connection yet");
+    }
+    lines.push_back(std::format("Frames lost on the way: {}", stats_lost_.load(std::memory_order_relaxed)));
+    stats_at_ = now;
+    stats_shown_at_ = shown;
+    stats_decoded_at_ = decoded;
+    stats_microseconds_at_ = microseconds;
+    stats_cache_ = lines;
+    return lines;
+}
+
 void Player::on_event(const SDL_Event& event) {
     using transport::Button;
+    // F3, as in many games: the statistics over the picture, and away again.
+    if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_F3 && !event.key.repeat) {
+        stats_shown_.store(!stats_shown_.load());
+        render::wake_window();
+        return;
+    }
     switch (event.type) {
     case SDL_EVENT_GAMEPAD_ADDED:
         if (pad_ == nullptr) {
@@ -901,6 +991,8 @@ int run_player(SessionPlan plan, const PlayOptions& options) {
         plan.controller = [&](transport::Buttons& buttons, transport::InputState& state) { return player.controller(buttons, state); };
         plan.wants_keyframe = [&] { return player.wants_keyframe(); };
         plan.on_console_data = [&](const std::vector<transport::ConsoleData>& data, std::chrono::microseconds) { player.on_console_data(data); };
+        plan.on_quality = [&](const proto::ConnectionQuality& quality) { player.on_quality(quality); };
+        player.show_stats(options.stats);
         plan.stop = [&] { return stop.load(); };
         std::thread session([&] {
             session_code = run_session(plan);
@@ -917,6 +1009,7 @@ int run_player(SessionPlan plan, const PlayOptions& options) {
             window.next_picture = [&] { return player.next_picture(); };
             window.finished = [&] { return done.load(); };
             window.on_event = [&](const SDL_Event& event) { player.on_event(event); };
+            window.overlay_lines = [&] { return player.stats_lines(); };
             if (const auto file = window_place_file()) {
                 window.place = load_window_place(*file);
                 window.on_place = [file = *file](const WindowPlace& place) {

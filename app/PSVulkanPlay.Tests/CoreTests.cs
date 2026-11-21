@@ -60,10 +60,10 @@ public class CoreTests
         var settings = new AppSettings
         {
             Resolution = 720, FramesPerSecond = 30, Codec = "hdr", BitrateKbps = 20000, CushionMs = 20, Controller = "dualsense",
-            HapticsVolume = 60, BackLeft = "cross", BackRight = "r3", WakeFirst = false, RestAfter = true, LossCeiling = 100,
+            HapticsVolume = 60, BackLeft = "cross", BackRight = "r3", WakeFirst = false, RestAfter = true, LossCeiling = 100, ShowStats = true,
         };
         Assert.Equal(["play", "Den", "--resolution", "720", "--fps", "30", "--codec", "hdr", "--bitrate", "20000", "--controller", "dualsense", "--cushion", "20",
-                      "--loss-ceiling", "100", "--haptics-volume", "60", "--back-left", "cross", "--back-right", "r3", "--rest"],
+                      "--loss-ceiling", "100", "--haptics-volume", "60", "--back-left", "cross", "--back-right", "r3", "--stats", "--rest"],
                      settings.PlayArguments("Den", ""));
     }
 

@@ -64,6 +64,8 @@ for patch in "red 191 0 1" "green 0 191 0" "blue 0 0 191"; do
 done
 n=$(count 56 56 56)
 between "$n" $((349 * 46 * 46)) $((349 * 48 * 48)) && ok "on the screen: $n pixels of the clip's gray" || fail "gray: '$n' pixels"
+# The control for the statistics below: without --stats none of their colors is drawn.
+check "without --stats no statistics are on the screen" [ "$(count 236 239 244) $(count 240 112 45)" = "0 0" ]
 # The clip moves: the white blocks are not where they were a second ago.
 cp "$PSVP_TEST_FB" "$work/screen-1.xwd"; sleep 1
 cmp -s "$PSVP_TEST_FB" "$work/screen-1.xwd" && fail "the screen did not change in a second" || ok "the screen changed within a second: the clip moves"
@@ -150,6 +152,20 @@ check "a cushion is 50 ms at most" sh -c "! '$app' play 'Living Room' --cushion 
 check "and is part of the pacing: not without it" sh -c "! '$app' play 'Living Room' --cushion 20 --pacing off > /dev/null 2>&1"
 check "the loss ceiling is a percent: 100 at most" sh -c "! '$app' play 'Living Room' --loss-ceiling 101 > /dev/null 2>&1"
 check "a back button takes a button's name and nothing else" sh -c "! '$app' play 'Living Room' --back-left lever > /dev/null 2>&1"
+
+echo "the statistics over the picture, asked for with --stats: drawn in their panel at the top left"
+start_mock stats --kind ps5 --clip 416x240 --frame-ms 16 --media-ms 10
+"$app" play "Living Room" --seconds 4 --stats > "$work/stats.out" 2> "$work/stats.err" &
+pid=$!
+for _ in $(seq 80); do grep -aq "first picture shown" "$work/stats.err" 2>/dev/null && break; kill -0 $pid 2>/dev/null || break; sleep 0.1; done
+sleep 1.5   # the rates are worked out twice a second: by now they are there
+text=$(count 236 239 244); title=$(count 240 112 45)
+between "$text" 300 60000 && ok "the statistics' text is on the screen: $text pixels of its color" || fail "statistics text: '$text' pixels of (236,239,244)"
+between "$title" 100 20000 && ok "and their title in the accent color: $title pixels" || fail "statistics title: '$title' pixels of (240,112,45)"
+wait $pid; rc=$?
+sleep 0.3; stop_mock
+[ $rc -eq 0 ] && ok "play --stats: exit 0" || fail "play --stats: exit $rc: $(tail -3 "$work/stats.out")"
+check "no error was logged with the statistics shown" lacks "$work/stats.err" " ERROR "
 
 echo "a session that does not start opens no window"
 start_mock in-use --kind ps5 --in-use yes

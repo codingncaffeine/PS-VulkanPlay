@@ -118,8 +118,12 @@ add_library(psvp_core STATIC
     src/app/paths.cpp
     src/app/controller_list.cpp
     src/app/controller_presses.cpp
-    src/app/window_place.cpp)
+    src/app/window_place.cpp
+    src/overlay/text.cpp)
 target_include_directories(psvp_core PUBLIC src "${CMAKE_CURRENT_BINARY_DIR}/generated")
+# The glyph atlas the stream window draws its text with (made by tools/glyph-atlas), inside the program.
+include(cmake/EmbedFile.cmake)
+psvp_embed("${CMAKE_CURRENT_SOURCE_DIR}/assets/overlay/inter-medium-atlas.bin" "${CMAKE_CURRENT_BINARY_DIR}/generated/psvp/overlay_atlas.inc")
 target_link_libraries(psvp_core PUBLIC psvp_proto psvp_net psvp_media)
 psvp_setup_target(psvp_core)
 
@@ -138,14 +142,16 @@ if(PSVP_BUILD_APP)
     endfunction()
     psvp_shader(src/render/shaders/video.vert video_vert kVideoVertexShader)
     psvp_shader(src/render/shaders/video.frag video_frag kVideoFragmentShader)
+    psvp_shader(src/render/shaders/overlay.vert overlay_vert kOverlayVertexShader)
+    psvp_shader(src/render/shaders/overlay.frag overlay_frag kOverlayFragmentShader)
     get_property(PSVP_SHADER_FILES GLOBAL PROPERTY PSVP_SHADERS)
 
     add_library(psvp_render STATIC
+        src/render/overlay_pass.cpp
         src/render/video_pass.cpp
         src/render/vk_window.cpp
         ${PSVP_SHADER_FILES})
     # The window's icon, in two sizes, inside the program: it needs no installed file to show it.
-    include(cmake/EmbedFile.cmake)
     psvp_embed("${CMAKE_CURRENT_SOURCE_DIR}/assets/icons/window-256.bmp" "${CMAKE_CURRENT_BINARY_DIR}/generated/psvp/window_icon_256.inc")
     psvp_embed("${CMAKE_CURRENT_SOURCE_DIR}/assets/icons/window-48.bmp" "${CMAKE_CURRENT_BINARY_DIR}/generated/psvp/window_icon_48.inc")
     target_link_libraries(psvp_render PUBLIC psvp_core PRIVATE SDL3::SDL3 Vulkan::Vulkan)

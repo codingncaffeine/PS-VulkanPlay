@@ -48,6 +48,8 @@ struct SessionPlan {
     // The frames that are ready, as often as there are any; the stream information once it arrived.
     std::function<void(proto::transport::MediaOutput&, const std::optional<proto::StreamInfo>&)> on_media;
     std::function<void(const std::vector<proto::transport::ConsoleData>&, std::chrono::microseconds)> on_console_data;
+    // The console's view of the connection, each time it sends one (about every 1.2 s).
+    std::function<void(const proto::ConnectionQuality&)> on_quality;
     // The controller as it is now; true when it changed since the last call. Asked every few milliseconds.
     std::function<bool(proto::transport::Buttons&, proto::transport::InputState&)> controller;
     // True when the console is to be asked for a frame that needs no earlier one. Asked every few milliseconds.
@@ -83,6 +85,8 @@ struct PlayOptions {
     // What the two back buttons of a controller that has them (a DualSense Edge) are to the
     // console: one of its buttons each, or nothing.
     std::optional<proto::transport::Button> back_left, back_right;
+    // The statistics over the picture from the start (F3 shows and hides them at any time).
+    bool stats = false;
 };
 // The part of 'play' that has a window: the program that has one sets it before it runs a command.
 using PlayRunner = int (*)(SessionPlan plan, const PlayOptions& options);

@@ -34,6 +34,10 @@ whatever FFmpeg the system has).
 | [Tmds.DBus.Protocol](https://github.com/tmds/Tmds.DBus) | MIT |
 | [Inter](https://rsms.me/inter/) (the app's typeface) | SIL Open Font License 1.1 |
 
+The stream program draws its text with glyphs of Inter Medium made into an image by
+`tools/glyph-atlas` (SIL Open Font License 1.1; the license is `assets/overlay/Inter-LICENSE.txt` in the
+source repository).
+
 ## Where the knowledge of the protocol comes from
 
 See `NOTICE`: Chiaki and chiaki-ng, both under the GNU Affero General Public License, version 3. No

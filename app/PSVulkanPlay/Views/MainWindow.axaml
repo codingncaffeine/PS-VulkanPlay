@@ -190,6 +190,11 @@
                             <TextBlock Text="Send the console to rest mode when the session ends" VerticalAlignment="Center" />
                             <ToggleSwitch Grid.Column="1" IsChecked="{Binding RestAfter}" OnContent="" OffContent="" MinWidth="0" />
                         </Grid>
+                        <Border Classes="rule" />
+                        <Grid ColumnDefinitions="*,Auto">
+                            <StackPanel VerticalAlignment="Center"><TextBlock Text="Show statistics while playing" /><TextBlock Classes="secondary small" Text="The picture's size and rate, decoding time and the console's view of the connection, over the picture. F3 shows and hides them at any time." /></StackPanel>
+                            <ToggleSwitch Grid.Column="1" IsChecked="{Binding ShowStats}" OnContent="" OffContent="" MinWidth="0" />
+                        </Grid>
                     </StackPanel>
                 </Border>
 

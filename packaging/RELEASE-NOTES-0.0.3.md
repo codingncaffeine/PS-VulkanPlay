@@ -7,6 +7,7 @@ The first pre-release of PS VulkanPlay: a Remote Play client for PS5 and PS4 con
 - **Use it from the couch** — A controller moves through the whole app: the direction buttons or the left stick, accept and back, the shoulder buttons for its pages
 - **Play at up to 1080p and 60 pictures a second** — H.264 or HEVC in a window drawn with Vulkan, with the console's sound
 - **A picture that keeps going** — Lost frames do not freeze it, pictures are shown evenly, and an optional cushion of delay hides the short pauses of a wireless network
+- **Statistics over the picture** — F3 shows the picture's size and rate, the decoding time and how the console judges the connection; a setting shows them from the start
 - **DualSense features** — Haptics, adaptive trigger effects and the light bar's color over USB, touchpad and motion, and the battery level in the app; the back buttons of a DualSense Edge can each be given a button
 - **Wake and rest** — Wake a console from rest mode when Play is pressed, and send it back there when the session ends
 - **Take over from Chiaki** — `ps-vulkanplay import` brings along the consoles registered in Chiaki or chiaki-ng

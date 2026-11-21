@@ -16,6 +16,7 @@
 
 #include "app/log.h"
 #include "psvp/version.h"
+#include "render/overlay_pass.h"
 #include "render/video_pass.h"
 
 namespace psvp::render {
@@ -137,6 +138,10 @@ private:
 
     VideoPass video_;
     bool picture_refused_ = false;  // said once
+    OverlayPass overlay_;
+    const WindowOptions* options_ = nullptr;
+    std::vector<std::string> overlay_lines_;  // as laid out last
+    VkExtent2D overlay_extent_{};             // the size they were laid out for
 };
 
 // The event that wakes the window's wait; 0 until a window registered it.
@@ -293,6 +298,7 @@ bool Window::create_frame_objects() {
 void Window::destroy_swapchain() {
     if (device_ == VK_NULL_HANDLE) return;
     video_.destroy_pipeline();
+    overlay_.destroy_pipeline();
     for (const VkSemaphore semaphore : render_done_) vkDestroySemaphore(device_, semaphore, nullptr);
     render_done_.clear();
     for (const VkFramebuffer framebuffer : framebuffers_) vkDestroyFramebuffer(device_, framebuffer, nullptr);
@@ -426,6 +432,7 @@ bool Window::create_swapchain() {
     pass.pDependencies = &dependency;
     if (!check(vkCreateRenderPass(device_, &pass, nullptr, &render_pass_), "vkCreateRenderPass")) return false;
     if (!video_.create_pipeline(render_pass_, is_srgb_format(format_))) return false;
+    if (!overlay_.create_pipeline(render_pass_, is_srgb_format(format_))) return false;
 
     std::uint32_t actual_count = 0;
     vkGetSwapchainImagesKHR(device_, swapchain_, &actual_count, nullptr);
@@ -481,6 +488,15 @@ bool Window::draw_frame(bool& presented, const media::Picture* fresh) {
     if (fresh != nullptr && !video_.set_picture(*fresh) && !std::exchange(picture_refused_, true)) {
         log::error("render: a picture of {}x{} with {} bits cannot be shown", fresh->width, fresh->height, fresh->bits);
     }
+    // What lies over the picture, laid out again only when it or the window's size changed.
+    if (options_ != nullptr && options_->overlay_lines) {
+        std::vector<std::string> lines = options_->overlay_lines();
+        if (lines != overlay_lines_ || extent_.width != overlay_extent_.width || extent_.height != overlay_extent_.height) {
+            overlay_.set_quads(overlay::stats_panel(lines, static_cast<float>(extent_.width), static_cast<float>(extent_.height)));
+            overlay_lines_ = std::move(lines);
+            overlay_extent_ = extent_;
+        }
+    }
 
     std::uint32_t index = 0;
     const VkResult acquired =
@@ -500,6 +516,7 @@ bool Window::draw_frame(bool& presented, const media::Picture* fresh) {
     if (!check(vkBeginCommandBuffer(command_buffer_, &begin), "vkBeginCommandBuffer")) return false;
 
     video_.record_upload(command_buffer_);
+    overlay_.record_upload(command_buffer_);
 
     // An sRGB swapchain encodes what we write, so it gets the linear value of the same color.
     // Beside a picture the window is black, as a screen is beside a film.
@@ -519,6 +536,7 @@ bool Window::draw_frame(bool& presented, const media::Picture* fresh) {
     pass.pClearValues = &clear;
     vkCmdBeginRenderPass(command_buffer_, &pass, VK_SUBPASS_CONTENTS_INLINE);
     video_.record_draw(command_buffer_, extent_);
+    overlay_.record_draw(command_buffer_, extent_);
     vkCmdEndRenderPass(command_buffer_);
     if (!check(vkEndCommandBuffer(command_buffer_), "vkEndCommandBuffer")) return false;
 
@@ -556,6 +574,7 @@ void Window::destroy() {
         vkDeviceWaitIdle(device_);
         destroy_swapchain();
         video_.destroy();
+        overlay_.destroy();
         if (swapchain_ != VK_NULL_HANDLE) vkDestroySwapchainKHR(device_, swapchain_, nullptr);
         if (frame_done_ != VK_NULL_HANDLE) vkDestroyFence(device_, frame_done_, nullptr);
         if (image_available_ != VK_NULL_HANDLE) vkDestroySemaphore(device_, image_available_, nullptr);
@@ -663,7 +682,7 @@ int Window::open(const WindowOptions& options) {
                                 "an updated graphics driver usually provides it.",
                                 PSVP_NAME, version_text(kMinimumApi)));
     }
-    if (!create_device() || !create_frame_objects() || !video_.create(physical_, device_)) {
+    if (!create_device() || !create_frame_objects() || !video_.create(physical_, device_) || !overlay_.create(physical_, device_)) {
         return fail(kExitVulkanFailed, PSVP_NAME " cannot start",
                     std::format("The graphics device {} could not be set up. The log has the details.", device_name_));
     }
@@ -671,6 +690,7 @@ int Window::open(const WindowOptions& options) {
 }
 
 int Window::run(const WindowOptions& options) {
+    options_ = &options;
     if (const int code = open(options); code != 0) return code;
     if (wake_event.load() == 0) wake_event.store(SDL_RegisterEvents(1));
 

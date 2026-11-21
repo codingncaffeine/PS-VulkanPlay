@@ -1074,6 +1074,7 @@ int run_session_here(const SessionPlan& plan) {
     transport::StreamCounters minute_from;
     std::uint64_t repeats_said = 0;
     std::uint64_t resends_said = 0;
+    std::optional<proto::ConnectionQuality> quality_handed;
     auto next_minute = Clock::now() + std::chrono::minutes(1);
     // The frames that are ready leave the stream at once; they are kept only when a dump was asked for.
     std::uint64_t video_bytes = 0;
@@ -1125,6 +1126,10 @@ int run_session_here(const SessionPlan& plan) {
                 send_all(stream.on_datagram((*datagram)->data, now));
                 // The console lowers the picture's bitrate, and with it what a person sees, when it thinks the
                 // connection is poor: when its view moves, the log says so, with the time.
+                if (plan.on_quality && stream.quality() && stream.quality() != quality_handed) {
+                    quality_handed = stream.quality();
+                    plan.on_quality(*quality_handed);
+                }
                 if (const auto& quality = stream.quality(); quality && connection_view_changed(view_said, *quality)) {
                     view_said = *quality;
                     log::debug("stream: {:.1f} s: the console's view of the connection: target bitrate {} kbit/s, round-trip value {:.1f}, loss {}",
@@ -1399,7 +1404,7 @@ PlayRunner play_runner = nullptr;
 // The stream in a window, with its sound and a controller: what the program is for.
 int command_play(std::span<const std::string_view> args) {
     const Parsed parsed = parse(args, {"--host", "--seconds", "--passcode", "--resolution", "--fps", "--bitrate", "--codec", "--tap", "--frames", "--controller", "--pacing", "--cushion", "--haptics-volume", "--back-left", "--back-right", "--loss-ceiling", "--ack-copies"},
-                                {"--rest", "--wake"}, 1);
+                                {"--rest", "--wake", "--stats"}, 1);
     if (!parsed.error.empty()) return usage("play: {}", parsed.error);
     SessionPlan plan;
     // What a console sends when nothing else is asked for: 1080p, 60 pictures a second, HEVC from a PS5.
@@ -1436,6 +1441,7 @@ int command_play(std::span<const std::string_view> args) {
         *target = proto::transport::button_named(*text);
         if (!*target) return usage("play: {} takes a button's name, as --tap does (cross, circle, l1, r3, options ...)", name);
     }
+    options.stats = parsed.flag("--stats");
     if (const auto text = parsed.option("--pacing")) {
         if (*text != "on" && *text != "off") return usage("play: --pacing is on or off");
         options.pacing = *text == "on";
@@ -1744,7 +1750,7 @@ std::string commands_help() {
         "  {0} play CONSOLE [--host ADDRESS] [--passcode DIGITS] [--resolution 360|540|720|1080] [--fps 30|60]\n"
         "          [--bitrate KBPS] [--codec h264|hevc|hdr] [--controller auto|dualsense|dualshock4]\n"
         "          [--pacing on|off] [--cushion 0-50] [--haptics-volume 0-100] [--back-left BUTTON]\n"
-        "          [--back-right BUTTON] [--loss-ceiling PERCENT] [--ack-copies 0-2] [--wake] [--rest]\n"
+        "          [--back-right BUTTON] [--loss-ceiling PERCENT] [--ack-copies 0-2] [--stats] [--wake] [--rest]\n"
         "      play: the console's picture in a window, its sound, and a controller that is plugged in\n"
         "      or paired; closing the window ends the session (--rest then sends the console to rest mode).\n"
         "      --wake wakes a console that is in rest mode first, and asks one that takes no session yet\n"
@@ -1762,7 +1768,8 @@ std::string commands_help() {
         "      for a burst on a wireless network as for a slow line; 100 tells it all; --ack-copies says\n"
         "      how often each acknowledgment of the console's messages is sent again, 40 and 120 ms later\n"
         "      (2 unless said): one that is lost makes the console wait 200 ms, which it takes as the\n"
-        "      round trip and answers with a lower bitrate\n"
+        "      round trip and answers with a lower bitrate; --stats shows the statistics over the picture\n"
+        "      from the start (F3 shows and hides them at any time)\n"
         "  {0} decode FOLDER [--lose FRAMES]\n"
         "      decode the picture and the sound that 'session --dump FOLDER' kept, and say what came out;\n"
         "      --lose 100,250-255 leaves those frames out, as if they had not arrived, and compares the\n"

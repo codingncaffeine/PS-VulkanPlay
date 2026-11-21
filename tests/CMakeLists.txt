@@ -16,6 +16,7 @@ add_executable(psvp_tests
     unit/test_input.cpp
     unit/test_json.cpp
     unit/test_media.cpp
+    unit/test_overlay.cpp
     unit/test_controller_list.cpp
     unit/test_controller_presses.cpp
     unit/test_paths.cpp

@@ -7,6 +7,8 @@
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <string>
+#include <vector>
 
 #include "app/window_place.h"
 #include "media/video_decoder.h"
@@ -37,6 +39,9 @@ struct WindowOptions {
     // With a picture source the window draws when there is a new picture or the window
     // changed, and otherwise waits this long at most before it asks again.
     std::chrono::milliseconds ask_every{100};
+    // Lines drawn over the picture in a panel at the top left (the statistics), asked before every
+    // frame on the window's thread; none: no panel. It must not wait for anything.
+    std::function<std::vector<std::string>()> overlay_lines;
 };
 
 // From any thread: there is a new picture, or the answer of `finished` changed. The window
