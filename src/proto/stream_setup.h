@@ -96,6 +96,13 @@ struct StreamCounters {
     std::uint64_t acks = 0;               // acknowledgments of the console's messages, once the stream runs
     std::uint64_t ack_copies = 0;         // the same sent again a little later
     std::uint64_t console_repeats = 0;    // the console's messages that arrived again: an acknowledgment did not reach it
+    // Our own messages (heartbeats and the like) once the stream runs: how long the console took to
+    // acknowledge them, from their first sending, and how often one was sent again for want of it.
+    std::uint64_t our_acknowledged = 0;
+    std::uint64_t our_ack_wait_us_total = 0;
+    std::uint64_t our_ack_wait_us_most = 0;
+    std::uint64_t our_ack_waits_over_150ms = 0;
+    std::uint64_t our_resends = 0;
     std::uint64_t input_states = 0;       // input state packets sent
     std::uint64_t input_events = 0;       // button, trigger and touch changes told to the console
     std::uint64_t history_packets = 0;    // input history packets sent, repeats of the last one included
@@ -162,6 +169,8 @@ public:
     };
     static constexpr std::size_t kMaxOtherSound = 32;  // kept in all; further ones are only counted
     [[nodiscard]] std::vector<OtherSound> take_other_sound() { return std::exchange(other_sound_, {}); }
+    // Our messages the console took over 150 ms to acknowledge, since the last call: each wait in microseconds.
+    [[nodiscard]] std::vector<std::uint64_t> take_slow_acks() { return std::exchange(slow_acks_, {}); }
     // The controller as it is now. What changed about its buttons, triggers and touchpad goes out at once,
     // in input history packets; its sticks and sensors in an input state packet, at most every 8 ms.
     // Before the stream is set up nothing is sent, and the buttons count as not yet told.
@@ -215,6 +224,8 @@ private:
     TimePoint next_congestion_{};
     std::vector<TimePoint> ack_copies_due_;  // when the latest acknowledgment goes out again, soonest last
     std::uint64_t repeats_seen_ = 0;         // the messenger's count of repeated chunks, as last looked at
+    std::map<std::uint32_t, TimePoint> first_sent_;  // our chunks that wait for their acknowledgment
+    std::vector<std::uint64_t> slow_acks_;           // waits over 150 ms, in microseconds, until taken
     TimePoint next_input_{};
     InputState input_;
     std::uint16_t input_sequence_ = 0;

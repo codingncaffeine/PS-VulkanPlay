@@ -110,6 +110,8 @@ grep -aqE "^Congestion reports: [1-9][0-9]* packets counted as arrived and [0-9]
     && ok "the report says what the congestion reports counted and told" || fail "congestion reports: $(grep -a '^Congestion reports' "$out")"
 grep -aqE "^Acknowledgments of the console's messages: [1-9][0-9]*, and [1-9][0-9]* copies sent 40 and 120 ms behind them; the console sent 0 of its messages again" "$out" \
     && ok "each acknowledgment went out again, and nothing came twice on a link that loses nothing of it" || fail "acknowledgments: $(grep -a '^Acknowledgments' "$out")"
+grep -aqE "^Our messages: [1-9][0-9]* acknowledged by the console, after [0-9.]+ ms on average and [0-9.]+ ms at most \(0 took over 150 ms\); 0 were sent again, unacknowledged after 200 ms\.$" "$out" \
+    && ok "our messages were acknowledged in time, and none was sent again" || fail "our messages: $(grep -a '^Our messages' "$out")"
 check "no controller of this machine was seen: the wall hides them" has "$out" "Controller: none was connected"
 check "no error was logged" lacks "$work/play.err" " ERROR "
 # With no DualSense connected (the wall hides every controller) the program announces a DualShock 4.

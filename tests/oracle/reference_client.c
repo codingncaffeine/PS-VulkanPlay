@@ -12,6 +12,10 @@
 //       only goes as far as this project has implemented)
 //       With PSVP_REFERENCE_TAPS=1 it presses right one second after the session
 //       is connected and cross half a second later, each for 100 ms.
+//       With PSVP_REFERENCE_WATCH=1 it asks for 1080p, 60 pictures a second and HEVC, as `play`
+//       does, and prints only what tells how the console judges the link: its view of the
+//       connection (target bitrate, round-trip value, loss) and the messages the reference sends
+//       again, each with the time since the program started. For a comparison on a real link.
 //       With PSVP_REFERENCE_DUMP=FOLDER in the environment it keeps what the
 //       session hands to a decoder: FOLDER/video.bin (every picture sample, in
 //       order) and FOLDER/sound.bin (every sound frame, in order).
@@ -108,6 +112,18 @@ static void on_audio_frame(uint8_t *buf, size_t buf_size, void *user) {
     ++g_sound_frames;
 }
 
+#include <time.h>
+static struct timespec g_started;
+// PSVP_REFERENCE_WATCH: the lines that say how the console judges the link, with their time.
+static void watch_log(ChiakiLogLevel level, const char *msg, void *user) {
+    (void)level; (void)user;
+    if (!strstr(msg, "connection quality") && !strstr(msg, "re-sending") && !strstr(msg, "Hit max retries")) return;
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    const double seconds = (double)(now.tv_sec - g_started.tv_sec) + (double)(now.tv_nsec - g_started.tv_nsec) / 1e9;
+    printf("%.1f s: %s\n", seconds, msg);
+}
+
 static int hex_value(char c) {
     if (c >= '0' && c <= '9') return c - '0';
     if (c >= 'a' && c <= 'f') return c - 'a' + 10;
@@ -126,7 +142,10 @@ int main(int argc, char **argv) {
 
     if (chiaki_lib_init() != CHIAKI_ERR_SUCCESS) return 3;
     ChiakiLog log;
-    chiaki_log_init(&log, CHIAKI_LOG_ALL & ~(CHIAKI_LOG_VERBOSE | CHIAKI_LOG_DEBUG), chiaki_log_cb_print, NULL);
+    const bool watch = getenv("PSVP_REFERENCE_WATCH") != NULL;
+    clock_gettime(CLOCK_MONOTONIC, &g_started);
+    if (watch) chiaki_log_init(&log, CHIAKI_LOG_ALL, watch_log, NULL);
+    else chiaki_log_init(&log, CHIAKI_LOG_ALL & ~(CHIAKI_LOG_VERBOSE | CHIAKI_LOG_DEBUG), chiaki_log_cb_print, NULL);
 
     if (strcmp(command, "discover") == 0) {
         ChiakiDiscovery discovery;
@@ -186,7 +205,9 @@ int main(int argc, char **argv) {
         strncpy(info.regist_key, argv[4], sizeof(info.regist_key));
         if (strlen(argv[5]) != 32) return 2;
         for (int i = 0; i < 16; ++i) info.morning[i] = (uint8_t)((hex_value(argv[5][2 * i]) << 4) | hex_value(argv[5][2 * i + 1]));
-        chiaki_connect_video_profile_preset(&info.video_profile, CHIAKI_VIDEO_RESOLUTION_PRESET_720p, CHIAKI_VIDEO_FPS_PRESET_60);
+        chiaki_connect_video_profile_preset(&info.video_profile, watch ? CHIAKI_VIDEO_RESOLUTION_PRESET_1080p : CHIAKI_VIDEO_RESOLUTION_PRESET_720p,
+                                            CHIAKI_VIDEO_FPS_PRESET_60);
+        if (watch) info.video_profile.codec = CHIAKI_CODEC_H265;
         info.video_profile_auto_downgrade = true;
         static ChiakiSession session;
         if (chiaki_session_init(&session, &info, &log) != CHIAKI_ERR_SUCCESS) return 3;

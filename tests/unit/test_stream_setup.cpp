@@ -1093,6 +1093,37 @@ PSVP_TEST(stream_sends_each_acknowledgment_again) {
     }
 }
 
+// How long the console takes to acknowledge our own messages, and how often one is sent again for want of
+// it: an acknowledgment of the console's that is lost makes our heartbeat go out again after 200 ms.
+PSVP_TEST(stream_measures_how_long_our_messages_wait_for_their_acknowledgment) {
+    auto options = media_options(ConsoleKind::ps5);
+    options.frames = 0;
+    StreamLink link(StreamLink::request(ConsoleKind::ps5, kMtuCeiling), options);
+    link.start();
+    link.run_until_settled();
+    link.run(1500ms);  // one heartbeat, acknowledged on a clean link
+    CHECK(link.client.counters().our_acknowledged >= 1 && link.client.counters().our_resends == 0);
+    CHECK(link.client.counters().our_ack_waits_over_150ms == 0 && link.client.counters().our_ack_wait_us_most < 20'000);
+    CHECK(link.client.take_slow_acks().empty());
+    // From here on the console's first acknowledgment on its way to the client is lost.
+    bool lost_one = false;
+    link.lose = [&lost_one](bool to_console, const std::vector<std::uint8_t>& datagram) {
+        if (to_console || lost_one) return false;
+        const auto packet = parse_control(datagram);
+        if (!packet || packet->chunk_type != chunk::kDataAck) return false;
+        lost_one = true;
+        return true;
+    };
+    link.run(1500ms);
+    CHECK(lost_one);
+    const StreamCounters& counters = link.client.counters();
+    // The heartbeat went out again 200 ms later, and its acknowledgment came then: a wait of about 200 ms.
+    CHECK(counters.our_resends == 1 && counters.our_ack_waits_over_150ms == 1);
+    CHECK(counters.our_ack_wait_us_most >= 200'000 && counters.our_ack_wait_us_most < 230'000);
+    const std::vector<std::uint64_t> slow = link.client.take_slow_acks();
+    CHECK(slow.size() == 1 && !slow.empty() && slow.front() == counters.our_ack_wait_us_most);
+}
+
 PSVP_TEST(stream_keeps_loss_reports_it_cannot_send_yet) {
     auto options = media_options(ConsoleKind::ps5);
     options.frames = 0;

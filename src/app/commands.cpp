@@ -1073,6 +1073,7 @@ int run_session_here(const SessionPlan& plan) {
     ArrivalWatch arrivals;
     transport::StreamCounters minute_from;
     std::uint64_t repeats_said = 0;
+    std::uint64_t resends_said = 0;
     auto next_minute = Clock::now() + std::chrono::minutes(1);
     // The frames that are ready leave the stream at once; they are kept only when a dump was asked for.
     std::uint64_t video_bytes = 0;
@@ -1136,6 +1137,17 @@ int run_session_here(const SessionPlan& plan) {
                     repeats_said = stream.counters().console_repeats;
                     log::debug("stream: {:.1f} s: the console sent a message again ({} so far): an acknowledgment did not reach it",
                                std::chrono::duration<double>(now - setup_started).count(), repeats_said);
+                }
+                // Our messages the console was slow to acknowledge, and the ones sent again for want of it: the
+                // console's round-trip value jumps to about 200 or 400 ms, and the question is whether these are why.
+                for (const std::uint64_t wait : stream.take_slow_acks()) {
+                    log::debug("stream: {:.1f} s: the console acknowledged a message of ours after {:.0f} ms",
+                               std::chrono::duration<double>(now - setup_started).count(), static_cast<double>(wait) / 1000.0);
+                }
+                if (stream.counters().our_resends != resends_said) {
+                    resends_said = stream.counters().our_resends;
+                    log::debug("stream: {:.1f} s: a message of ours was sent again, unacknowledged after 200 ms ({} so far)",
+                               std::chrono::duration<double>(now - setup_started).count(), resends_said);
                 }
                 // Once a minute: what the congestion reports of that minute told the console, against what was counted.
                 if (now >= next_minute) {
@@ -1242,6 +1254,12 @@ int run_session_here(const SessionPlan& plan) {
         say("Told the console: {} times of frames that did not arrive, {} congestion reports, {} input states (a resting controller's); "
             "receive buffer: {} bytes.",
             counters.loss_reports, counters.congestion_reports, counters.input_states, receive_buffer);
+        if (counters.our_acknowledged != 0) {
+            say("Our messages: {} acknowledged by the console, after {:.1f} ms on average and {:.1f} ms at most ({} took over 150 ms); "
+                "{} were sent again, unacknowledged after 200 ms.",
+                counters.our_acknowledged, static_cast<double>(counters.our_ack_wait_us_total) / static_cast<double>(counters.our_acknowledged) / 1000.0,
+                static_cast<double>(counters.our_ack_wait_us_most) / 1000.0, counters.our_ack_waits_over_150ms, counters.our_resends);
+        }
         if (counters.acks != 0) {
             say("Acknowledgments of the console's messages: {}, and {} copies sent 40 and 120 ms behind them; the console sent {} of its "
                 "messages again (an acknowledgment had not reached it within 200 ms).",

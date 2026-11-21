@@ -59,7 +59,10 @@ void ClientStream::send(Datagrams& out, const StreamMessage& message, std::uint1
         fail("too many of the stream's messages are unanswered");
         return;
     }
-    for (auto& chunk : *sent) out.push_back(std::move(chunk.datagram));
+    for (auto& chunk : *sent) {
+        first_sent_[chunk.sequence] = now;
+        out.push_back(std::move(chunk.datagram));
+    }
 }
 
 Datagrams ClientStream::start(TimePoint now) {
@@ -324,6 +327,21 @@ void ClientStream::on_message(Datagrams& out, const DataChunk& chunk, const Stre
 }
 
 void ClientStream::handle(Datagrams& out, Messenger::Received& received, TimePoint now) {
+    for (const std::uint32_t sequence : received.acknowledged) {
+        const auto sent = first_sent_.find(sequence);
+        if (sent == first_sent_.end()) continue;
+        if (state_ == State::ready) {
+            const auto wait = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(now - sent->second).count());
+            ++counters_.our_acknowledged;
+            counters_.our_ack_wait_us_total += wait;
+            counters_.our_ack_wait_us_most = std::max(counters_.our_ack_wait_us_most, wait);
+            if (wait > 150'000) {
+                ++counters_.our_ack_waits_over_150ms;
+                if (slow_acks_.size() < kMaxConsoleData) slow_acks_.push_back(wait);
+            }
+        }
+        first_sent_.erase(sent);
+    }
     for (const DataChunk& chunk : received.delivered) {
         if (chunk.chunks > 1) ++counters_.split_messages;
         if (chunk.data_type != data_type::kMessage) {
@@ -380,6 +398,8 @@ Datagrams ClientStream::on_datagram(std::span<const std::uint8_t> datagram, Time
 Datagrams ClientStream::on_timeout(TimePoint now) {
     Datagrams out;
     Messenger::Timer timer = messenger_.on_timer(now);
+    if (state_ == State::ready) counters_.our_resends += timer.resend.size();
+    for (const std::uint32_t sequence : timer.abandoned) first_sent_.erase(sequence);
     out = std::move(timer.resend);
     if (state_ == State::awaiting_bang || state_ == State::awaiting_stream_info) {
         if (!timer.abandoned.empty()) {
