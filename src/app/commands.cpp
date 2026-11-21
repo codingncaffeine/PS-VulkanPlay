@@ -1420,7 +1420,7 @@ PlayRunner play_runner = nullptr;
 
 // The stream in a window, with its sound and a controller: what the program is for.
 int command_play(std::span<const std::string_view> args) {
-    const Parsed parsed = parse(args, {"--host", "--seconds", "--passcode", "--resolution", "--fps", "--bitrate", "--codec", "--tap", "--frames", "--controller", "--pacing", "--cushion", "--haptics-volume", "--back-left", "--back-right", "--loss-ceiling", "--ack-copies", "--decoder", "--pretend", "--pretend-taps", "--reconnect"},
+    const Parsed parsed = parse(args, {"--host", "--seconds", "--passcode", "--resolution", "--fps", "--bitrate", "--codec", "--tap", "--frames", "--controller", "--pacing", "--cushion", "--haptics-volume", "--back-left", "--back-right", "--loss-ceiling", "--ack-copies", "--decoder", "--pretend", "--pretend-taps", "--reconnect", "--hdr-peak"},
                                 {"--rest", "--wake", "--stats"}, 1);
     if (!parsed.error.empty()) return usage("play: {}", parsed.error);
     SessionPlan plan;
@@ -1480,6 +1480,11 @@ int command_play(std::span<const std::string_view> args) {
         if (!milliseconds && *text != "0") return usage("play: --cushion takes a number of milliseconds from 0 to 50");
         options.cushion_ms = milliseconds ? static_cast<int>(*milliseconds) : 0;
         if (options.cushion_ms > 0 && !options.pacing) return usage("play: --cushion needs the pacing it is part of (not --pacing off)");
+    }
+    if (const auto text = parsed.option("--hdr-peak")) {
+        const auto nits = parse_number(*text, 400, 10000);
+        if (!nits) return usage("play: --hdr-peak takes a brightness in cd/m² from 400 to 10000");
+        options.hdr_peak_nits = static_cast<int>(*nits);
     }
     // A PS4 streams H.264 only: for one, the codec nobody chose is that.
     if (!parsed.option("--codec")) {
@@ -1807,7 +1812,7 @@ std::string commands_help() {
         "          [--bitrate KBPS] [--codec h264|hevc|hdr] [--controller auto|dualsense|dualshock4]\n"
         "          [--pacing on|off] [--cushion 0-50] [--haptics-volume 0-100] [--back-left BUTTON]\n"
         "          [--back-right BUTTON] [--loss-ceiling PERCENT] [--ack-copies 0-2] [--decoder auto|software]\n"
-        "          [--reconnect SECONDS] [--stats] [--wake] [--rest]\n"
+        "          [--reconnect SECONDS] [--hdr-peak 400-10000] [--stats] [--wake] [--rest]\n"
         "      play: the console's picture in a window, its sound, and a controller that is plugged in\n"
         "      or paired; closing the window ends the session (--rest then sends the console to rest mode).\n"
         "      --wake wakes a console that is in rest mode first, and asks one that takes no session yet\n"
@@ -1830,7 +1835,10 @@ std::string commands_help() {
         "      --decoder software decodes the pictures in\n"
         "      software only (auto: on the graphics card where it can, through Vulkan Video, once its\n"
         "      first pictures were found the same as the software decoder's); --stats shows the statistics\n"
-        "      over the picture from the start (F3 shows and hides them at any time)\n"
+        "      over the picture from the start (F3 shows and hides them at any time); --hdr-peak says how\n"
+        "      bright an HDR picture is taken to be at its brightest, in cd/m² (1000 unless said; consoles\n"
+        "      do not say): an HDR picture is shown on the screen as SDR, white paper at SDR white and\n"
+        "      what is brighter fitted between that and white (ITU-R BT.2390, BT.2408)\n"
         "  {0} decode FOLDER [--lose FRAMES] [--decoder software|gpu]\n"
         "      decode the picture and the sound that 'session --dump FOLDER' kept, and say what came out;\n"
         "      --lose 100,250-255 leaves those frames out, as if they had not arrived, and compares the\n"

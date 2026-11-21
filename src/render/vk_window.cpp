@@ -780,6 +780,7 @@ int Window::open(const WindowOptions& options) {
 int Window::run(const WindowOptions& options) {
     options_ = &options;
     if (const int code = open(options); code != 0) return code;
+    video_.set_hdr_peak(options.hdr_peak_nits);
     if (wake_event.load() == 0) wake_event.store(SDL_RegisterEvents(1));
 
     std::uint64_t frames = 0;

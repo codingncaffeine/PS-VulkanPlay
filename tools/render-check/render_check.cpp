@@ -5,6 +5,7 @@
 // do not present to a virtual X server.
 //
 //   psvp_render_check FOLDER|CLIP [--every N] [--checks N]
+//   psvp_render_check --pattern [--peak NITS]...   (tone mapping: see run_pattern; any Vulkan device)
 //       FOLDER as 'session --dump' wrote it, or CLIP: a stream file laid out as tests/data/clip.h265
 //       (its parameter sets, then a frame per unit); every Nth picture of the card is drawn twice
 //       (10); --checks: how many of the card's first pictures the decoder compares (as when playing)
@@ -12,6 +13,8 @@
 // Exit: 0 every picture the same both ways | 1 not | 2 usage | 3 this machine cannot decode on a
 // graphics card (nothing checked)
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <charconv>
 #include <cstdio>
 #include <cstdlib>
@@ -30,6 +33,7 @@
 #include <vulkan/vulkan.h>
 
 #include "media/color.h"
+#include "media/delta_e.h"
 #include "media/gpu_device.h"
 #include "media/gpu_share.h"
 #include "media/video_decoder.h"
@@ -203,7 +207,7 @@ private:
 };
 
 // Draws one picture into the target as the window does, and waits until it is there.
-bool draw(VkDevice device, VkQueue queue, std::uint32_t family, const media::GpuDevice& gpu, VkCommandBuffer commands, VkFence fence,
+bool draw(VkDevice device, VkQueue queue, std::uint32_t family, const media::GpuDevice* gpu, VkCommandBuffer commands, VkFence fence,
           render::VideoPass& video, Target& target, const media::Picture& picture) {
     if (!video.set_picture(picture)) return false;
     if (!target.size(picture.width, picture.height)) return false;
@@ -257,9 +261,9 @@ bool draw(VkDevice device, VkQueue queue, std::uint32_t family, const media::Gpu
         submit.signalSemaphoreCount = 1;
         submit.pSignalSemaphores = &wait->semaphore;
     }
-    gpu.lock_queue(family, 0);
+    if (gpu != nullptr) gpu->lock_queue(family, 0);
     const VkResult queued = vkQueueSubmit(queue, 1, &submit, fence);
-    gpu.unlock_queue(family, 0);
+    if (gpu != nullptr) gpu->unlock_queue(family, 0);
     submitted = queued == VK_SUCCESS;
     video.after_submit(submitted);
     if (!good(queued, "vkQueueSubmit")) return false;
@@ -286,10 +290,16 @@ std::vector<std::vector<std::uint64_t>> rows(std::string_view text) {
 
 // Whether the pixels are the picture's: where the color samples around a place are all the same (no
 // edge for the filtering to blend), its pixel against the screen color of the picture's samples there.
-// The largest difference, and how many places were looked at.
-std::pair<unsigned, unsigned> off_from_picture(const media::Picture& picture, const std::uint8_t* pixels) {
+// The largest difference in steps of 255 and as CIEDE2000, and how many places were looked at.
+struct Off {
+    unsigned steps = 0;
+    double delta_e = 0.0;
+    unsigned looked = 0;
+};
+Off off_from_picture(const media::Picture& picture, const std::uint8_t* pixels) {
     const media::ColorTransform transform = media::color_transform(picture.matrix, picture.full_range, picture.bits);
     unsigned worst = 0, looked = 0;
+    double worst_delta_e = 0.0;
     const auto sample = [&](int plane, unsigned x, unsigned y) -> int {
         const std::uint8_t* row = picture.planes[plane] + std::size_t{y} * picture.strides[plane];
         if (picture.bits == 8) return row[x];
@@ -298,7 +308,10 @@ std::pair<unsigned, unsigned> off_from_picture(const media::Picture& picture, co
         return value;
     };
     const unsigned color_width = (picture.width + 1) / 2, color_height = (picture.height + 1) / 2;
-    const int flat = 1 << (picture.bits - 8);  // one step of an 8-bit sample
+    // One step of an 8-bit sample; for a tone mapped picture one step of its own: the pixel blends a
+    // quarter of the next row of color samples in, and the tone curve makes a few steps of ten bits
+    // in a bright place several of 255.
+    const int flat = picture.transfer != media::ColorTransfer::sdr ? 1 : 1 << (picture.bits - 8);
     for (unsigned cy = 1; cy + 1 < color_height; cy += 3) {
         for (unsigned cx = 1; cx + 1 < color_width; cx += 3) {
             bool even = true;
@@ -313,19 +326,227 @@ std::pair<unsigned, unsigned> off_from_picture(const media::Picture& picture, co
             if (!even) continue;
             const unsigned x = 2 * cx, y = 2 * cy;
             const auto expected = media::screen_color(transform, picture.bits, static_cast<unsigned>(sample(0, x, y)), static_cast<unsigned>(sample(1, cx, cy)),
-                                                      static_cast<unsigned>(sample(2, cx, cy)));
+                                                      static_cast<unsigned>(sample(2, cx, cy)), media::ToneMap{picture.transfer});
             const std::uint8_t* pixel = pixels + (std::size_t{y} * picture.width + x) * 4;
-            for (int c = 0; c < 3; ++c) worst = std::max(worst, static_cast<unsigned>(std::abs(expected[static_cast<std::size_t>(c)] - pixel[c])));
+            unsigned off = 0;
+            for (int c = 0; c < 3; ++c) off = std::max(off, static_cast<unsigned>(std::abs(expected[static_cast<std::size_t>(c)] - pixel[c])));
+            worst = std::max(worst, off);
+            if (off > 1) {
+                const auto u8 = [](int value) { return static_cast<std::uint8_t>(value); };
+                worst_delta_e = std::max(worst_delta_e, media::delta_e_2000(media::lab_of_srgb(u8(expected[0]), u8(expected[1]), u8(expected[2])),
+                                                                            media::lab_of_srgb(pixel[0], pixel[1], pixel[2])));
+            }
             ++looked;
         }
     }
-    return {worst, looked};
+    return {worst, worst_delta_e, looked};
+}
+
+// Whether two drawings of a picture agree: within 1 of 255 in every channel for an SDR picture. A
+// tone mapped HDR picture is judged by how the colors look (CIEDE2000 at most 1, the smallest
+// difference an eye notices): near black and at the edge of BT.709 the steps of the curve and of
+// the gamut conversion make the graphics card's and software's few-thousandths differences in
+// their samples' filtering several steps of 255 in one channel, seen 2026-11-21 on a console's
+// picture (15 steps of red in a bright green: CIEDE2000 0.25).
+constexpr double kMostDeltaE = 1.0;
+
+// Samples of a 10-bit, limited range BT.2020 picture for red, green and blue as the picture encodes them.
+std::array<unsigned, 3> samples_of(double red, double green, double blue) {
+    const double kr = 0.2627, kb = 0.0593, kg = 1.0 - kr - kb;
+    const double y = kr * red + kg * green + kb * blue;
+    const double cb = (blue - y) / (2.0 * (1.0 - kb)), cr = (red - y) / (2.0 * (1.0 - kr));
+    const auto code = [](double value) { return static_cast<unsigned>(std::lround(value)); };
+    return {code(64.0 + 876.0 * y), code(512.0 + 896.0 * cb), code(512.0 + 896.0 * cr)};
+}
+
+// --pattern: patches of even color (grays from below black to above white, and red, green and blue
+// in seven steps each), drawn the software way into an image nobody sees, every patch's middle
+// against media::screen_color: as an SDR, a PQ (at the peaks given) and an HLG picture. Needs no
+// decoder, so any Vulkan device does (a software one too). The control: the HDR pictures must come
+// out unlike what the same samples give without tone mapping, or the check could not see it missing.
+int run_pattern(const std::vector<double>& peaks) {
+    // The patches: 8 by 8 pixels, so a color sample (4 by 4 of them) never blends with a neighbor's.
+    std::vector<std::array<unsigned, 3>> patches;
+    for (unsigned y = 0; y <= 1023; y += 33) patches.push_back({y, 512, 512});
+    patches.push_back({940, 512, 512});
+    const double steps[] = {0.0, 0.25, 0.5, 0.62, 0.75, 0.9, 1.0};
+    for (const double r : steps) {
+        for (const double g : steps) {
+            for (const double b : steps) patches.push_back(samples_of(r, g, b));
+        }
+    }
+    constexpr unsigned kSide = 8, kAcross = 24;
+    const unsigned down = static_cast<unsigned>((patches.size() + kAcross - 1) / kAcross);
+    const unsigned width = kAcross * kSide, height = down * kSide;
+    std::vector<std::uint16_t> plane_y(std::size_t{width} * height, 64), plane_cb(std::size_t{width / 2} * (height / 2), 512),
+        plane_cr(std::size_t{width / 2} * (height / 2), 512);
+    for (std::size_t i = 0; i < patches.size(); ++i) {
+        const unsigned px = static_cast<unsigned>(i % kAcross) * kSide, py = static_cast<unsigned>(i / kAcross) * kSide;
+        for (unsigned y = 0; y < kSide; ++y) {
+            for (unsigned x = 0; x < kSide; ++x) plane_y[std::size_t{py + y} * width + px + x] = static_cast<std::uint16_t>(patches[i][0]);
+        }
+        for (unsigned y = 0; y < kSide / 2; ++y) {
+            for (unsigned x = 0; x < kSide / 2; ++x) {
+                const std::size_t at = std::size_t{py / 2 + y} * (width / 2) + px / 2 + x;
+                plane_cb[at] = static_cast<std::uint16_t>(patches[i][1]);
+                plane_cr[at] = static_cast<std::uint16_t>(patches[i][2]);
+            }
+        }
+    }
+
+    VkApplicationInfo app{};
+    app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+    app.pApplicationName = "psvp_render_check";
+    app.apiVersion = render::kVideoApi;
+    VkInstanceCreateInfo instance_info{};
+    instance_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+    instance_info.pApplicationInfo = &app;
+    VkInstance instance = VK_NULL_HANDLE;
+    if (!good(vkCreateInstance(&instance_info, nullptr, &instance), "vkCreateInstance")) return 3;
+    std::uint32_t count = 0;
+    vkEnumeratePhysicalDevices(instance, &count, nullptr);
+    std::vector<VkPhysicalDevice> physicals(count);
+    vkEnumeratePhysicalDevices(instance, &count, physicals.data());
+    std::optional<render::MadeDevice> made;
+    VkPhysicalDevice physical = VK_NULL_HANDLE;
+    std::uint32_t family = 0;
+    std::string name;
+    for (const VkPhysicalDevice candidate : physicals) {
+        VkPhysicalDeviceProperties properties{};
+        vkGetPhysicalDeviceProperties(candidate, &properties);
+        std::uint32_t family_count = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(candidate, &family_count, nullptr);
+        std::vector<VkQueueFamilyProperties> families(family_count);
+        vkGetPhysicalDeviceQueueFamilyProperties(candidate, &family_count, families.data());
+        const auto graphics = std::ranges::find_if(families, [](const VkQueueFamilyProperties& f) { return (f.queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0; });
+        if (graphics == families.end()) continue;
+        const auto index = static_cast<std::uint32_t>(graphics - families.begin());
+        auto attempt = render::make_device(render::DeviceRequest{instance, render::kVideoApi, {}, candidate, properties.apiVersion, index, properties.deviceName, false, {}});
+        if (!attempt) continue;
+        made = std::move(*attempt);
+        physical = candidate;
+        family = index;
+        name = properties.deviceName;
+        break;
+    }
+    if (!made) {
+        vkDestroyInstance(instance, nullptr);
+        return fail(3, "no Vulkan device here can draw");
+    }
+    const VkDevice device = made->device;
+    int code = 0;
+    {
+        VkCommandPoolCreateInfo pool_info{};
+        pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+        pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+        pool_info.queueFamilyIndex = family;
+        VkCommandPool pool = VK_NULL_HANDLE;
+        vkCreateCommandPool(device, &pool_info, nullptr, &pool);
+        VkCommandBufferAllocateInfo allocate{};
+        allocate.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        allocate.commandPool = pool;
+        allocate.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        allocate.commandBufferCount = 1;
+        VkCommandBuffer commands = VK_NULL_HANDLE;
+        vkAllocateCommandBuffers(device, &allocate, &commands);
+        VkFenceCreateInfo fence_info{};
+        fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        VkFence fence = VK_NULL_HANDLE;
+        vkCreateFence(device, &fence_info, nullptr, &fence);
+        {
+            render::VideoPass pass;
+            Target target(physical, device);
+            bool broken = false;  // nothing more can be drawn
+            if (!pass.create(physical, device, false) || !target.create_pass() || !pass.create_pipeline(target.pass(), false)) {
+                code = fail(1, "the pass could not be set up");
+                broken = true;
+            }
+            struct Run {
+                media::ColorTransfer transfer;
+                double peak;
+                const char* name;
+            };
+            std::vector<Run> runs{{media::ColorTransfer::sdr, media::kAssumedHdrPeakNits, "SDR"}, {media::ColorTransfer::hlg, media::kHlgPeakNits, "HLG"}};
+            for (const double peak : peaks) runs.push_back({media::ColorTransfer::pq, peak, "PQ"});
+            const media::ColorTransform transform = media::color_transform(media::ColorMatrix::bt2020, false, 10);
+            std::printf("render-check: drawing %zu patches of a 10-bit BT.2020 picture on %s\n", patches.size(), name.c_str());
+            for (const Run& run : runs) {
+                if (broken) break;
+                media::Picture picture;
+                picture.width = width;
+                picture.height = height;
+                picture.bits = 10;
+                picture.matrix = media::ColorMatrix::bt2020;
+                picture.transfer = run.transfer;
+                picture.planes[0] = reinterpret_cast<const std::uint8_t*>(plane_y.data());
+                picture.planes[1] = reinterpret_cast<const std::uint8_t*>(plane_cb.data());
+                picture.planes[2] = reinterpret_cast<const std::uint8_t*>(plane_cr.data());
+                picture.strides[0] = std::size_t{width} * 2;
+                picture.strides[1] = picture.strides[2] = std::size_t{width / 2} * 2;
+                pass.set_hdr_peak(run.peak);
+                if (!draw(device, made->queue, family, nullptr, commands, fence, pass, target, picture)) {
+                    code = fail(1, "the {} picture could not be drawn", run.name);
+                    broken = true;
+                    break;
+                }
+                if (pass.describe().find("shown as 8") != std::string::npos) {
+                    code = fail(1, "this device cannot smooth 16-bit textures: the samples were cut to 8 bits ({})", pass.describe());
+                    break;
+                }
+                unsigned worst = 0, unlike_untoned = 0;
+                std::string worst_where;
+                for (std::size_t i = 0; i < patches.size(); ++i) {
+                    const unsigned x = static_cast<unsigned>(i % kAcross) * kSide + kSide / 2, y = static_cast<unsigned>(i / kAcross) * kSide + kSide / 2;
+                    const std::uint8_t* pixel = target.pixels() + (std::size_t{y} * width + x) * 4;
+                    const auto want = media::screen_color(transform, 10, patches[i][0], patches[i][1], patches[i][2], media::ToneMap{run.transfer, run.peak});
+                    const auto untoned = media::screen_color(transform, 10, patches[i][0], patches[i][1], patches[i][2]);
+                    unsigned off = 0, apart = 0;
+                    for (std::size_t c = 0; c < 3; ++c) {
+                        off = std::max(off, static_cast<unsigned>(std::abs(want[c] - pixel[c])));
+                        apart = std::max(apart, static_cast<unsigned>(std::abs(untoned[c] - pixel[c])));
+                    }
+                    if (apart > 8) ++unlike_untoned;
+                    if (off > worst) {
+                        worst = off;
+                        worst_where = std::format(" (samples {} {} {}: drawn {} {} {}, wanted {} {} {})", patches[i][0], patches[i][1], patches[i][2], pixel[0], pixel[1], pixel[2],
+                                                  want[0], want[1], want[2]);
+                    }
+                }
+                const bool toned = run.transfer != media::ColorTransfer::sdr;
+                std::printf("render-check: %s%s: %zu patches within %u of 255 of media::screen_color%s; %u unlike the same samples without tone mapping\n", run.name,
+                            run.transfer == media::ColorTransfer::pq ? std::format(" at {:.0f} cd/m²", run.peak).c_str() : "", patches.size(), worst,
+                            worst > 1 ? worst_where.c_str() : "", unlike_untoned);
+                if (worst > 1) code = 1;
+                // SDR is drawn as it always was; an HDR picture drawn untouched would agree with "untoned" everywhere.
+                if (toned ? unlike_untoned < patches.size() / 4 : unlike_untoned != 0) {
+                    std::printf("render-check: %s: the control failed (%u patches unlike the untouched colors)\n", run.name, unlike_untoned);
+                    code = 1;
+                }
+            }
+            vkDeviceWaitIdle(device);
+            pass.destroy();
+        }
+        vkDestroyFence(device, fence, nullptr);
+        vkDestroyCommandPool(device, pool, nullptr);
+    }
+    vkDestroyDevice(device, nullptr);
+    vkDestroyInstance(instance, nullptr);
+    return code;
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
-    if (argc < 2) return fail(2, "usage: psvp_render_check FOLDER|CLIP [--every N] [--checks N]");
+    if (argc >= 2 && std::string_view(argv[1]) == "--pattern") {
+        std::vector<double> peaks;
+        for (int i = 2; i + 1 < argc; i += 2) {
+            if (std::string_view(argv[i]) != "--peak") return fail(2, "unknown option {}", argv[i]);
+            peaks.push_back(std::atof(argv[i + 1]));
+        }
+        if (peaks.empty()) peaks.push_back(media::kAssumedHdrPeakNits);
+        return run_pattern(peaks);
+    }
+    if (argc < 2) return fail(2, "usage: psvp_render_check FOLDER|CLIP [--every N] [--checks N] | --pattern [--peak NITS]...");
     const std::filesystem::path folder(argv[1]);
     unsigned every = 10;
     int checks = -1;
@@ -445,6 +666,7 @@ int main(int argc, char** argv) {
             std::size_t at = 0;
             std::uint64_t card_pictures = 0, drawn = 0, same = 0, unlike = 0, unlike_picture = 0;
             unsigned largest = 0, largest_from_picture = 0;
+            double largest_delta_e = 0.0, largest_apart_delta_e = 0.0;  // of HDR pictures
             std::string first_unlike;
             for (const auto& row : rows(*video_list)) {
                 if (row.size() < 6 || row[5] > video_bytes->size() - at || row[1] > video_bytes->size() - at - row[5]) return fail(1, "video.tsv does not fit video.bin");
@@ -467,46 +689,65 @@ int main(int argc, char** argv) {
                 const media::Picture& on_card = *decoded.picture;
                 const auto read_back = media::download(on_card);
                 if (!read_back) return fail(1, "picture {} could not be read back", row[0]);
-                if (!draw(device, made->queue, family, *gpu, commands, fence, gpu_pass, gpu_target, on_card) ||
-                    !draw(device, made->queue, family, *gpu, commands, fence, software_pass, software_target, *read_back)) {
+                if (!draw(device, made->queue, family, &*gpu, commands, fence, gpu_pass, gpu_target, on_card) ||
+                    !draw(device, made->queue, family, &*gpu, commands, fence, software_pass, software_target, *read_back)) {
                     return fail(1, "picture {} could not be drawn", row[0]);
                 }
                 ++drawn;
                 // The software way's pixels are the picture's (else two broken draws would agree) ...
-                const auto [from_picture, looked] = off_from_picture(*read_back, software_target.pixels());
-                largest_from_picture = std::max(largest_from_picture, from_picture);
+                const bool hdr = read_back->transfer != media::ColorTransfer::sdr;
+                const Off off = off_from_picture(*read_back, software_target.pixels());
+                largest_from_picture = std::max(largest_from_picture, off.steps);
+                largest_delta_e = std::max(largest_delta_e, off.delta_e);
                 // Too few even places to say it is the picture counts as not the picture.
-                if (from_picture > 2 || looked < 16) ++unlike_picture;
+                if ((hdr ? off.delta_e > kMostDeltaE : off.steps > 2) || off.looked < 16) ++unlike_picture;
                 // ... and the card's are the same as those.
                 unsigned apart = 0;
+                double apart_delta_e = 0.0;
                 const std::size_t bytes = std::size_t{on_card.width} * on_card.height * 4;
-                for (std::size_t i = 0; i < bytes; ++i) {
-                    if ((i & 3) == 3) continue;
-                    apart = std::max(apart, static_cast<unsigned>(std::abs(gpu_target.pixels()[i] - software_target.pixels()[i])));
+                const std::uint8_t* const card = gpu_target.pixels();
+                const std::uint8_t* const soft = software_target.pixels();
+                for (std::size_t i = 0; i < bytes; i += 4) {
+                    unsigned here = 0;
+                    for (std::size_t c = 0; c < 3; ++c) here = std::max(here, static_cast<unsigned>(std::abs(card[i + c] - soft[i + c])));
+                    apart = std::max(apart, here);
+                    if (hdr && here > 1) {
+                        apart_delta_e = std::max(apart_delta_e, media::delta_e_2000(media::lab_of_srgb(card[i], card[i + 1], card[i + 2]),
+                                                                                    media::lab_of_srgb(soft[i], soft[i + 1], soft[i + 2])));
+                    }
                 }
                 largest = std::max(largest, apart);
-                if (apart <= 1) {
+                largest_apart_delta_e = std::max(largest_apart_delta_e, apart_delta_e);
+                // PSVP_RENDER_CHECK_SAVE=FOLDER: the first pair drawn, and the first pair unlike, as pictures to look at.
+                const auto save = [&](std::uint64_t number) {
+                    const char* to = std::getenv("PSVP_RENDER_CHECK_SAVE");
+                    if (to == nullptr) return;
+                    for (const auto& [name, pixels] : {std::pair{"card", gpu_target.pixels()}, std::pair{"software", software_target.pixels()}}) {
+                        std::ofstream out(std::filesystem::path(to) / std::format("{}-{}.ppm", name, number), std::ios::binary);
+                        out << std::format("P6\n{} {}\n255\n", on_card.width, on_card.height);
+                        for (std::size_t i = 0; i < bytes; i += 4) out.write(reinterpret_cast<const char*>(pixels + i), 3);
+                    }
+                };
+                if (drawn == 1) save(row[0]);
+                if (hdr ? apart_delta_e <= kMostDeltaE : apart <= 1) {
                     ++same;
                 } else {
                     ++unlike;
                     if (first_unlike.empty()) {
-                        first_unlike = std::format(" (the first: frame {}, off by {})", row[0], apart);
-                        // PSVP_RENDER_CHECK_SAVE=FOLDER: that pair as pictures to look at.
-                        if (const char* save = std::getenv("PSVP_RENDER_CHECK_SAVE")) {
-                            for (const auto& [name, pixels] : {std::pair{"card", gpu_target.pixels()}, std::pair{"software", software_target.pixels()}}) {
-                                std::ofstream out(std::filesystem::path(save) / std::format("{}-{}.ppm", name, row[0]), std::ios::binary);
-                                out << std::format("P6\n{} {}\n255\n", on_card.width, on_card.height);
-                                for (std::size_t i = 0; i < bytes; i += 4) out.write(reinterpret_cast<const char*>(pixels + i), 3);
-                            }
-                        }
+                        first_unlike = std::format(" (the first: frame {}, off by {}, CIEDE2000 {:.2f})", row[0], apart, apart_delta_e);
+                        save(row[0]);
                     }
                 }
             }
-            std::printf("render-check: %s; %llu pictures came out on the card, %llu drawn both ways: %llu the same within 1 of 255, %llu not%s "
-                        "(the largest difference %u); the software way's pixels were the picture's colors within %u (%llu off by more than 2, or with too few even places to tell)\n",
+            const bool tone_mapped = largest_delta_e > 0.0 || largest_apart_delta_e > 0.0;
+            std::printf("render-check: %s; %llu pictures came out on the card, %llu drawn both ways: %llu the same %s, %llu not%s "
+                        "(the largest difference %u%s); the software way's pixels were the picture's colors within %u%s (%llu off by more than %s, or with too few even places to tell)\n",
                         decoder ? decoder->description().c_str() : "nothing decoded", static_cast<unsigned long long>(card_pictures),
-                        static_cast<unsigned long long>(drawn), static_cast<unsigned long long>(same), static_cast<unsigned long long>(unlike),
-                        first_unlike.c_str(), largest, largest_from_picture, static_cast<unsigned long long>(unlike_picture));
+                        static_cast<unsigned long long>(drawn), static_cast<unsigned long long>(same),
+                        tone_mapped ? "to the eye (HDR, tone mapped: CIEDE2000 at most 1)" : "within 1 of 255", static_cast<unsigned long long>(unlike), first_unlike.c_str(),
+                        largest, tone_mapped ? std::format(", CIEDE2000 {:.2f}", largest_apart_delta_e).c_str() : "", largest_from_picture,
+                        tone_mapped ? std::format(" (CIEDE2000 {:.2f})", largest_delta_e).c_str() : "", static_cast<unsigned long long>(unlike_picture),
+                        tone_mapped ? "CIEDE2000 1" : "2");
             code = drawn != 0 && unlike == 0 && unlike_picture == 0 ? 0 : 1;
             decoder.reset();
             vkDeviceWaitIdle(device);

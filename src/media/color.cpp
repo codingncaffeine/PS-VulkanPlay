@@ -42,15 +42,21 @@ ColorTransform color_transform(ColorMatrix matrix, bool full_range, unsigned bit
     };
 }
 
-std::array<int, 3> screen_color(const ColorTransform& transform, unsigned bits, unsigned y, unsigned cb, unsigned cr) {
+std::array<int, 3> screen_color(const ColorTransform& transform, unsigned bits, unsigned y, unsigned cb, unsigned cr, const ToneMap& tone) {
     const double largest = std::ldexp(1.0, static_cast<int>(bits)) - 1.0;
     const double in[4] = {y / largest, cb / largest, cr / largest, 1.0};
-    std::array<int, 3> out{};
+    std::array<double, 3> rgb{};
     for (std::size_t row = 0; row < 3; ++row) {
         double value = 0.0;
         for (std::size_t column = 0; column < 4; ++column) value += static_cast<double>(transform[column * 4 + row]) * in[column];
-        out[row] = static_cast<int>(std::lround(std::clamp(value, 0.0, 1.0) * 255.0));
+        rgb[row] = std::clamp(value, 0.0, 1.0);
     }
+    if (tone.transfer != ColorTransfer::sdr) {
+        rgb = hdr_to_sdr_linear(rgb, tone);
+        for (double& value : rgb) value = srgb_encode(value);
+    }
+    std::array<int, 3> out{};
+    for (std::size_t i = 0; i < 3; ++i) out[i] = static_cast<int>(std::lround(rgb[i] * 255.0));
     return out;
 }
 

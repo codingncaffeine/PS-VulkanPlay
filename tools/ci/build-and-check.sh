@@ -78,5 +78,6 @@ elif [ $launch = 1 ]; then
     tools/wall.sh tests/scenario/phase2e.sh "$dir"
     tools/wall.sh tests/scenario/phase3a.sh "$dir"
     tools/wall.sh tests/scenario/phase3b.sh "$dir"
+    tools/tone-check.sh "$dir"
 fi
 echo "BUILD AND CHECK PASSED"

@@ -123,6 +123,16 @@
                         </Grid>
                         <Border Classes="rule" />
                         <Grid ColumnDefinitions="*,Auto">
+                            <StackPanel VerticalAlignment="Center" Margin="0,0,20,0">
+                                <TextBlock Text="HDR brightness" />
+                                <TextBlock Classes="secondary small" TextWrapping="Wrap"
+                                           Text="With HDR coding: how bright the console's picture is at its brightest. The window shows it as SDR, with what is brighter than white paper fitted below white: higher keeps more detail in bright places, lower makes them brighter." />
+                                <TextBlock Classes="secondary small" Text="{Binding HdrPeakText}" Foreground="{DynamicResource Accent}" Margin="0,4,0,0" />
+                            </StackPanel>
+                            <Slider Grid.Column="1" Minimum="400" Maximum="4000" TickFrequency="100" IsSnapToTickEnabled="True" Value="{Binding HdrPeak}" />
+                        </Grid>
+                        <Border Classes="rule" />
+                        <Grid ColumnDefinitions="*,Auto">
                             <StackPanel VerticalAlignment="Center"><TextBlock Text="Bitrate" /><TextBlock Classes="secondary small" Text="{Binding BitrateText}" /></StackPanel>
                             <!-- One above the other: left and right on a slider change its value, so a control beside one could not be reached with a controller. -->
                             <StackPanel Grid.Column="1">

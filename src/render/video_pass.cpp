@@ -16,7 +16,7 @@ namespace {
 struct Constants {
     float to_rgb[16];
     float options[4];
-    float scale[4];  // x, y: the share of the texture the picture fills
+    float scale[4];  // x, y: the share of the texture the picture fills; z: transfer (0 SDR, 1 PQ, 2 HLG); w: PQ peak in cd/m²
     float limit[4];  // the middles of the last brightness (x, y) and color (z, w) samples of the picture
 };
 
@@ -528,6 +528,8 @@ void VideoPass::record_draw(VkCommandBuffer commands, VkExtent2D target) {
     constants.options[1] = 0.25F / static_cast<float>((texture_width + 1) / 2);
     constants.options[2] = target_encodes_ ? 1.0F : 0.0F;
     constants.options[3] = gpu_picture_ ? 1.0F : 0.0F;
+    constants.scale[2] = transfer_ == media::ColorTransfer::pq ? 1.0F : transfer_ == media::ColorTransfer::hlg ? 2.0F : 0.0F;
+    constants.scale[3] = static_cast<float>(hdr_peak_nits_);
     vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
     vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0, 1, &set_, 0, nullptr);
     vkCmdPushConstants(commands, layout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof constants, &constants);
@@ -537,7 +539,10 @@ void VideoPass::record_draw(VkCommandBuffer commands, VkExtent2D target) {
 std::string VideoPass::describe() const {
     return std::format("{}x{}, {} bits{}, {} range, {}{}, drawn at {}x{}{}", width_, height_, bits_, narrowed_ ? " (shown as 8)" : "", full_range_ ? "full" : "limited",
                        matrix_ == media::ColorMatrix::bt2020 ? "BT.2020" : matrix_ == media::ColorMatrix::bt601 ? "BT.601" : "BT.709",
-                       transfer_ == media::ColorTransfer::sdr ? "" : ", HDR shown without tone mapping", placement_.width, placement_.height,
+                       transfer_ == media::ColorTransfer::pq    ? std::format(", HDR (PQ) tone mapped from {:.0f} cd/m² to SDR", hdr_peak_nits_)
+                       : transfer_ == media::ColorTransfer::hlg ? std::string(", HDR (HLG) tone mapped to SDR")
+                                                                 : std::string(),
+                       placement_.width, placement_.height,
                        gpu_picture_ ? ", read straight from the graphics card's decoder" : "");
 }
 

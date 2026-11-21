@@ -374,7 +374,10 @@ public class ModelTests : IDisposable
         model.Settings.BitrateMbps = 22;
         Assert.Equal("Up to 5% (the default)", model.Settings.LossCeilingText);
         model.Settings.LossCeiling = 12;
-        Until(() => File.Exists(file) && new SettingsStore(file).Load() is { CushionMs: 20, BackLeft: "cross", BitrateKbps: 22000, LossCeiling: 12 }, "the settings reached the file");
+        Assert.Equal("1000 cd/m² (the default)", model.Settings.HdrPeakText);
+        model.Settings.HdrPeak = 1500;
+        Until(() => File.Exists(file) && new SettingsStore(file).Load() is { CushionMs: 20, BackLeft: "cross", BitrateKbps: 22000, LossCeiling: 12, HdrPeakNits: 1500 }, "the settings reached the file");
+        Assert.Equal("1500 cd/m²", model.Settings.HdrPeakText);
         Assert.Equal("Up to 12%", model.Settings.LossCeilingText);
         Assert.Equal("20 ms of added delay", model.Settings.CushionText);
         model.Settings.Pacing = false;

@@ -92,6 +92,8 @@ psvp_static_needs(PkgConfig::PSVP_FFMPEG PSVP_FFMPEG)
 psvp_static_needs(PkgConfig::PSVP_OPUS PSVP_OPUS)
 add_library(psvp_media STATIC
     src/media/color.cpp
+    src/media/tone_map.cpp
+    src/media/delta_e.cpp
     src/media/frame_pacer.cpp
     src/media/frame_refs.cpp
     src/media/gpu_device.cpp

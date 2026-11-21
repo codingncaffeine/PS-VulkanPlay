@@ -48,6 +48,8 @@ struct WindowOptions {
     std::function<std::optional<app::MenuView>()> overlay_menu;
     // A notice at the top (the connection was lost, and is being made again); empty: none.
     std::function<std::string()> overlay_notice;
+    // How bright an HDR picture is taken to be at its brightest, in cd/m² (VideoPass::set_hdr_peak).
+    double hdr_peak_nits = 1000.0;
     // Lend the window's Vulkan device to FFmpeg for decoding on the graphics card, where the device
     // can (a video decode queue for H.264 or HEVC, Vulkan 1.3).
     bool gpu_decoding = true;

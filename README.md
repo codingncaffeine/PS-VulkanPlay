@@ -48,10 +48,13 @@ Add a console, sign in with PSN and type the eight digits the console shows.
 - decoding on the graphics card through Vulkan Video, with the pictures drawn straight from the card's memory.
   The card's first two seconds of pictures are checked against software decoding, sample for sample, and
   software takes over if they differ. "Decode on the graphics card" in the app turns it off
+- HDR pictures (the "HEVC with HDR" coding) shown on the desktop as SDR with the industry's tone mapping:
+  ITU-R BT.2390's curve, BT.2408's reference white, BT.2020 colors brought into BT.709. Consoles do not say how
+  bright their picture gets: "HDR brightness" in the app (1000 cd/m² unless changed) says it
 - a DualSense on USB gets what a PS5 sends for it: haptics on the controller's own sound device, the effects
   of its adaptive triggers, the light bar's color; other controllers get rumble
 
-Not there yet: HDR output, the microphone, and play from outside the home network.
+Not there yet: HDR output to an HDR screen, the microphone, and play from outside the home network.
 
 ## Building from source
 

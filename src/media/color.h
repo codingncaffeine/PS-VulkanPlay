@@ -3,6 +3,7 @@
 
 #include <array>
 
+#include "media/tone_map.h"
 #include "media/video_decoder.h"
 
 namespace psvp::media {
@@ -17,8 +18,9 @@ using ColorTransform = std::array<float, 16>;
 // uses every value (ITU-R BT.601, BT.709, BT.2020; ITU-T H.273 for the ranges).
 [[nodiscard]] ColorTransform color_transform(ColorMatrix matrix, bool full_range, unsigned bits);
 
-// What the transform makes of one sample triple, as the bytes of an 8-bit screen.
-[[nodiscard]] std::array<int, 3> screen_color(const ColorTransform& transform, unsigned bits, unsigned y, unsigned cb, unsigned cr);
+// What the transform makes of one sample triple, as the bytes of an 8-bit screen that shows SDR
+// (sRGB). An HDR picture's colors go through `tone` first (media/tone_map.h).
+[[nodiscard]] std::array<int, 3> screen_color(const ColorTransform& transform, unsigned bits, unsigned y, unsigned cb, unsigned cr, const ToneMap& tone = {});
 
 // Where a picture goes in a target of another shape: as large as fits, centered, bars beside or above it.
 struct Placement {

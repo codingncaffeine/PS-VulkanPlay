@@ -37,5 +37,15 @@ ffmpeg_own=$(grep -ac 'VUID-VkImageCreateInfo-pNext-06811' "$out")
 if [ "$reports" = 0 ]; then ok "the layer reported nothing of this program's ($ffmpeg_own reports of FFmpeg's own image flags left out)"
 else fail "the layer reported $reports lines:"; grep -a 'VUID\|Validation' "$out" | grep -av 'pNext-06811' | sed -E 's/0x[0-9a-f]+/0x/g' | sort | uniq -c | cut -c1-300 | head -10; fi
 
+# Tone mapping on the card: the HDR pictures are filtered in the shader (textureGather), with the layer watching.
+PSVP_WALL_GPU=1 timeout 300 tools/wall.sh env VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation VK_LOADER_LAYERS_ENABLE='*validation*' \
+    "$check" --pattern --peak 1000 --peak 4000 --peak 400 > "$out" 2>&1
+rc=$?
+within=$(grep -ac 'patches within 1 of 255' "$out")
+[ $rc = 0 ] && [ "$within" = 5 ] && ok "tone mapping on $(grep -ao 'picture on .*' "$out" | head -1 | cut -c12-): SDR, HLG and PQ at three peaks within 1 of 255" \
+    || fail "tone mapping on the card: exit $rc, $within of 5 pictures within 1 of 255"
+reports=$(grep -ac 'VUID\|Validation Error\|Validation Warning' "$out")
+[ "$reports" = 0 ] && ok "the layer reported nothing while the patterns were drawn" || fail "the layer reported $reports lines while the patterns were drawn"
+
 [ $failed = 0 ] && echo "GPU CHECK PASSED" || echo "GPU CHECK FAILED"
 exit $failed

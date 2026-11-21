@@ -102,6 +102,9 @@ struct PlayOptions {
     std::optional<proto::transport::Button> back_left, back_right;
     // The statistics over the picture from the start (F3 shows and hides them at any time).
     bool stats = false;
+    // How bright an HDR picture is taken to be at its brightest, in cd/m² (the console's streams do
+    // not say): what is brighter than SDR white is fitted between it and that (media/tone_map.h).
+    int hdr_peak_nits = 1000;
     // With --wake: while the connection is made again, a console that answers as resting is woken,
     // waiting at most the time given; `on_waking` is called once it is known to rest. Returns 0 when
     // it is on (or did not answer at all).

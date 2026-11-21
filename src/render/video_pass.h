@@ -2,6 +2,7 @@
 // textures, and a shader turns their samples into the screen's colors.
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -47,6 +48,10 @@ public:
     void after_submit(bool submitted);
     // Draws the picture as large as it fits into the target. Inside the render pass.
     void record_draw(VkCommandBuffer commands, VkExtent2D target);
+    // How bright a PQ picture is taken to be at its brightest, in cd/m² (the console's streams do not
+    // say): what is brighter than SDR white is fitted between it and that (media/tone_map.h).
+    void set_hdr_peak(double nits) noexcept { hdr_peak_nits_ = std::clamp(nits, media::kLeastHdrPeakNits, media::kMostHdrPeakNits); }
+    [[nodiscard]] double hdr_peak() const noexcept { return hdr_peak_nits_; }
     // Where the picture was drawn last, and a line about it for the log.
     [[nodiscard]] const media::Placement& placement() const noexcept { return placement_; }
     [[nodiscard]] std::string describe() const;
@@ -78,6 +83,7 @@ private:
     VkShaderModule fragment_ = VK_NULL_HANDLE;
     VkPipeline pipeline_ = VK_NULL_HANDLE;
     bool target_encodes_ = false;
+    double hdr_peak_nits_ = media::kAssumedHdrPeakNits;
 
     Plane planes_[3];
     VkBuffer staging_ = VK_NULL_HANDLE;

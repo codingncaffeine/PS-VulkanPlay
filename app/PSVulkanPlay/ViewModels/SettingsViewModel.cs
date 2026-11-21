@@ -332,6 +332,21 @@ public sealed class SettingsViewModel : Observable
         int percent => $"Up to {percent}%",
     };
 
+    /// <summary>In steps of 100 cd/m² on the slider (400 to 4000); the file may hold any value the program takes.</summary>
+    public double HdrPeak
+    {
+        get => _settings.HdrPeakNits;
+        set
+        {
+            Keep(() => _settings.HdrPeakNits = (int)Math.Round(value), nameof(HdrPeak));
+            Changed(nameof(HdrPeakText));
+        }
+    }
+
+    public string HdrPeakText => _settings.HdrPeakNits == AppSettings.DefaultHdrPeakNits
+        ? $"{AppSettings.DefaultHdrPeakNits} cd/m² (the default)"
+        : $"{_settings.HdrPeakNits} cd/m²";
+
     public string CushionText => !_settings.Pacing ? "Off with even pacing" : _settings.CushionMs == 0 ? "None: the least delay" : $"{_settings.CushionMs} ms of added delay";
 
     public double HapticsVolume
