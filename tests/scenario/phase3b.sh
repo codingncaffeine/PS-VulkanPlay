@@ -195,7 +195,12 @@ start_mock hdr --kind ps5 --clip 416x240 --clip-codec hevc-hdr --frame-ms 16 --m
 rc=$?
 sleep 0.3; stop_mock
 [ $rc -eq 0 ] && ok "play --codec hdr: exit 0" || fail "play --codec hdr: exit $rc: $(tail -3 "$work/hdr.out")"
-check "the window says why the HDR picture is tone mapped" has "$work/hdr.err" "render: HDR pictures are tone mapped to SDR: this window's surface offers no HDR10"
+# Either is true of a virtual X screen: its surface offers no HDR10, or (older Mesa) Vulkan has no color spaces beyond sRGB at all.
+if grep -aqE "render: HDR pictures are tone mapped to SDR: (this window's surface offers no HDR10|this system's Vulkan does not offer VK_EXT_swapchain_colorspace)" "$work/hdr.err"; then
+    ok "the window says why the HDR picture is tone mapped"
+else
+    fail "the window says why the HDR picture is tone mapped: $(grep -a 'HDR\|tone mapped' "$work/hdr.err" | head -3)"
+fi
 check "and the picture was drawn tone mapped" has "$work/hdr.err" "HDR (PQ) tone mapped to SDR"
 check "the SDR stream before said nothing of HDR (the control)" lacks "$work/stats.err" "HDR pictures are tone mapped"
 check "no error was logged with the HDR stream" lacks "$work/hdr.err" " ERROR "

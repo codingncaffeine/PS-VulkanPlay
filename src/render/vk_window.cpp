@@ -1043,7 +1043,7 @@ void Window::say_target() {
                                                         : std::string("none (the device cannot say it)"));
     } else if (video_.has_picture() && video_.transfer() != media::ColorTransfer::sdr) {
         line = options_ != nullptr && !options_->hdr_output ? std::string("render: HDR pictures are tone mapped to SDR: HDR to the screen is turned off")
-               : !colorspace_extension_                    ? std::format("render: HDR pictures are tone mapped to SDR: the Vulkan loader has no {}", VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME)
+               : !colorspace_extension_                    ? std::format("render: HDR pictures are tone mapped to SDR: this system's Vulkan does not offer {}", VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME)
                                                             : std::string("render: HDR pictures are tone mapped to SDR: this window's surface offers no HDR10 (a desktop without HDR turned on, or an X11 session)");
     }
     tell_screen_state();
