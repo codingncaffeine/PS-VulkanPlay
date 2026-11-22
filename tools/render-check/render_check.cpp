@@ -40,6 +40,7 @@
 #include "media/gpu_share.h"
 #include "media/peak_detect.h"
 #include "media/scaler.h"
+#include "media/test_chart.h"
 #include "media/video_decoder.h"
 #include "render/video_device.h"
 #include "render/video_pass.h"
@@ -1073,7 +1074,115 @@ int run_scaling(bool time) {
 
 }  // namespace
 
+// --chart-out FILE [--hdr] [--peak NITS]: the test picture (media/test_chart.h) drawn as large as it
+// is, by the tent, nothing else on (an HDR one tone mapped from NITS), into a 16-bit target, written to
+// FILE as red, green and blue shares in single precision, row by row: what psvp_placebo_check (I5)
+// compares with libplacebo's drawing of the same picture.
+int run_chart_out(const std::string& file, bool hdr, double peak) {
+    VkApplicationInfo app{};
+    app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+    app.pApplicationName = "psvp_render_check";
+    app.apiVersion = render::kVideoApi;
+    VkInstanceCreateInfo instance_info{};
+    instance_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+    instance_info.pApplicationInfo = &app;
+    VkInstance instance = VK_NULL_HANDLE;
+    if (!good(vkCreateInstance(&instance_info, nullptr, &instance), "vkCreateInstance")) return 3;
+    std::uint32_t count = 0;
+    vkEnumeratePhysicalDevices(instance, &count, nullptr);
+    std::vector<VkPhysicalDevice> physicals(count);
+    vkEnumeratePhysicalDevices(instance, &count, physicals.data());
+    std::optional<render::MadeDevice> made;
+    VkPhysicalDevice physical = VK_NULL_HANDLE;
+    std::uint32_t family = 0;
+    VkPhysicalDeviceProperties properties{};
+    for (const VkPhysicalDevice candidate : physicals) {
+        vkGetPhysicalDeviceProperties(candidate, &properties);
+        std::uint32_t family_count = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(candidate, &family_count, nullptr);
+        std::vector<VkQueueFamilyProperties> families(family_count);
+        vkGetPhysicalDeviceQueueFamilyProperties(candidate, &family_count, families.data());
+        const auto graphics = std::ranges::find_if(families, [](const VkQueueFamilyProperties& f) { return (f.queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0; });
+        if (graphics == families.end()) continue;
+        const auto index = static_cast<std::uint32_t>(graphics - families.begin());
+        auto attempt = render::make_device(render::DeviceRequest{instance, render::kVideoApi, {}, candidate, properties.apiVersion, index, properties.deviceName, false, {}});
+        if (!attempt) continue;
+        made = std::move(*attempt);
+        physical = candidate;
+        family = index;
+        break;
+    }
+    if (!made) {
+        vkDestroyInstance(instance, nullptr);
+        return fail(3, "no Vulkan device here can draw");
+    }
+    const VkDevice device = made->device;
+    int code = 0;
+    {
+        VkCommandPoolCreateInfo pool_info{};
+        pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+        pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+        pool_info.queueFamilyIndex = family;
+        VkCommandPool pool = VK_NULL_HANDLE;
+        vkCreateCommandPool(device, &pool_info, nullptr, &pool);
+        VkCommandBufferAllocateInfo allocate{};
+        allocate.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        allocate.commandPool = pool;
+        allocate.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        allocate.commandBufferCount = 1;
+        VkCommandBuffer commands = VK_NULL_HANDLE;
+        vkAllocateCommandBuffers(device, &allocate, &commands);
+        VkFenceCreateInfo fence_info{};
+        fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        VkFence fence = VK_NULL_HANDLE;
+        vkCreateFence(device, &fence_info, nullptr, &fence);
+        {
+            render::VideoPass pass;
+            Target target(physical, device, true);
+            if (!pass.create(physical, device, false) || !target.create_pass() || !pass.create_pipeline(target.pass(), false)) {
+                code = fail(1, "the pass could not be set up");
+            } else {
+                pass.set_scaler(media::Scaler::bilinear);
+                pass.set_deband(false);
+                pass.set_hdr_peak(peak);
+                const media::TestChart chart = media::make_test_chart(hdr);
+                if (!draw(device, made->queue, family, nullptr, commands, fence, pass, target, chart.picture())) {
+                    code = fail(1, "the test picture could not be drawn");
+                } else {
+                    std::vector<float> out(std::size_t{chart.width} * chart.height * 3);
+                    for (std::uint32_t y = 0; y < chart.height; ++y) {
+                        for (std::uint32_t x = 0; x < chart.width; ++x) {
+                            for (unsigned c = 0; c < 3; ++c) out[(std::size_t{y} * chart.width + x) * 3 + c] = static_cast<float>(target.value(x, y, c) / 255.0);
+                        }
+                    }
+                    std::ofstream file_out(file, std::ios::binary);
+                    file_out.write(reinterpret_cast<const char*>(out.data()), static_cast<std::streamsize>(out.size() * sizeof(float)));
+                    if (!file_out) code = fail(1, "{} could not be written", file);
+                    else std::printf("render-check: the %s test picture drawn on %s: %s (%s)\n", hdr ? "HDR" : "SDR", properties.deviceName, file.c_str(), pass.describe().c_str());
+                }
+            }
+            vkDeviceWaitIdle(device);
+            pass.destroy();
+        }
+        vkDestroyFence(device, fence, nullptr);
+        vkDestroyCommandPool(device, pool, nullptr);
+    }
+    vkDestroyDevice(device, nullptr);
+    vkDestroyInstance(instance, nullptr);
+    return code;
+}
+
 int main(int argc, char** argv) {
+    if (argc >= 3 && std::string_view(argv[1]) == "--chart-out") {
+        bool hdr = false;
+        double peak = media::kAssumedHdrPeakNits;
+        for (int i = 3; i < argc; ++i) {
+            if (std::string_view(argv[i]) == "--hdr") hdr = true;
+            else if (std::string_view(argv[i]) == "--peak" && i + 1 < argc) peak = std::atof(argv[++i]);
+            else return fail(2, "usage: psvp_render_check --chart-out FILE [--hdr] [--peak NITS]");
+        }
+        return run_chart_out(argv[2], hdr, peak);
+    }
     if (argc >= 2 && std::string_view(argv[1]) == "--scaling") {
         if (argc > 3 || (argc == 3 && std::string_view(argv[2]) != "--time")) return fail(2, "usage: psvp_render_check --scaling [--time]");
         return run_scaling(argc == 3);

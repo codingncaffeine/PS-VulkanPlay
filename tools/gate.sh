@@ -73,6 +73,8 @@ lane decode-asan       scenario phase3a build/san &
 lane play              scenario phase3b build/release &
 # HDR10 to a desktop that takes it: a nested KWin inside the wall (skipped, and said, where there is none).
 lane hdr-output        scenario hdr build/release &
+# I5: the test picture as libplacebo draws it, against ours (skipped, and said, without libplacebo).
+lane placebo           tools/placebo-check.sh build/release &
 # The app's window on the real program against the mock, and the application started as a person starts it.
 lane app-play          scenario phase5a build/release &
 # Memory errors only, as for the other window runs.

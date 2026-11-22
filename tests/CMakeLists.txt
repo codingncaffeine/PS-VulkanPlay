@@ -88,6 +88,13 @@ if(TARGET psvp_render)
     add_executable(psvp_render_check ../tools/render-check/render_check.cpp)
     target_link_libraries(psvp_render_check PRIVATE psvp_render psvp_media Vulkan::Vulkan)
     psvp_setup_target(psvp_render_check)
+    # I5: libplacebo as the picture reference, where it is installed (a test tool only; never shipped).
+    pkg_check_modules(PSVP_PLACEBO QUIET IMPORTED_TARGET libplacebo>=7)
+    if(PSVP_PLACEBO_FOUND)
+        add_executable(psvp_placebo_check ../tools/placebo-check/placebo_check.cpp)
+        target_link_libraries(psvp_placebo_check PRIVATE psvp_media PkgConfig::PSVP_PLACEBO)
+        psvp_setup_target(psvp_placebo_check)
+    endif()
 endif()
 
 # The lab's clock on the screen (PLAN I3): when each frame of the clip reached a virtual screen, scored
