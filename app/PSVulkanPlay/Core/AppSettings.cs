@@ -38,8 +38,10 @@ public sealed class AppSettings
     public bool HdrOutput { get; set; } = true;         // an HDR picture goes to the screen as HDR where the desktop takes it
     public string Scaler { get; set; } = DefaultScaler;   // how the picture is brought to the window's size (Scalers)
     public bool Deband { get; set; } = true;            // banding smoothed out of the picture
+    public int Sharpen { get; set; }                    // 0 to 100: the picture's brightness sharpened
     public string Controller { get; set; } = "auto";    // auto, dualsense, dualshock4
     public int HapticsVolume { get; set; } = 100;       // 0 to 100
+    public int LightBrightness { get; set; } = 100;     // 0 to 100: the light bar's brightness
     public int RumbleStrength { get; set; } = 100;      // 0 to 100: the console's rumble and the rumble made from haptics
     public string BackLeft { get; set; } = "";          // a button's name, or nothing
     public string BackRight { get; set; } = "";
@@ -100,9 +102,11 @@ public sealed class AppSettings
             HdrOutput = HdrOutput,
             Scaler = Scalers.Contains(Scaler) ? Scaler : DefaultScaler,
             Deband = Deband,
+            Sharpen = Math.Clamp(Sharpen, 0, 100),
             Controller = Controllers.Contains(Controller) ? Controller : "auto",
             HapticsVolume = Math.Clamp(HapticsVolume, 0, 100),
             RumbleStrength = Math.Clamp(RumbleStrength, 0, 100),
+            LightBrightness = Math.Clamp(LightBrightness, 0, 100),
             BackLeft = Buttons.Contains(BackLeft) ? BackLeft : "",
             BackRight = Buttons.Contains(BackRight) ? BackRight : "",
             TriggerEffects = TriggerEffects,
@@ -124,6 +128,20 @@ public sealed class AppSettings
             PerConsole = (PerConsole ?? []).Where(entry => entry.Key.Length > 0 && entry.Value is not null)
                                            .ToDictionary(entry => entry.Key, entry => entry.Value.Valid()),
         };
+    }
+
+    /// <summary>The program's arguments for the test picture, drawn with these settings' picture options.</summary>
+    public IReadOnlyList<string> ChartArguments(bool hdr)
+    {
+        AppSettings s = Valid();
+        var arguments = new List<string> { "chart" };
+        if (hdr) arguments.Add("--hdr");
+        if (s.HdrPeakMeasured == false) arguments.AddRange(["--hdr-peak", s.HdrPeakNits.ToString()]);
+        if (!s.HdrOutput) arguments.AddRange(["--hdr-output", "off"]);
+        if (s.Scaler != DefaultScaler) arguments.AddRange(["--scaler", s.Scaler]);
+        if (!s.Deband) arguments.AddRange(["--deband", "off"]);
+        if (s.Sharpen != 0) arguments.AddRange(["--sharpen", s.Sharpen.ToString()]);
+        return arguments;
     }
 
     /// <summary>The program's arguments for a session with a console, as these settings ask for it.</summary>
@@ -151,6 +169,7 @@ public sealed class AppSettings
         if (!s.HdrOutput) arguments.AddRange(["--hdr-output", "off"]);
         if (s.Scaler != DefaultScaler) arguments.AddRange(["--scaler", s.Scaler]);
         if (!s.Deband) arguments.AddRange(["--deband", "off"]);
+        if (s.Sharpen != 0) arguments.AddRange(["--sharpen", s.Sharpen.ToString()]);
         arguments.AddRange(["--haptics-volume", s.HapticsVolume.ToString()]);
         if (s.BackLeft.Length > 0) arguments.AddRange(["--back-left", s.BackLeft]);
         if (s.BackRight.Length > 0) arguments.AddRange(["--back-right", s.BackRight]);
@@ -161,6 +180,7 @@ public sealed class AppSettings
         if (!s.Touchpad) arguments.AddRange(["--touchpad", "off"]);
         if (s.DeadZone != 0) arguments.AddRange(["--dead-zone", s.DeadZone.ToString()]);
         if (s.RumbleStrength != 100) arguments.AddRange(["--rumble-strength", s.RumbleStrength.ToString()]);
+        if (s.LightBrightness != 100) arguments.AddRange(["--light-brightness", s.LightBrightness.ToString()]);
         if (!s.PointerTouch) arguments.AddRange(["--pointer-touch", "off"]);
         if (!s.DpadTouch) arguments.AddRange(["--dpad-touch", "off"]);
         if (s.FnLeft != "none") arguments.AddRange(["--fn-left", s.FnLeft]);

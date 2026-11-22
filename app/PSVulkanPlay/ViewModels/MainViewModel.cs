@@ -40,7 +40,7 @@ public sealed class MainViewModel : Observable
         _directory = new ConsoleDirectory(runner);
         _store = store;
         _post = post;
-        Settings = new SettingsViewModel(store, text => Notify(text, true));
+        Settings = new SettingsViewModel(store, text => Notify(text, true), ShowChart);
         AddConsole = new AddConsoleViewModel(runner, _directory, post, Registered, signIn);
         GoHome = new Command(() => Show(Page.Home));
         GoSettings = new Command(() => Show(Page.Settings));
@@ -51,6 +51,24 @@ public sealed class MainViewModel : Observable
         Stop = new Command(() => _session?.Stop(), () => _session is not null);
         DismissNotice = new Command(() => { Notice = ""; ShowReport = false; });
         ToggleReport = new Command(() => ShowReport = !ShowReport);
+    }
+
+    // The test picture's window: one at a time (a second press shows the other kind in its place).
+    private IRunningProgram? _chart;
+    private void ShowChart(bool hdr)
+    {
+        _chart?.Stop();
+        IRunningProgram chart = _runner.Start(Settings.Current.ChartArguments(hdr), _ => { });
+        _chart = chart;
+        _ = chart.Ended.ContinueWith(ended =>
+        {
+            RunResult result = ended.Result;
+            // Closed by the user (exit 0) or replaced by another: nothing to say. Else what the program said.
+            _post(() =>
+            {
+                if (!result.Ok && ReferenceEquals(_chart, chart)) Notify($"The test picture could not be shown: {result.Reason}", true);
+            });
+        }, TaskScheduler.Default);
     }
 
     public ObservableCollection<ConsoleCard> Consoles { get; } = [];

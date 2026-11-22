@@ -988,6 +988,51 @@ int run_scaling(bool time) {
                 }
             }
 
+            // 2b. Sharpening (media::sharpen_sample), drawn as large as the picture, nothing else on:
+            // within `most` of the reference everywhere. The control: the sharpened drawing differs from
+            // the plain one by more than two steps in a tenth of the picture or more (its detail).
+            if (!broken) {
+                constexpr int kPercent = 60;
+                pass.set_scaler(media::kDefaultScaler);
+                pass.set_deband(false);
+                std::vector<double> unsharpened, sharp;
+                const auto gray_of_detail = [&] {
+                    std::vector<double> gray(std::size_t{detail.width} * detail.height);
+                    for (std::uint32_t y = 0; y < detail.height; ++y) {
+                        for (std::uint32_t x = 0; x < detail.width; ++x) gray[std::size_t{y} * detail.width + x] = target.value(x, y, 0);
+                    }
+                    return gray;
+                };
+                if (draw_at(detail, {})) unsharpened = gray_of_detail();
+                pass.set_sharpen(kPercent);
+                if (draw_at(detail, {})) sharp = gray_of_detail();
+                pass.set_sharpen(0);
+                if (unsharpened.empty() || sharp.empty()) {
+                    code = fail(1, "the sharpened picture could not be drawn");
+                    broken = true;
+                } else {
+                    std::vector<float> samples(detail.y.size());
+                    for (std::size_t k = 0; k < samples.size(); ++k) samples[k] = static_cast<float>(detail.y[k]) / 255.0F;
+                    const std::vector<float> reference = media::sharpen_plane(samples, detail.width, detail.height, media::sharpen_strength(kPercent));
+                    std::size_t off = 0, changed = 0;
+                    double worst = 0.0;
+                    for (std::size_t k = 0; k < reference.size(); ++k) {
+                        const double rgb = std::clamp((static_cast<double>(reference[k]) * 255.0 - 16.0) / 219.0, 0.0, 1.0);
+                        const double apart = std::abs(sharp[k] - static_cast<double>(stored(static_cast<float>(rgb))) * 255.0);
+                        worst = std::max(worst, apart);
+                        off += apart > most ? 1U : 0U;
+                        changed += std::abs(sharp[k] - unsharpened[k]) > 2.0 ? 1U : 0U;
+                    }
+                    std::printf("render-check: sharpening %d%%: %zu pixels more than %.2f of a step of 255 from the reference (the largest %.3f)\n", kPercent, off, most, worst);
+                    if (off != 0) code = 1;
+                    std::printf("render-check: control: sharpening moved %zu of %zu pixels by more than 2 steps\n", changed, reference.size());
+                    if (changed < reference.size() / 10) {
+                        std::printf("render-check: the control failed: sharpening was not seen\n");
+                        code = 1;
+                    }
+                }
+            }
+
             // 3. What it costs.
             if (!broken && time && timing != VK_NULL_HANDLE) {
                 const GrayPicture console = gray_picture(1920, 1080, [](std::uint32_t x, std::uint32_t y) { return 16 + static_cast<int>(media::hash32(x + y * 1920U) % 220U); });

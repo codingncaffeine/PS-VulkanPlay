@@ -16,6 +16,7 @@
 #include "app/args.h"
 #include "app/commands.h"
 #include "app/controllers.h"
+#include "app/chart.h"
 #include "app/diagnose.h"
 #include "app/log.h"
 #include "app/paths.h"
@@ -103,6 +104,7 @@ int run(int argc, char** argv) {
     psvp::app::set_play_runner(&psvp::app::run_player);
     psvp::app::set_controllers_runner(&psvp::app::run_controllers);
     psvp::app::set_diagnose_runner(&psvp::app::run_diagnose);
+    psvp::app::set_chart_runner(&psvp::app::run_chart);
     // A session with the app's settings, asked for by a desktop shortcut, a launcher or a link: the app runs it.
     if ((args.size() == 2 && args[0] == "--play") || (args.size() == 1 && args[0].starts_with("ps-vulkanplay:"))) {
         hand_over_to_the_app(args);

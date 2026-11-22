@@ -267,6 +267,27 @@ public class WindowTests : IDisposable
     });
 
     [Fact]
+    public void The_test_picture_buttons_start_the_program_with_the_picture_settings() => Ui.Run(() =>
+    {
+        FakeRunner fake = FakeRunner.WithTwoConsoles();
+        (MainWindow window, MainViewModel model) = Ui.Open(fake, _folder);
+        Ui.Click(window, window.FindControl<Button>("NavSettings")!);
+        Ui.Until(() => Ui.Shows(window, "Test picture"), "the settings page is up");
+        model.Settings.Sharpen = 25;
+        Button Named(string text) => window.GetVisualDescendants().OfType<Button>().First(button => button.Content as string == text);
+        Named("SDR").BringIntoView();
+        Ui.Settle();
+        Ui.Click(window, Named("SDR"));
+        Ui.Until(() => fake.Last("chart") is not null, "the SDR test picture was asked for");
+        Assert.Equal(["chart", "--sharpen", "25"], fake.Last("chart"));
+        Ui.Capture(window, "settings-test-picture-dark");
+        Ui.Click(window, Named("HDR"));
+        Ui.Until(() => fake.Last("chart")!.Contains("--hdr"), "the HDR one in its place");
+        Assert.Equal(["chart", "--hdr", "--sharpen", "25"], fake.Last("chart"));
+        model.Settings.Sharpen = 0;
+    });
+
+    [Fact]
     public void Settings_are_one_page_and_the_look_changes_at_once() => Ui.Run(() =>
     {
         FakeRunner fake = FakeRunner.WithTwoConsoles();

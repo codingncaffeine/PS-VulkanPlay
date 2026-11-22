@@ -145,3 +145,22 @@ PSVP_TEST(scaler_deband_smooths_bands_and_keeps_edges) {
     CHECK(after.size() > 20);
     CHECK(deband_plane(edge, w, h, deband, 1) == edge);
 }
+
+// Sharpening: nothing moves where it is even; an edge gets steeper, without going past black or
+// white; more strength, more; the shader's arithmetic is this one (render-check compares them).
+PSVP_TEST(sharpen_is_contrast_adaptive) {
+    using psvp::media::sharpen_sample;
+    CHECK(std::abs(sharpen_sample(0.5F, 0.5F, 0.5F, 0.5F, 0.5F, 1.0F) - 0.5F) < 1e-6F);
+    CHECK(sharpen_sample(0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F) == 0.0F);
+    // A sample brighter than its neighbors gets brighter, more so at full strength.
+    const float soft = sharpen_sample(0.6F, 0.5F, 0.5F, 0.5F, 0.5F, 0.0F), hard = sharpen_sample(0.6F, 0.5F, 0.5F, 0.5F, 0.5F, 1.0F);
+    CHECK(soft > 0.6F && hard > soft && hard < 1.0F);
+    // Next to black or white there is no room: it is left as it is.
+    CHECK(sharpen_sample(0.6F, 0.0F, 0.5F, 0.5F, 0.5F, 1.0F) == 0.6F);
+    CHECK(sharpen_sample(0.6F, 1.0F, 0.5F, 0.5F, 0.5F, 1.0F) == 0.6F);
+    // A plane: the edges repeated, an even plane unchanged.
+    const std::vector<float> even(12, 0.4F);
+    const std::vector<float> still = psvp::media::sharpen_plane(even, 4, 3, 0.5F);
+    CHECK(std::ranges::all_of(still, [](float v) { return std::abs(v - 0.4F) < 1e-6F; }));
+    CHECK(psvp::media::sharpen_strength(1) == 0.0F && psvp::media::sharpen_strength(100) == 1.0F);
+}

@@ -95,5 +95,15 @@ play_on_kwin sdr hevc --codec hevc
 check "nothing of HDR was said" sh -c "! grep -aq 'HDR to the screen\|tone mapped to SDR' '$work/sdr.err'"
 check "an 8-bit swapchain (B8G8R8A8_UNORM = 44 or R8G8B8A8_UNORM = 37)" sh -c "grep -aq 'render: swapchain .*format \(44\|37\)$' '$work/sdr.log' && ! grep -aq 'render: swapchain .*format 64' '$work/sdr.log'"
 
+echo "the HDR test picture ('chart --hdr') on the same desktop: sent to the screen as HDR10"
+SDL_VIDEO_DRIVER=wayland WAYLAND_DISPLAY=psvp-hdr VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation VK_LOADER_LAYERS_ENABLE='*validation*' \
+    "$app" chart --hdr > "$work/chart.err" 2>&1 &
+chart_pid=$!
+for _ in $(seq 150); do grep -aq 'render: first picture shown' "$work/chart.err" 2>/dev/null && break; kill -0 $chart_pid 2>/dev/null || break; sleep 0.1; done
+kill -TERM $chart_pid 2>/dev/null; wait $chart_pid; rc=$?
+[ $rc -eq 0 ] && ok "chart: exit 0 when asked to stop" || fail "chart: exit $rc: $(tail -3 "$work/chart.err")"
+check "chart: the PQ picture went to the screen as HDR10" has "$work/chart.err" "1920x1080, 10 bits, limited range, BT.2020, HDR (PQ) sent to the screen as HDR10"
+check "chart: the validation layer reported nothing" sh -c "! grep -aq 'VUID\|Validation Error\|Validation Warning' '$work/chart.err'"
+
 [ $failed -eq 0 ] && echo "HDR PASSED" || echo "HDR FAILED"
 exit $failed

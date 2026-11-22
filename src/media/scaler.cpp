@@ -180,4 +180,27 @@ std::vector<float> deband_plane(const std::vector<float>& plane, std::uint32_t w
     return out;
 }
 
+float sharpen_sample(float c, float north, float south, float east, float west, float strength) {
+    const float least = std::min({c, north, south, east, west});
+    const float most = std::max({c, north, south, east, west});
+    if (!(most > 0.0F)) return c;
+    // How much room the neighborhood leaves to black and to white, as a share of its brightest.
+    const float room = std::sqrt(std::clamp(std::min(least, 1.0F - most) / most, 0.0F, 1.0F));
+    const float weight = room * (-1.0F / (8.0F + (5.0F - 8.0F) * strength));
+    return std::clamp((c + weight * (north + south + east + west)) / (1.0F + 4.0F * weight), 0.0F, 1.0F);
+}
+
+std::vector<float> sharpen_plane(const std::vector<float>& plane, std::uint32_t width, std::uint32_t height, float strength) {
+    std::vector<float> out(plane.size());
+    const int last_x = static_cast<int>(width) - 1, last_y = static_cast<int>(height) - 1;
+    const auto at = [&](int x, int y) { return plane[static_cast<std::size_t>(std::clamp(y, 0, last_y)) * width + static_cast<std::size_t>(std::clamp(x, 0, last_x))]; };
+    for (int y = 0; y <= last_y; ++y) {
+        for (int x = 0; x <= last_x; ++x) {
+            out[static_cast<std::size_t>(y) * width + static_cast<std::size_t>(x)] =
+                sharpen_sample(at(x, y), at(x, y - 1), at(x, y + 1), at(x + 1, y), at(x - 1, y), strength);
+        }
+    }
+    return out;
+}
+
 }  // namespace psvp::media

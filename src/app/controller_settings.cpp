@@ -52,6 +52,7 @@ std::string describe(const ControllerSettings& s) {
     if (!s.motion) add("motion off");
     if (!s.touchpad) add("touchpad off");
     if (s.dead_zone != 0) add(std::format("dead zone {}%", s.dead_zone));
+    if (s.light_brightness != 100) add(std::format("light bar at {}%", s.light_brightness));
     if (s.rumble != 100) add(std::format("rumble {}%", s.rumble));
     if (!s.pointer_touch) add("touchpad from the mouse off");
     if (!s.dpad_touch) add("touchpad from the d-pad off");

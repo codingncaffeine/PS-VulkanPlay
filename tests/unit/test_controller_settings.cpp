@@ -54,4 +54,6 @@ PSVP_TEST(controller_settings_rumble_strength) {
     ControllerSettings s;
     s.rumble = 40;
     CHECK(describe(s) == "rumble 40%");
+    s.light_brightness = 25;
+    CHECK(describe(s) == "light bar at 25%, rumble 40%");
 }

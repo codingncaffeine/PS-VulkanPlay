@@ -156,6 +156,17 @@
                         <Border Classes="rule" />
                         <Grid ColumnDefinitions="*,Auto">
                             <StackPanel VerticalAlignment="Center" Margin="0,0,20,0">
+                                <TextBlock Text="Test picture" />
+                                <TextBlock Classes="secondary small" TextWrapping="Wrap" Text="Gradients, grays, black and white levels and colors, drawn as the console's picture is, with the settings on this page; what to look for is written on it. Compare it with how the console's own menus look on your screen. Esc closes it." />
+                            </StackPanel>
+                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                                <Button Content="SDR" Command="{Binding ShowChart}" />
+                                <Button Content="HDR" Command="{Binding ShowHdrChart}" />
+                            </StackPanel>
+                        </Grid>
+                        <Border Classes="rule" />
+                        <Grid ColumnDefinitions="*,Auto">
+                            <StackPanel VerticalAlignment="Center" Margin="0,0,20,0">
                                 <TextBlock Text="Scaling" />
                                 <TextBlock Classes="secondary small" TextWrapping="Wrap" Text="How the picture is brought to the window's size. The sharper ones show more detail and take more of the graphics card." />
                             </StackPanel>
@@ -168,6 +179,11 @@
                                 <TextBlock Classes="secondary small" TextWrapping="Wrap" Text="A low bitrate cuts skies and other smooth areas into flat bands; this blends them back together and leaves edges alone." />
                             </StackPanel>
                             <ToggleSwitch Grid.Column="1" IsChecked="{Binding Deband}" OnContent="" OffContent="" MinWidth="0" />
+                        </Grid>
+                        <Border Classes="rule" />
+                        <Grid ColumnDefinitions="*,Auto">
+                            <StackPanel VerticalAlignment="Center" Margin="0,0,20,0"><TextBlock Text="Sharpening" /><TextBlock Classes="secondary small" TextWrapping="Wrap" Text="{Binding SharpenText}" /></StackPanel>
+                            <Slider Grid.Column="1" Minimum="0" Maximum="100" TickFrequency="5" IsSnapToTickEnabled="True" Value="{Binding Sharpen}" />
                         </Grid>
                         <Border Classes="rule" />
                         <Grid ColumnDefinitions="*,Auto">
@@ -300,6 +316,11 @@
                         <Grid ColumnDefinitions="*,Auto">
                             <StackPanel VerticalAlignment="Center"><TextBlock Text="Light bar" /><TextBlock Classes="secondary small" Text="Its color while playing." /></StackPanel>
                             <ComboBox Grid.Column="1" ItemsSource="{Binding LightBars}" SelectedItem="{Binding LightBar}" MinWidth="260" />
+                        </Grid>
+                        <Border Classes="rule" />
+                        <Grid ColumnDefinitions="*,Auto">
+                            <StackPanel VerticalAlignment="Center"><TextBlock Text="Light bar brightness" /><TextBlock Classes="secondary small" Text="{Binding LightBrightnessText}" /></StackPanel>
+                            <Slider Grid.Column="1" Minimum="0" Maximum="100" TickFrequency="5" IsSnapToTickEnabled="True" Value="{Binding LightBrightness}" />
                         </Grid>
                         <Border Classes="rule" />
                         <Grid ColumnDefinitions="*,Auto">

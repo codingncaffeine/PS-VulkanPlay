@@ -1420,7 +1420,7 @@ PlayRunner play_runner = nullptr;
 
 // The stream in a window, with its sound and a controller: what the program is for.
 int command_play(std::span<const std::string_view> args) {
-    const Parsed parsed = parse(args, {"--host", "--seconds", "--passcode", "--resolution", "--fps", "--bitrate", "--codec", "--tap", "--frames", "--controller", "--pacing", "--cushion", "--haptics-volume", "--back-left", "--back-right", "--loss-ceiling", "--ack-copies", "--decoder", "--pretend", "--pretend-taps", "--reconnect", "--hdr-peak", "--hdr-output", "--scaler", "--deband", "--trigger-effects", "--light-bar", "--player-lights", "--motion", "--touchpad", "--dead-zone", "--rumble-strength", "--pointer-touch", "--dpad-touch", "--fn-left", "--fn-right"},
+    const Parsed parsed = parse(args, {"--host", "--seconds", "--passcode", "--resolution", "--fps", "--bitrate", "--codec", "--tap", "--frames", "--controller", "--pacing", "--cushion", "--haptics-volume", "--back-left", "--back-right", "--loss-ceiling", "--ack-copies", "--decoder", "--pretend", "--pretend-taps", "--reconnect", "--hdr-peak", "--hdr-output", "--scaler", "--deband", "--sharpen", "--trigger-effects", "--light-bar", "--player-lights", "--motion", "--touchpad", "--dead-zone", "--rumble-strength", "--light-brightness", "--pointer-touch", "--dpad-touch", "--fn-left", "--fn-right"},
                                 {"--rest", "--wake", "--stats"}, 1);
     if (!parsed.error.empty()) return usage("play: {}", parsed.error);
     SessionPlan plan;
@@ -1501,6 +1501,11 @@ int command_play(std::span<const std::string_view> args) {
         if (*text != "on" && *text != "off") return usage("play: --deband takes on or off");
         options.deband = *text == "on";
     }
+    if (const auto text = parsed.option("--sharpen")) {
+        const auto percent = parse_number(*text, 0, 100);
+        if (!percent && *text != "0") return usage("play: --sharpen takes a percent from 0 to 100");
+        options.sharpen = percent ? static_cast<int>(*percent) : 0;
+    }
     ControllerSettings& pad = options.controller_settings;
     for (const auto& [name, field] : {std::pair{"--trigger-effects", &pad.trigger_effects}, std::pair{"--player-lights", &pad.player_lights},
                                       std::pair{"--motion", &pad.motion}, std::pair{"--touchpad", &pad.touchpad},
@@ -1520,6 +1525,11 @@ int command_play(std::span<const std::string_view> args) {
         const auto percent = parse_number(*text, 0, ControllerSettings::kMostDeadZone);
         if (!percent && *text != "0") return usage("play: --dead-zone takes a percent of a stick's throw from 0 to {}", ControllerSettings::kMostDeadZone);
         pad.dead_zone = percent ? static_cast<int>(*percent) : 0;
+    }
+    if (const auto text = parsed.option("--light-brightness")) {
+        const auto percent = parse_number(*text, 0, 100);
+        if (!percent && *text != "0") return usage("play: --light-brightness takes a percent from 0 to 100");
+        pad.light_brightness = percent ? static_cast<int>(*percent) : 0;
     }
     if (const auto text = parsed.option("--rumble-strength")) {
         const auto percent = parse_number(*text, 0, 100);
@@ -1588,6 +1598,39 @@ int command_diagnose(std::span<const std::string_view> args) {
     if (!parsed.error.empty()) return usage("diagnose: {}", parsed.error);
     if (diagnose_runner == nullptr) return fail("diagnose: this build has no graphics part to ask");
     return diagnose_runner(parsed.flag("--json"));
+}
+
+// The test picture in the stream's window.
+ChartRunner chart_runner = nullptr;
+int command_chart(std::span<const std::string_view> args) {
+    const Parsed parsed = parse(args, {"--hdr-peak", "--hdr-output", "--scaler", "--deband", "--sharpen"}, {"--hdr"}, 0);
+    if (!parsed.error.empty()) return usage("chart: {}", parsed.error);
+    if (chart_runner == nullptr) return fail("chart: this build has no window");
+    ChartOptions options;
+    options.hdr = parsed.flag("--hdr");
+    if (const auto text = parsed.option("--hdr-peak"); text && *text != "auto") {
+        const auto nits = parse_number(*text, 400, 10000);
+        if (!nits) return usage("chart: --hdr-peak takes auto or a brightness in cd/m² from 400 to 10000");
+        options.hdr_peak_nits = static_cast<int>(*nits);
+    }
+    if (const auto text = parsed.option("--hdr-output")) {
+        if (*text != "auto" && *text != "off") return usage("chart: --hdr-output takes auto or off");
+        options.hdr_output = *text == "auto";
+    }
+    if (const auto text = parsed.option("--scaler")) {
+        options.scaler = media::scaler_from_name(*text);
+        if (!options.scaler) return usage("chart: --scaler takes bilinear, catmull-rom, lanczos, ewa-lanczos or ewa-lanczos-sharp");
+    }
+    if (const auto text = parsed.option("--deband")) {
+        if (*text != "on" && *text != "off") return usage("chart: --deband takes on or off");
+        options.deband = *text == "on";
+    }
+    if (const auto text = parsed.option("--sharpen")) {
+        const auto percent = parse_number(*text, 0, 100);
+        if (!percent && *text != "0") return usage("chart: --sharpen takes a percent from 0 to 100");
+        options.sharpen = percent ? static_cast<int>(*percent) : 0;
+    }
+    return chart_runner(options);
 }
 
 // The controllers that are connected: what a session would find.
@@ -1816,6 +1859,7 @@ int run_session(const SessionPlan& plan) { return run_session_here(plan); }
 void set_play_runner(PlayRunner runner) { play_runner = runner; }
 void set_controllers_runner(ControllersRunner runner) { controllers_runner = runner; }
 void set_diagnose_runner(DiagnoseRunner runner) { diagnose_runner = runner; }
+void set_chart_runner(ChartRunner runner) { chart_runner = runner; }
 
 bool is_command(std::span<const std::string_view> args) { return !args.empty() && !args.front().starts_with("-"); }
 
@@ -1834,6 +1878,7 @@ int run_command(std::span<const std::string_view> args) {
     if (name == "account") return command_account(rest);
     if (name == "controllers") return command_controllers(rest);
     if (name == "diagnose") return command_diagnose(rest);
+    if (name == "chart") return command_chart(rest);
     return usage("unknown command '{}'", name);
 }
 
@@ -1860,9 +1905,9 @@ std::string commands_help() {
         "          [--pacing on|off] [--cushion 0-50] [--haptics-volume 0-100] [--back-left BUTTON]\n"
         "          [--back-right BUTTON] [--loss-ceiling PERCENT] [--ack-copies 0-2] [--decoder auto|software]\n"
         "          [--reconnect SECONDS] [--hdr-peak auto|400-10000] [--hdr-output auto|off] [--scaler NAME]\n"
-        "          [--deband on|off] [--trigger-effects on|off] [--light-bar console|off|RRGGBB]\n"
+        "          [--deband on|off] [--sharpen 0-100] [--trigger-effects on|off] [--light-bar console|off|RRGGBB]\n"
         "          [--player-lights on|off] [--motion on|off] [--touchpad on|off] [--dead-zone 0-30]\n"
-        "          [--rumble-strength 0-100] [--pointer-touch on|off] [--dpad-touch on|off]\n"
+        "          [--rumble-strength 0-100] [--light-brightness 0-100] [--pointer-touch on|off] [--dpad-touch on|off]\n"
         "          [--fn-left ACTION] [--fn-right ACTION] [--stats] [--wake] [--rest]\n"
         "      play: the console's picture in a window, its sound, and a controller that is plugged in\n"
         "      or paired; closing the window ends the session (--rest then sends the console to rest mode).\n"
@@ -1896,13 +1941,15 @@ std::string commands_help() {
         "      the picture is brought to the window's size: bilinear (soft, the least work), catmull-rom,\n"
         "      lanczos, ewa-lanczos (unless said) or ewa-lanczos-sharp; --deband off leaves the bands a\n"
         "      low bitrate cuts smooth areas such as skies into (smoothed out unless said); on a software\n"
-        "      Vulkan device (no graphics card) bilinear and no debanding unless said;\n"
+        "      Vulkan device (no graphics card) bilinear and no debanding unless said; --sharpen sharpens\n"
+        "      the brightness by that percent, more where it is soft (0 unless said);\n"
         "      for the controller (each as the console wants it unless said): --trigger-effects off keeps\n"
         "      the console's adaptive trigger effects off a DualSense, --light-bar off or a color (ff8000)\n"
         "      instead of the console's, --player-lights off, --motion off and --touchpad off do not tell\n"
         "      the console the motion or the touches, --dead-zone is the percent of a stick's throw that\n"
         "      counts as rest (0 unless said), --rumble-strength the percent of the rumble's strength (the\n"
         "      console's rumble, and the rumble made from haptics away from the cable; 100 unless said),\n"
+        "      --light-brightness the percent of the light bar's brightness (100 unless said),\n"
         "      --pointer-touch off: the mouse (left button: a finger; the others: a press) and a touch\n"
         "      screen on the window no longer stand in for the touchpad, --dpad-touch off: on a controller\n"
         "      with no touchpad, share held no longer turns the d-pad into swipes and south into a press,\n"
@@ -1927,7 +1974,12 @@ std::string commands_help() {
         "      (a direction, accept, back, the page before or after)\n"
         "  {0} diagnose [--json]\n"
         "      what this computer offers: its graphics devices, whether pictures are decoded on the card\n"
-        "      (and why not), the libraries' versions, and how the last session ended\n",
+        "      (and why not), the libraries' versions, and how the last session ended\n"
+        "  {0} chart [--hdr] [--hdr-peak auto|400-10000] [--hdr-output auto|off] [--scaler NAME]\n"
+        "          [--deband on|off] [--sharpen 0-100]\n"
+        "      a test picture in the stream's window, drawn as a console's picture is (the same options as\n"
+        "      play): gradients, grays, black and white levels, colors; --hdr an HDR (PQ) one, tone mapped\n"
+        "      or sent to an HDR screen as HDR10; what to look for is written over it; Esc closes it\n",
         PSVP_BINARY);
 }
 

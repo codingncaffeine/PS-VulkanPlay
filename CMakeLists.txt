@@ -99,6 +99,7 @@ add_library(psvp_media STATIC
     src/media/frame_pacer.cpp
     src/media/present_clock.cpp
     src/media/peak_detect.cpp
+    src/media/test_chart.cpp
     src/media/frame_refs.cpp
     src/media/h264_refs.cpp
     src/media/gpu_device.cpp
@@ -192,6 +193,7 @@ if(PSVP_BUILD_APP)
 
     add_executable(ps-vulkanplay
         src/app/controllers.cpp
+        src/app/chart.cpp
         src/app/diagnose.cpp
         src/app/haptics_volume.cpp
         src/app/main.cpp

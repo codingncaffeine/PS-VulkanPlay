@@ -1229,6 +1229,7 @@ int Window::run(const WindowOptions& options) {
     else video_.set_hdr_peak_measured();
     video_.set_scaler(options.scaler.value_or(software_device_ ? media::Scaler::bilinear : media::kDefaultScaler));
     video_.set_deband(options.deband.value_or(!software_device_));
+    video_.set_sharpen(options.sharpen);
     present_clock_.set_stream_rate(options.stream_rate);
     if (software_device_ && (!options.scaler || !options.deband)) {
         log::info("render: a software device: the picture is scaled by the tent and not debanded unless asked for (the sharper scalers cost each picture "

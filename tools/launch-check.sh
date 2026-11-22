@@ -232,5 +232,36 @@ else
 fi
 rm -f "$place"
 
+# The test picture ('chart'): drawn as a stream is, read off the screen. Its 75% white bar (191 of
+# 255) and its +4% black level patch (code 99 of 10 bits: 10 of 255) each fill a block of their own,
+# two thirds of their size here (1920x1080 into the window); by the tent, nothing else moved.
+chart_out="$PSVP_TEST_TMP/chart.out"
+"$app" chart --scaler bilinear --deband off > "$chart_out" 2>&1 &
+pid=$!
+for _ in $(seq 150); do grep -q 'render: first picture shown' "$chart_out" 2>/dev/null && break; kill -0 $pid 2>/dev/null || break; sleep 0.1; done
+l=$(grep -o 'render: first picture shown.*' "$chart_out" | head -1)
+case "$l" in *"1920x1080, 10 bits, limited range, BT.709, drawn at"*) ok "chart: $l" ;; *) fail "chart: no picture of 1920x1080 (${l:-nothing})" ;; esac
+if kill -0 $pid 2>/dev/null; then
+    sleep 0.7
+    # Exact colors (the reader's tolerance of 2 would take in the gradient's columns around them too).
+    white=$(count 191 191 191 0); near_black=$(count 10 10 10 0)
+    width=$(grep -o 'drawn at [0-9]*x[0-9]*' "$chart_out" | head -1 | grep -o '[0-9]*x' | tr -d x)
+    # A bar is 274x240 of the picture, the patch 160x160; scaled by width/1920 each way, a pixel's border lost to the tent.
+    bar=$(( (274 * ${width:-0} / 1920 - 2) * (240 * ${width:-0} / 1920 - 2) )); patch=$(( (160 * ${width:-0} / 1920 - 2) ** 2 ))
+    within "$white" "$bar" $((bar * 13 / 10)) && ok "chart: the 75% white bar, $white pixels (a bar: $bar)" || fail "chart: '$white' pixels of 191, a bar is $bar"
+    within "$near_black" "$patch" $((patch * 13 / 10)) && ok "chart: the +4% black level patch, $near_black pixels (a patch: $patch)" || fail "chart: '$near_black' pixels of 10, a patch is $patch"
+    kill -TERM $pid 2>/dev/null
+    wait $pid; rc=$?
+    [ $rc -eq 0 ] && ok "chart: stopped cleanly when asked" || fail "chart: exit $rc when asked to stop"
+else
+    wait $pid; fail "chart: exited by itself ($?)"; sed 's/^/           | /' "$chart_out" | head -10
+fi
+"$app" chart --hdr > "$chart_out" 2>&1 &
+pid=$!
+for _ in $(seq 150); do grep -q 'render: first picture shown' "$chart_out" 2>/dev/null && break; kill -0 $pid 2>/dev/null || break; sleep 0.1; done
+kill -TERM $pid 2>/dev/null; wait $pid; rc=$?
+[ $rc -eq 0 ] && grep -q 'first picture shown, 1920x1080, 10 bits, limited range, BT.2020, HDR (PQ) tone mapped' "$chart_out" \
+    && ok "chart --hdr: the PQ picture, tone mapped on this screen" || fail "chart --hdr: exit $rc: $(grep -o 'first picture shown.*' "$chart_out" | head -1)"
+
 [ $failed = 0 ] && echo "LAUNCH CHECK PASSED" || echo "LAUNCH CHECK FAILED"
 exit $failed

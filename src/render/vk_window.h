@@ -58,6 +58,7 @@ struct WindowOptions {
     // kernels cost each picture more than it has.
     std::optional<media::Scaler> scaler;
     std::optional<bool> deband;
+    int sharpen = 0;  // percent (VideoPass::set_sharpen)
     // Send an HDR picture to the screen as HDR10 where the window's surface takes it (a desktop with HDR
     // turned on); otherwise, or when off, it is tone mapped to SDR.
     bool hdr_output = true;

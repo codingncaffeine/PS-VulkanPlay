@@ -113,6 +113,7 @@ struct PlayOptions {
     // Nothing: as render::WindowOptions decides by the device.
     std::optional<media::Scaler> scaler;
     std::optional<bool> deband;
+    int sharpen = 0;  // percent, 0 to 100: the brightness sharpened (media::sharpen_sample)
     // Send an HDR picture to the screen as HDR10 where the desktop takes it (render::WindowOptions).
     bool hdr_output = true;
     // What the user chose for the controller (trigger effects, lights, motion, touchpad, dead zone, Fn buttons).
@@ -134,5 +135,16 @@ void set_controllers_runner(ControllersRunner runner);
 // What this computer offers (the program's own part: it makes a Vulkan device): `diagnose [--json]`.
 using DiagnoseRunner = int (*)(bool json);
 void set_diagnose_runner(DiagnoseRunner runner);
+// `chart`: the test picture (media/test_chart.h) in the stream's window, drawn as a stream is.
+struct ChartOptions {
+    bool hdr = false;
+    std::optional<int> hdr_peak_nits;  // nothing: each picture measured, as in play
+    bool hdr_output = true;
+    std::optional<media::Scaler> scaler;
+    std::optional<bool> deband;
+    int sharpen = 0;
+};
+using ChartRunner = int (*)(const ChartOptions& options);
+void set_chart_runner(ChartRunner runner);
 
 }  // namespace psvp::app

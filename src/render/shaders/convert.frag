@@ -17,7 +17,8 @@ layout(push_constant) uniform Constants {
                    //    (a graphics card's decoder): the second of them is that plane's green
     vec4 scale;    // xy: the share of the textures the picture fills (a decoder's image may be larger)
                    // zw: the picture's size in brightness samples
-    vec4 limit;    // zw: the last color sample's middle in the textures' coordinates: nothing beyond
+    vec4 limit;    // x: the sharpening's strength plus one (0: none; media::sharpen_sample)
+                   // zw: the last color sample's middle in the textures' coordinates: nothing beyond
                    // the picture is blended in at its edges
     vec4 deband;   // x: the threshold (0: no debanding), y: the radius in samples, z: the grain,
                    // w: the picture's seed (the bits of an unsigned integer)
@@ -77,9 +78,26 @@ uint hash32(uint x) {
     return x;
 }
 
+// media::sharpen_sample: the brightness against its four neighbors across and down, the edges repeated.
+float sharpened(ivec2 place, float strength) {
+    ivec2 last = ivec2(constants.scale.zw) - 1;
+    float c = texelFetch(plane_y, place, 0).r * constants.options.x;
+    float n = texelFetch(plane_y, clamp(place + ivec2(0, -1), ivec2(0), last), 0).r * constants.options.x;
+    float s = texelFetch(plane_y, clamp(place + ivec2(0, 1), ivec2(0), last), 0).r * constants.options.x;
+    float e = texelFetch(plane_y, clamp(place + ivec2(1, 0), ivec2(0), last), 0).r * constants.options.x;
+    float w = texelFetch(plane_y, clamp(place + ivec2(-1, 0), ivec2(0), last), 0).r * constants.options.x;
+    float least = min(c, min(min(n, s), min(e, w)));
+    float most = max(c, max(max(n, s), max(e, w)));
+    if (!(most > 0.0)) return c;
+    float room = sqrt(clamp(min(least, 1.0 - most) / most, 0.0, 1.0));
+    float weight = room * (-1.0 / (8.0 + (5.0 - 8.0) * strength));
+    return clamp((c + weight * (n + s + e + w)) / (1.0 + 4.0 * weight), 0.0, 1.0);
+}
+
 void main() {
     ivec2 place = ivec2(gl_FragCoord.xy);
     vec3 sampled = samples_at(place);
+    if (constants.limit.x > 0.0) sampled.x = sharpened(place, constants.limit.x - 1.0);
     float grain = 0.0;
     if (constants.deband.x > 0.0) {
         // media::deband_plane: the mean of four samples at a random offset turned four quarter

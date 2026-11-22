@@ -20,7 +20,7 @@ struct ConvertConstants {
     float to_rgb[16];
     float options[4];
     float scale[4];   // x, y: the share of the texture the picture fills; z, w: the picture's size
-    float limit[4];   // z, w: the middle of the last color sample of the picture
+    float limit[4];   // x: the sharpening's strength plus one (0: none); z, w: the middle of the last color sample of the picture
     float deband[4];  // threshold (0: none), radius, grain, the seed's bits
 };
 static_assert(sizeof(ConvertConstants) == 128);
@@ -879,6 +879,7 @@ void VideoPass::record_convert(VkCommandBuffer commands) {
     constants.options[1] = 0.25F / static_cast<float>((texture_width + 1) / 2);
     constants.options[2] = transfer_ != media::ColorTransfer::sdr ? 1.0F : 0.0F;
     constants.options[3] = gpu_picture_ ? 1.0F : 0.0F;
+    if (sharpen_ > 0) constants.limit[0] = 1.0F + media::sharpen_strength(sharpen_);
     if (deband_) {
         const media::Deband deband;
         constants.deband[0] = deband.threshold;
@@ -949,7 +950,7 @@ void VideoPass::record_draw(VkCommandBuffer commands, VkExtent2D target) {
 }
 
 std::string VideoPass::describe() const {
-    return std::format("{}x{}, {} bits{}, {} range, {}{}, drawn at {}x{}{}{}{}", width_, height_, bits_, narrowed_ ? " (shown as 8)" : "", full_range_ ? "full" : "limited",
+    return std::format("{}x{}, {} bits{}, {} range, {}{}, drawn at {}x{}{}{}{}{}", width_, height_, bits_, narrowed_ ? " (shown as 8)" : "", full_range_ ? "full" : "limited",
                        matrix_ == media::ColorMatrix::bt2020 ? "BT.2020" : matrix_ == media::ColorMatrix::bt601 ? "BT.601" : "BT.709",
                        target_ == TargetKind::hdr10 && transfer_ == media::ColorTransfer::pq  ? std::string(", HDR (PQ) sent to the screen as HDR10")
                        : target_ == TargetKind::hdr10 && transfer_ == media::ColorTransfer::hlg ? std::string(", HDR (HLG) sent to the screen as HDR10 (PQ)")
@@ -961,7 +962,7 @@ std::string VideoPass::describe() const {
                                                                  : std::string(),
                        placement_.width, placement_.height,
                        placement_.width == width_ && placement_.height == height_ ? std::string(" (as it is)") : std::format(" by {}", media::scaler_name(scaler_)),
-                       deband_ ? ", debanded" : "", gpu_picture_ ? ", read straight from the graphics card's decoder" : "");
+                       deband_ ? ", debanded" : "", sharpen_ > 0 ? std::format(", sharpened {}%", sharpen_) : std::string(), gpu_picture_ ? ", read straight from the graphics card's decoder" : "");
 }
 
 }  // namespace psvp::render

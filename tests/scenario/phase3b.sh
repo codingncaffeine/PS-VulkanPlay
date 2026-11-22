@@ -286,9 +286,9 @@ check "the turn reached the console as a rotation" sh -c "grep -a 'stream input 
     awk '{ x = \$(NF-3); if (x < 0) x = -x; if (x >= 0.1) found = 1 } END { exit found ? 0 : 1 }'"
 check "the right Fn button opened the menu" has "$work/pad-defaults.out" "The menu over the stream was opened 1 times"
 check "and the report names that setting" has "$work/pad-defaults.out" "Controller settings: right Fn: menu; trigger effects held back by them 0 times, Fn buttons pressed 1 times."
-pad_run pad-chosen --trigger-effects off --light-bar ff8000 --player-lights off --motion off --touchpad off --dead-zone 10 --rumble-strength 50
+pad_run pad-chosen --trigger-effects off --light-bar ff8000 --player-lights off --motion off --touchpad off --dead-zone 10 --rumble-strength 50 --light-brightness 50
 [ "$rc" -eq 0 ] && ok "chosen: exit 0" || fail "chosen: exit $rc: $(tail -3 "$work/pad-chosen.out")"
-check "the light bar is the user's color" has "$work/pad-chosen.play.log" "pretend: light bar set to 255, 128, 0"
+check "the light bar is the user's color, at half its brightness" has "$work/pad-chosen.play.log" "pretend: light bar set to 128, 64, 0"
 check "and never the console's" lacks "$work/pad-chosen.play.log" "pretend: light bar set to 0, 64, 255"
 check "the player lights are off (index -1), never the console's" sh -c "grep -aq 'pretend: player lights set to player index -1' '$work/pad-chosen.play.log' && ! grep -aq 'player index 2' '$work/pad-chosen.play.log'"
 check "no trigger effect reached the controller" lacks "$work/pad-chosen.play.log" "pretend: an effect report"
@@ -298,7 +298,7 @@ check "no touch reached the console" sh -c "! grep -aqE 'stream input [0-9]+: to
 check "no rotation reached the console (motion off)" sh -c "! grep -aq 'stream input state [0-9]*: rotation' '$work/pad-chosen.log'"
 check "the right Fn button did nothing (none chosen)" lacks "$work/pad-chosen.out" "The menu over the stream was opened"
 check "the report names every setting and the effects held back" \
-    has "$work/pad-chosen.out" "Controller settings: trigger effects off, light bar ff8000, player lights off, motion off, touchpad off, dead zone 10%, rumble 50%; trigger effects held back by them 1 times, Fn buttons pressed 0 times."
+    has "$work/pad-chosen.out" "Controller settings: trigger effects off, light bar ff8000, player lights off, motion off, touchpad off, dead zone 10%, light bar at 50%, rumble 50%; trigger effects held back by them 1 times, Fn buttons pressed 0 times."
 echo "two controllers: the one pressed last plays, and what the console sends for the controller goes to it"
 taps="$work/two.taps"; : > "$taps"
 start_mock two --kind ps5 --clip 416x240 --frame-ms 16 --media-ms 10 --feedback-ms 800
@@ -323,7 +323,7 @@ check "the report counts both" has "$work/two.out" "Another controller took over
 echo "a controller with no touchpad: share held turns the d-pad into a swipe; share alone is share"
 taps="$work/dpad.taps"; : > "$taps"
 start_mock dpad --kind ps5 --clip 416x240 --frame-ms 16 --media-ms 10
-"$app" play "Living Room" --seconds 4 --pretend 045e:028e --pretend-taps "$taps" > "$work/dpad.out" 2> "$work/dpad.err" &
+"$app" play "Living Room" --seconds 4 --pretend 045e:028e --pretend-taps "$taps" --sharpen 40 > "$work/dpad.out" 2> "$work/dpad.err" &
 pid=$!
 for _ in $(seq 80); do grep -aq "first picture shown" "$work/dpad.err" 2>/dev/null && break; kill -0 $pid 2>/dev/null || break; sleep 0.1; done
 printf 'down back\n' >> "$taps"; sleep 0.2
@@ -339,6 +339,8 @@ check "the d-pad's right did not reach the console as itself" sh -c "! grep -aqE
 check "share reached it once: for the tap of it alone, not for the one held over the swipe" \
     [ "$(grep -acE 'stream input [0-9]+: share pressed' "$work/dpad.log")" = 1 ]
 check "the report counts the finger" has "$work/dpad.out" "The touchpad was stood in for: 1 fingers"
+check "(the same run) the picture was sharpened as asked" grep -aqE "first picture shown, .*, sharpened 40%" "$work/dpad.err"
+check "a sharpening is a percent" sh -c "! '$app' play 'Living Room' --sharpen 101 > /dev/null 2>&1"
 check "a light bar is console, off or six hexadecimal digits" sh -c "! '$app' play 'Living Room' --light-bar blue > /dev/null 2>&1"
 check "a dead zone is 30% at most" sh -c "! '$app' play 'Living Room' --dead-zone 31 > /dev/null 2>&1"
 check "an Fn button does none, menu, stats or fullscreen" sh -c "! '$app' play 'Living Room' --fn-left screenshot > /dev/null 2>&1"

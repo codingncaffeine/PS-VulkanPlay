@@ -243,7 +243,7 @@ public:
                     ++feedback_.lights;
                     log::debug("play: the console sets the light bar to {}, {}, {} (player {})", info->light[0], info->light[1], info->light[2], info->player);
                     // Unless the user chose the light bar themselves.
-                    if (settings_.light_bar == LightBar::console && pad_ != nullptr && SDL_SetGamepadLED(pad_, info->light[0], info->light[1], info->light[2])) {
+                    if (settings_.light_bar == LightBar::console && pad_ != nullptr && set_light(info->light[0], info->light[1], info->light[2])) {
                         ++feedback_.lights_passed;
                     }
                 }
@@ -542,6 +542,11 @@ private:
     // The mouse, a touch screen and a d-pad standing in for the touchpad (stand_in_touch.h): what
     // they say now, told as the touchpad's fingers and its press. On the window's thread.
     void stand_in_changed();
+    // The light bar at the brightness the user chose (pad_mutex_ held).
+    bool set_light(std::uint8_t red, std::uint8_t green, std::uint8_t blue) {
+        const auto dim = [&](std::uint8_t part) { return static_cast<Uint8>((part * settings_.light_brightness + 50) / 100); };
+        return SDL_SetGamepadLED(pad_, dim(red), dim(green), dim(blue));
+    }
     void tick_stand_in(std::uint64_t now_ms);
     // Nothing pressed, nothing turned: after the controller that plays went away or changed.
     void forget_input() {
@@ -842,9 +847,9 @@ void Player::adopt(SDL_Gamepad* pad, SDL_JoystickID id) {
     pad_id_ = id;
     pad_is_dualsense_ = SDL_GetGamepadType(pad_) == SDL_GAMEPAD_TYPE_PS5;
     // The light bar: the user's color, off, or the console's if it named one before the controller was there.
-    if (settings_.light_bar == LightBar::fixed) SDL_SetGamepadLED(pad_, settings_.light_color[0], settings_.light_color[1], settings_.light_color[2]);
+    if (settings_.light_bar == LightBar::fixed) set_light(settings_.light_color[0], settings_.light_color[1], settings_.light_color[2]);
     else if (settings_.light_bar == LightBar::off) SDL_SetGamepadLED(pad_, 0, 0, 0);
-    else if (feedback_.light && SDL_SetGamepadLED(pad_, (*feedback_.light)[0], (*feedback_.light)[1], (*feedback_.light)[2])) ++feedback_.lights_passed;
+    else if (feedback_.light && set_light((*feedback_.light)[0], (*feedback_.light)[1], (*feedback_.light)[2])) ++feedback_.lights_passed;
     // And the player lights, if it named a player; none when the user turned them off.
     if (!settings_.player_lights) SDL_SetGamepadPlayerIndex(pad_, -1);
     else if (feedback_.infos != 0) SDL_SetGamepadPlayerIndex(pad_, feedback_.player);
@@ -1613,6 +1618,7 @@ int run_player(SessionPlan plan, const PlayOptions& options) {
             if (options.hdr_peak_nits) window.hdr_peak_nits = *options.hdr_peak_nits;
             window.scaler = options.scaler;
             window.deband = options.deband;
+            window.sharpen = options.sharpen;
             window.hdr_output = options.hdr_output;
             window.stream_rate = static_cast<double>(plan.video.max_fps);
             window.on_gpu = [&](std::optional<media::GpuDevice> gpu, const std::string& why_not) { player.set_gpu(std::move(gpu), why_not); };

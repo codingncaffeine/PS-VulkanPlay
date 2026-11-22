@@ -37,13 +37,19 @@ public sealed class SettingsViewModel : Observable
     private readonly Action<string> _failed;
     private AppSettings _settings;
 
-    public SettingsViewModel(SettingsStore store, Action<string> failed)
+    public SettingsViewModel(SettingsStore store, Action<string> failed, Action<bool>? showChart = null)
     {
         _store = store;
         _failed = failed;
         _settings = store.Load();
         ThemeChoices = BuildThemeChoices();
+        ShowChart = new Command(() => showChart?.Invoke(false));
+        ShowHdrChart = new Command(() => showChart?.Invoke(true));
     }
+
+    /// <summary>The test picture in the stream's window, drawn with these settings (SDR, or HDR).</summary>
+    public Command ShowChart { get; }
+    public Command ShowHdrChart { get; }
 
     /// <summary>The looks, each as a small picture of itself; the first follows the desktop.</summary>
     public IReadOnlyList<ThemeChoice> ThemeChoices { get; }
@@ -168,6 +174,18 @@ public sealed class SettingsViewModel : Observable
     public Choice Codec { get => Pick(Codecs, _settings.Codec); set { if (value is not null) Keep(() => _settings.Codec = value.Value, nameof(Codec)); } }
     public Choice Scaler { get => Pick(Scalers, _settings.Scaler); set { if (value is not null) Keep(() => _settings.Scaler = value.Value, nameof(Scaler)); } }
     public bool Deband { get => _settings.Deband; set => Keep(() => _settings.Deband = value, nameof(Deband)); }
+
+    public double Sharpen
+    {
+        get => _settings.Sharpen;
+        set
+        {
+            Keep(() => _settings.Sharpen = (int)Math.Round(value), nameof(Sharpen));
+            Changed(nameof(SharpenText));
+        }
+    }
+
+    public string SharpenText => _settings.Sharpen == 0 ? "Off: the picture as the console sent it" : $"{_settings.Sharpen}%: more where the picture is soft, none next to black or white";
     public bool HdrOutput { get => _settings.HdrOutput; set => Keep(() => _settings.HdrOutput = value, nameof(HdrOutput)); }
     public Choice Controller { get => Pick(Controllers, _settings.Controller); set { if (value is not null) Keep(() => _settings.Controller = value.Value, nameof(Controller)); } }
     public Choice BackLeft { get => Pick(Buttons, _settings.BackLeft); set { if (value is not null) Keep(() => _settings.BackLeft = value.Value, nameof(BackLeft)); } }
@@ -402,6 +420,18 @@ public sealed class SettingsViewModel : Observable
     }
 
     public string HapticsText => _settings.HapticsVolume == 0 ? "Off" : $"{_settings.HapticsVolume}%";
+
+    public double LightBrightness
+    {
+        get => _settings.LightBrightness;
+        set
+        {
+            Keep(() => _settings.LightBrightness = (int)Math.Round(value), nameof(LightBrightness));
+            Changed(nameof(LightBrightnessText));
+        }
+    }
+
+    public string LightBrightnessText => _settings.LightBrightness == 0 ? "Off" : $"{_settings.LightBrightness}%";
 
     public double RumbleStrength
     {

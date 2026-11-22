@@ -20,6 +20,7 @@ struct ControllerSettings {
     bool trigger_effects = true;                    // the console's adaptive trigger effects reach a DualSense
     LightBar light_bar = LightBar::console;         // the light bar follows the console, is off, or one color
     std::array<std::uint8_t, 3> light_color{};      // for LightBar::fixed
+    int light_brightness = 100;                     // percent: the light bar's color, whoever chose it, at this brightness
     bool player_lights = true;                      // the player lights under the touchpad follow the console
     bool motion = true;                             // the motion sensors are read and told to the console
     bool touchpad = true;                           // touches on the touchpad are told to the console (its click is a button)

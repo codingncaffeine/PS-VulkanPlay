@@ -110,4 +110,16 @@ struct DebandOffset {
 // grain left out (it is added after the conversion to red, green and blue). Values as shares.
 [[nodiscard]] std::vector<float> deband_plane(const std::vector<float>& plane, std::uint32_t width, std::uint32_t height, const Deband& deband, std::uint32_t seed);
 
+// Sharpening, of the brightness only, at the picture's own size (before it is scaled): contrast
+// adaptive, after AMD's published description of CAS. A sample and its four neighbors across and
+// down: the less room the brightest and darkest of them leave to the ends of the range, the less it
+// is sharpened (no ringing into black or white, little in already sharp detail); the sample moves
+// away from its neighbors' mean by a weight of at most 1/8 (strength 0) to 1/5 (strength 1) of the
+// difference. `strength` from 0 to 1; 0 is still a little sharper than nothing, so "off" is no pass.
+[[nodiscard]] float sharpen_sample(float c, float north, float south, float east, float west, float strength);
+// One plane through sharpen_sample, the edges repeated. Values as shares.
+[[nodiscard]] std::vector<float> sharpen_plane(const std::vector<float>& plane, std::uint32_t width, std::uint32_t height, float strength);
+// The user's percent (1 to 100) as the strength above; 0 percent is no sharpening at all.
+[[nodiscard]] constexpr float sharpen_strength(int percent) { return static_cast<float>(percent - 1) / 99.0F; }
+
 }  // namespace psvp::media

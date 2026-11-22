@@ -83,6 +83,12 @@ public:
         deband_ = on;
     }
     [[nodiscard]] bool deband() const noexcept { return deband_; }
+    // How much the brightness is sharpened, 0 (not at all) to 100 (media::sharpen_strength).
+    void set_sharpen(int percent) noexcept {
+        if (percent != sharpen_) convert_due_ = true;
+        sharpen_ = percent;
+    }
+    [[nodiscard]] int sharpen() const noexcept { return sharpen_; }
     // The seed the last conversion drew its random numbers from (one per conversion).
     [[nodiscard]] std::uint32_t seed() const noexcept { return seed_; }
     // What the converted picture is held in (16-bit UNORM, or half floats where a device cannot draw into that).
@@ -137,6 +143,7 @@ private:
     bool convert_due_ = false;   // the converted picture is not the picture taken last (or its settings)
     bool converted_ready_ = false;  // it holds a picture
     bool deband_ = false;
+    int sharpen_ = 0;
     std::uint32_t seed_ = 0;
 
     // Measuring HDR pictures: a compute pass over the converted picture into a histogram the machine reads.
