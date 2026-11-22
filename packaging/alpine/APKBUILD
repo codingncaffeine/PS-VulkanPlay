@@ -3,7 +3,7 @@
 # Builds PS VulkanPlay from source on Alpine, against Alpine's own libraries.
 # Needs Alpine 3.23 or later (dotnet10-sdk is not in 3.22).
 pkgname=ps-vulkanplay
-pkgver=0.0.4
+pkgver=0.0.5
 pkgrel=0
 pkgdesc="Remote Play client for PS5 and PS4 consoles, with its own Vulkan renderer"
 url="https://github.com/codingncaffeine/PS-VulkanPlay"
@@ -39,5 +39,5 @@ package() {
 }
 
 sha512sums="
-5d6edc78ec66e5fd701d8c892c55b236b6a4b49321c8aab51ef464deb881a84eb3089fe6a06daf0e0647203b8094dc37971662c82b7f77cef27a33375c57724b  ps-vulkanplay-0.0.4.tar.gz
+06f733a16f43fe1405f6460641eb92ee111e281c44685fb0cd877537ec1f05bb35cd19be2274c77c55ad09bceffee5856ccfe36ab170d2636f57946a39f0c999  ps-vulkanplay-0.0.5.tar.gz
 "
