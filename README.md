@@ -10,14 +10,14 @@ interface as goals.
 
 ## Install
 
-Pre-releases are on the [Releases](https://github.com/codingncaffeine/PS-VulkanPlay/releases) page.
+Releases are on the [Releases](https://github.com/codingncaffeine/PS-VulkanPlay/releases) page.
 
 | System | How |
 |---|---|
-| Debian 12, Ubuntu 22.04, or later | `sudo apt install ./ps-vulkanplay_0.0.4_amd64.deb` |
+| Debian 12, Ubuntu 22.04, or later | `sudo apt install ./ps-vulkanplay_0.0.5_amd64.deb` |
 | Arch Linux | `ps-vulkanplay-bin` from the AUR |
-| Any other distribution with glibc 2.35 or later | extract `PS-VulkanPlay-0.0.4-linux-x64.tar.gz`, run `./ps-vulkanplay` |
-| Alpine and other musl systems | the same with `PS-VulkanPlay-0.0.4-linux-musl-x64.tar.gz` |
+| Any other distribution with glibc 2.35 or later | extract `PS-VulkanPlay-0.0.5-linux-x64.tar.gz`, run `./ps-vulkanplay` |
+| Alpine and other musl systems | the same with `PS-VulkanPlay-0.0.5-linux-musl-x64.tar.gz` |
 
 It needs a graphics driver with Vulkan 1.2, and PulseAudio or PipeWire for sound. To add a console: on the
 console open Settings, System, Remote Play, turn Remote Play on and choose Link Device; in the app choose

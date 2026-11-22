@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.25)
 
 # The version lives here and nowhere else; the sources read it from the generated version.h.
 project(ps-vulkanplay
-    VERSION 0.0.4
+    VERSION 0.0.5
     DESCRIPTION "PlayStation Remote Play client"
     HOMEPAGE_URL "https://github.com/codingncaffeine/PS-VulkanPlay"
     LANGUAGES CXX)
