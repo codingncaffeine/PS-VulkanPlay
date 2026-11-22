@@ -1,4 +1,6 @@
 #include <chrono>
+#include <cmath>
+#include <cstdio>
 #include <cstdint>
 #include <vector>
 
@@ -288,4 +290,116 @@ PSVP_TEST(pacer_counts_waiting_frames_against_the_cushion) {
     CHECK(!late_with(20ms, 1) && late_with(20ms, 2));
     CHECK(!late_with(30ms, 2) && late_with(30ms, 3));
     CHECK(!late_with(50ms, 3) && late_with(50ms, 4));
+}
+
+// Pacing v2: the console's clock is not ours. Frames that come 62.5 a second (as the mock's do) or
+// 59.94 (a television's rate) to a pacer told sixty: once it has seen a few seconds of them, it shows
+// them as evenly as they come, with no saw-tooth of waits building up and being given back. (Before
+// the drift was followed, 62.5 against 60 put a picture 15 ms after the one before it every few
+// pictures and 16.7 ms otherwise.)
+PSVP_TEST(frame_pacer_follows_the_consoles_clock) {
+    for (const double rate : {62.5, 59.94, 57.5}) {
+        FramePacer pacer(60.0);
+        std::vector<FramePacer::TimePoint> at;
+        for (std::int64_t n = 0; n < 1200; ++n) {
+            // Up to half a millisecond of jitter on the way.
+            const auto jitter = std::chrono::microseconds((n * 7919) % 500);
+            at.push_back(kStart + std::chrono::microseconds(static_cast<std::int64_t>(static_cast<double>(n) * 1e6 / rate)) + jitter);
+            if (at.size() > 1) at.back() = std::max(at.back(), at[at.size() - 2]);
+        }
+        const auto shown = play(pacer, at);
+        const double period = 1000.0 / rate;
+        // After ten seconds: every spacing within a millisecond of the console's own.
+        CHECK(most_apart(shown, 600, shown.size()) < period + 1.0);
+        CHECK(least_apart(shown, 600, shown.size()) > period - 1.0);
+        CHECK(std::abs(std::chrono::duration<double, std::milli>(pacer.period()).count() - period) < 0.05);
+        // And no delay builds up.
+        double most = 0.0;
+        for (std::size_t i = 600; i < shown.size(); ++i) most = std::max(most, shown[i].delay());
+        CHECK(most < 3.5 + 1.5);
+    }
+}
+
+// A rate far from sixty is not drift but a game's own (thirty a second, frames left out): the
+// pacer stays at its frame's time and does not stretch to it.
+PSVP_TEST(frame_pacer_keeps_its_period_for_a_slower_game) {
+    FramePacer pacer(60.0);
+    std::vector<FramePacer::TimePoint> at;
+    for (std::int64_t n = 0; n < 900; ++n) at.push_back(kStart + std::chrono::microseconds(n * 1000000 / 30));
+    (void)play(pacer, at);
+    CHECK(std::abs(std::chrono::duration<double, std::milli>(pacer.period()).count() - 1000.0 / 60.0) < 0.01);
+}
+
+namespace {
+// The screen: refreshes `hz` a second from `phase`; a picture goes up at the first refresh at or after
+// its slot (a queue of presents, as FIFO does). How many refreshes each picture stays: 0 is a picture
+// never seen (another took its refresh).
+std::vector<int> holds_on_screen(const std::vector<Shown>& shown, double hz, double phase_ms, std::size_t from) {
+    const double refresh = 1000.0 / hz;
+    std::vector<long> up;
+    for (std::size_t i = from; i < shown.size(); ++i) {
+        const double at = ms(shown[i].at - kStart) - phase_ms;
+        up.push_back(static_cast<long>(std::ceil(at / refresh - 1e-9)));
+    }
+    std::vector<int> holds;
+    for (std::size_t i = 0; i + 1 < up.size(); ++i) holds.push_back(static_cast<int>(up[i + 1] - up[i]));
+    return holds;
+}
+}  // namespace
+
+// I3's cadence, in simulation (PLAN phase 7: "cadence equals the arithmetic minimum at 60, 90, 120 and
+// 144 Hz"): a console a little slower (59.94) or faster (60.06) than sixty, whose frames come up to
+// `jitter` late, through the pacer and a decoder of 3.5 ms, onto a screen at each rate. Every picture
+// is held floor(r) or ceil(r) refreshes (r = screen rate / console rate; on 60 Hz a faster console's
+// floor is 0: a picture never seen, as arithmetic wants once in 1000), and the long ones come as often
+// as arithmetic says. (A slower console is the easy case: the pictures go out as they are ready. A
+// faster one, paced at sixty's frame time, built up waits given back in steps: the steps were seen.)
+PSVP_TEST(frame_pacer_cadence_is_the_arithmetic_minimum) {
+    for (const double rate : {59.94, 60.06})
+    for (const int jitter_us : {0, 500}) {
+        for (const double hz : {60.0, 90.0, 120.0, 144.0}) {
+            FramePacer pacer(60.0);
+            std::vector<FramePacer::TimePoint> at;
+            for (std::int64_t n = 0; n < 3600; ++n) {
+                const auto late = std::chrono::microseconds(jitter_us == 0 ? 0 : (n * 7919) % jitter_us);
+                at.push_back(kStart + std::chrono::microseconds(static_cast<std::int64_t>(static_cast<double>(n) * 1e6 / rate)) + late);
+                if (at.size() > 1) at.back() = std::max(at.back(), at[at.size() - 2]);
+            }
+            const auto shown = play(pacer, at);
+            const auto holds = holds_on_screen(shown, hz, 0.37, 600);
+            const double r = hz / rate;
+            const int low = static_cast<int>(std::floor(r)), high = low + 1;
+            std::size_t odd = 0, long_ones = 0;
+            for (const int h : holds) {
+                odd += (h != low && h != high) ? 1U : 0U;
+                long_ones += h == high ? 1U : 0U;
+            }
+            const double expected = (r - std::floor(r)) * static_cast<double>(holds.size());
+            std::printf("    cadence %5.2f on %4.0f Hz, jitter %3d us: holds of %d or %d: %zu odd, %zu long (arithmetic %.1f) of %zu\n", rate, hz, jitter_us, low, high, odd,
+                        long_ones, expected, holds.size());
+            CHECK(odd == 0);
+            CHECK(std::abs(static_cast<double>(long_ones) - expected) <= 2.0);
+        }
+    }
+}
+
+// Lost frames are gaps in the frames' numbers, not slow frames: a console at 62.5 a second that loses
+// one frame in 90 is measured at 62.5 (counting pictures said 61.8), also across the numbers' wrap.
+PSVP_TEST(frame_pacer_measures_by_the_frames_numbers) {
+    FramePacer pacer(60.0);
+    const auto start = static_cast<std::uint16_t>(65535 - 300);
+    for (std::int64_t n = 0; n < 1200; ++n) {
+        if (n % 90 == 45) continue;  // lost
+        const auto t = kStart + std::chrono::microseconds(n * 16000);
+        (void)pacer.schedule(t, t, 0, static_cast<std::uint16_t>(start + n));
+    }
+    CHECK(pacer.period() == std::chrono::microseconds(16000));
+    // Without the numbers the same pictures say a slower clock.
+    FramePacer counting(60.0);
+    for (std::int64_t n = 0; n < 1200; ++n) {
+        if (n % 90 == 45) continue;
+        const auto t = kStart + std::chrono::microseconds(n * 16000);
+        (void)counting.schedule(t, t, 0);
+    }
+    CHECK(counting.period() > std::chrono::microseconds(16100));
 }

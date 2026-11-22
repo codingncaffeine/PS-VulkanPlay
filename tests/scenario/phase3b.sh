@@ -94,6 +94,10 @@ held=$(number "$out" 'took them, ([0-9]+) held back as damaged')
     && ok "$shown reached the screen, $replaced were replaced by a newer one first, $held were held back" || fail "shown '$shown' replaced '$replaced' held '$held' of '$decoded'"
 check "pictures are shown evenly: the report says how long they were held back for it" grep -aqE "^Pacing: [0-9]+ of [0-9]+ pictures were held back to follow the one before by a frame's time, by [0-9.]+ ms on average" "$out"
 check "and that no delay was kept on purpose" grep -aqE "^Pacing: .* No cushion was kept; a picture was on its way to the screen [0-9.]+ ms after its frame had arrived, on average\.$" "$out"
+# The mock sends a frame every 16 ms: 62.5 a second, not the sixty asked for. The pacer follows that clock.
+paced=$(grep -a '^Pictures were paced' "$out")
+echo "$paced" | grep -qE "^Pictures were paced 62\.(4[5-9]|5[0-4])[0-9] a second" && ok "the pictures were paced at the mock's own 62.5 a second" ||
+    fail "the pictures were paced at the mock's own 62.5 a second: '$paced'"
 # How many the screen takes depends on how fast this machine draws; that most do is the point. Under a
 # sanitizer (its lanes are for memory errors) it is how fast the sanitizer lets software Vulkan draw:
 # said, not judged (CI 44953206005: 140 of 309 on two cores); the count above still must add up.

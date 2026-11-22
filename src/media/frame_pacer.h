@@ -18,7 +18,15 @@
 // A cushion can be asked for: that much delay is then kept on purpose, so that
 // a frame which comes up to that much later than the others is still shown in
 // its place. It costs exactly that delay, all the time, and is nothing unless
-// asked for. No clock and no thread of its own in here.
+// asked for.
+//
+// The console's clock is not this computer's: a stream of "sixty a second" comes at 59.9 or 60.1
+// (the mock's at 62.5), and spaced by sixty's frame time such pictures would build up waits that are
+// given back in steps (a saw-tooth). So the frame time is the one the pictures come at: the slope of
+// a straight line fitted through when the last ten seconds' pictures could have been shown, against
+// their count (least squares: a pause and the bunch behind it barely move it), followed within 5% of
+// the rate asked for. Further from it is not drift but a game's own rate, and is left alone. No clock
+// and no thread of its own in here.
 #pragma once
 
 #include <array>
@@ -50,6 +58,11 @@ public:
     // No cushion is longer than this: three frames' time.
     static constexpr Duration kMostCushion{50000};
 
+    // The pictures the console's frame time is measured on (ten seconds), how many there must be
+    // first, how often it is worked out again, and how far it may be from the rate asked for.
+    static constexpr std::size_t kRateMemory = 600, kRateLeast = 120, kRateEvery = 30;
+    static constexpr double kMostDrift = 0.05;
+
     explicit FramePacer(double frames_per_second, Duration cushion = Duration{0}) noexcept;
 
     struct Slot {
@@ -65,7 +78,9 @@ public:
     // after it are already there to be decoded: more of them than the cushion is long, and the
     // stream is behind. Without that, the frames of a pause would be shown a frame's time apart
     // one after the other, and the pause would stay as delay.
-    [[nodiscard]] Slot schedule(TimePoint earliest, TimePoint ready, std::size_t waiting) noexcept;
+    // `frame` is the frame's number in the stream (16 bits, wrapping), where it is known: a lost frame
+    // is then a gap in the numbers, not a slow frame, when the console's clock is measured.
+    [[nodiscard]] Slot schedule(TimePoint earliest, TimePoint ready, std::size_t waiting, std::optional<std::uint16_t> frame = std::nullopt) noexcept;
     // The same for a picture that nothing stood in the way of.
     [[nodiscard]] Slot schedule(TimePoint ready, std::size_t waiting = 0) noexcept { return schedule(ready, ready, waiting); }
     // The picture of the last call was not shown after all (a newer one took its place).
@@ -73,14 +88,25 @@ public:
 
     // The delay every picture of the last second carried: what is given back, but for the cushion.
     [[nodiscard]] Duration spare() const noexcept;
+    // A frame's time as the pictures come: the console's clock, followed within 5% of the rate asked for.
+    [[nodiscard]] Duration period() const noexcept { return period_; }
     [[nodiscard]] Duration cushion() const noexcept { return cushion_; }
 
 private:
     // What all but a few of the pictures remembered waited at least; nothing while there are too few.
     [[nodiscard]] std::optional<Duration> usual_least() const noexcept;
 
+    // Fits the line through the remembered times and takes its slope, where it is drift.
+    void follow_clock() noexcept;
+
     Duration period_;
+    Duration nominal_;                   // the frame time of the rate asked for
     Duration cushion_;
+    std::array<TimePoint, kRateMemory> times_{};  // when the pictures could have been shown, oldest overwritten
+    std::array<std::int64_t, kRateMemory> numbers_{};  // and their frames' numbers, unwrapped
+    std::int64_t number_ = -1;                     // the last picture's
+    std::optional<std::uint16_t> last_frame_;
+    std::size_t times_count_ = 0, times_at_ = 0, since_fit_ = 0;
     std::optional<TimePoint> last_at_;   // when the last picture that was shown was shown
     std::optional<TimePoint> before_;    // and the one before it, for skipped()
     std::array<Duration, kMemory> waits_{};

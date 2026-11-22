@@ -679,7 +679,7 @@ void Player::decode_loop() {
             // came after a pause): the picture is shown at once, so that the pause does not stay as delay.
             // It could have been ready when its frame had arrived and was decoded; what it waited before
             // that, behind the picture before it, is delay it carries already.
-            const media::FramePacer::Slot slot = pacer_->schedule(job.arrived + (ready - began), ready, jobs_.size());
+            const media::FramePacer::Slot slot = pacer_->schedule(job.arrived + (ready - began), ready, jobs_.size(), static_cast<std::uint16_t>(job.index));
             if (slot.late) ++paced_late_;
             if (slot.at > ready) {
                 ++paced_;
@@ -1462,6 +1462,9 @@ std::vector<std::string> Player::report() {
                                         static_cast<double>(paced_most_microseconds_) / 1000.0, paced_late_,
                                         cushion > 0 ? std::format("A cushion of {} ms was kept for frames that come late", cushion) : std::string("No cushion was kept"),
                                         through_ms));
+            lines.push_back(std::format("Pictures were paced {:.3f} a second: the rate they came at by the console's own clock, where it is within 5% of "
+                                        "the rate asked for (a game's slower rate is left alone).",
+                                        1e6 / static_cast<double>(std::max<std::int64_t>(pacer_->period().count(), 1))));
         } else {
             lines.push_back(std::format("Pacing: off; every picture was shown the moment it was there, {:.1f} ms after its frame had arrived, on average.", through_ms));
         }
