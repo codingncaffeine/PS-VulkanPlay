@@ -35,6 +35,7 @@ public sealed class AppSettings
     public int HdrPeakNits { get; set; } = DefaultHdrPeakNits;   // how bright an HDR picture is taken to be at its brightest
     // Each HDR picture measured instead. Not in a file of an earlier version: measured, unless that file set a brightness.
     public bool? HdrPeakMeasured { get; set; }
+    public bool HdrOutput { get; set; } = true;         // an HDR picture goes to the screen as HDR where the desktop takes it
     public string Scaler { get; set; } = DefaultScaler;   // how the picture is brought to the window's size (Scalers)
     public bool Deband { get; set; } = true;            // banding smoothed out of the picture
     public string Controller { get; set; } = "auto";    // auto, dualsense, dualshock4
@@ -93,6 +94,7 @@ public sealed class AppSettings
             LossCeiling = Math.Clamp(LossCeiling, 0, 100),
             HdrPeakNits = Math.Clamp(HdrPeakNits, LeastHdrPeakNits, MostHdrPeakNits),
             HdrPeakMeasured = HdrPeakMeasured ?? HdrPeakNits == DefaultHdrPeakNits,
+            HdrOutput = HdrOutput,
             Scaler = Scalers.Contains(Scaler) ? Scaler : DefaultScaler,
             Deband = Deband,
             Controller = Controllers.Contains(Controller) ? Controller : "auto",
@@ -140,6 +142,7 @@ public sealed class AppSettings
         else if (s.CushionMs > 0) arguments.AddRange(["--cushion", s.CushionMs.ToString()]);
         if (s.LossCeiling != DefaultLossCeiling) arguments.AddRange(["--loss-ceiling", s.LossCeiling.ToString()]);
         if (s.HdrPeakMeasured == false) arguments.AddRange(["--hdr-peak", s.HdrPeakNits.ToString()]);
+        if (!s.HdrOutput) arguments.AddRange(["--hdr-output", "off"]);
         if (s.Scaler != DefaultScaler) arguments.AddRange(["--scaler", s.Scaler]);
         if (!s.Deband) arguments.AddRange(["--deband", "off"]);
         arguments.AddRange(["--haptics-volume", s.HapticsVolume.ToString()]);

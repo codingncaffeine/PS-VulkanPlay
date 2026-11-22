@@ -12,6 +12,10 @@
 // The control (D37): on a display of fixed refresh every first pixel goes out on a refresh, so the
 // times between them are whole refreshes; a report where they are not says the numbers cannot be
 // read that way (a variable refresh, or a driver's guess), and is shown as such.
+//
+// Adaptive sync (VRR, PLAN D42): the swapchain says so by a refresh interval of UINT64_MAX (the
+// refresh duration is then the shortest refresh; VK_EXT_present_timing); there a picture stays as
+// long as the next one takes, and what counts is the share that stayed one picture's time.
 #pragma once
 
 #include <array>
@@ -23,9 +27,20 @@ namespace psvp::media {
 
 class PresentClock {
 public:
-    // The display's refresh as the swapchain says it, in nanoseconds (0: unknown or variable), and
-    // whether the reported times are on the steady clock (CLOCK_MONOTONIC).
-    void set_refresh(std::uint64_t refresh_ns) noexcept { refresh_ns_ = refresh_ns; }
+    // The display's refresh as the swapchain says it, in nanoseconds (0: unknown), and its refresh
+    // interval (VkSwapchainTimingPropertiesEXT: the same = fixed, UINT64_MAX = adaptive sync, the
+    // refresh then being the shortest; 0 = the driver cannot say), and whether the reported times are
+    // on the steady clock (CLOCK_MONOTONIC).
+    void set_refresh(std::uint64_t refresh_ns, std::uint64_t interval_ns = 0) noexcept {
+        refresh_ns_ = refresh_ns;
+        interval_ns_ = interval_ns;
+    }
+    // How many pictures a second the stream sends (0: not known).
+    void set_stream_rate(double pictures_per_second) noexcept { stream_rate_ = pictures_per_second; }
+    // Whether pictures at that rate can each stay the same whole number of refreshes (the refresh a
+    // multiple of the rate, within half a percent: 59.94 Hz takes 60 a second).
+    [[nodiscard]] static bool divides(double pictures_per_second, std::uint64_t refresh_ns) noexcept;
+    [[nodiscard]] bool adaptive() const noexcept { return interval_ns_ == UINT64_MAX; }
     void set_steady_domain(bool steady) noexcept { steady_domain_ = steady; }
 
     // A picture handed over: its present id and when (steady clock, ns).
@@ -40,6 +55,7 @@ public:
         std::array<std::uint64_t, kBuckets> refreshes{};  // pictures that stayed that many refreshes
         std::uint64_t on_refresh = 0, apart = 0;           // intervals on a whole refresh (within 0.5 ms), of all
         std::uint64_t longest_ns = 0;                       // the longest a picture stayed
+        std::uint64_t even = 0;                             // stayed one picture's time of the stream (within 1.5 ms)
         // Hand-off to first pixel out, where the domain is the steady clock; in microseconds (to 100 µs).
         std::uint64_t latency_count = 0, latency_median_us = 0, latency_99_us = 0;
     };
@@ -48,8 +64,10 @@ public:
     [[nodiscard]] std::string text() const;
 
 private:
-    std::uint64_t refresh_ns_ = 0;
+    std::uint64_t refresh_ns_ = 0, interval_ns_ = 0;
+    double stream_rate_ = 0.0;
     bool steady_domain_ = false;
+    std::uint64_t even_ = 0;
     // Presents handed and not reported yet (a report can come many presents later), oldest first.
     struct Handed {
         std::uint64_t id = 0, at_ns = 0;

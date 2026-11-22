@@ -17,6 +17,7 @@
 #include "media/peak_detect.h"
 #include "media/scaler.h"
 #include "media/video_decoder.h"
+#include "render/target_kind.h"
 
 namespace psvp::render {
 
@@ -30,8 +31,12 @@ public:
     // `gpu_pictures`: the device can draw pictures decoded on it (Vulkan 1.3, synchronization2).
     // `compute`: the queue the pass is recorded for runs compute work (measuring HDR pictures).
     [[nodiscard]] bool create(VkPhysicalDevice physical, VkDevice device, bool gpu_pictures = false, bool compute = true);
-    // The pipeline for a render pass; `target_encodes` when the target's format encodes what is written to it.
-    [[nodiscard]] bool create_pipeline(VkRenderPass render_pass, bool target_encodes);
+    // The pipeline for a render pass into a target of that kind.
+    [[nodiscard]] bool create_pipeline(VkRenderPass render_pass, TargetKind target);
+    // The same; `target_encodes` when the target's format encodes what is written to it (SDR either way).
+    [[nodiscard]] bool create_pipeline(VkRenderPass render_pass, bool target_encodes) {
+        return create_pipeline(render_pass, target_encodes ? TargetKind::sdr_srgb : TargetKind::sdr);
+    }
     void destroy_pipeline();
     void destroy();
 
@@ -39,6 +44,8 @@ public:
     // under way: the textures are made anew when the picture's size or depth is another.
     [[nodiscard]] bool set_picture(const media::Picture& picture);
     [[nodiscard]] bool has_picture() const noexcept { return width_ != 0; }
+    // The transfer function of the picture taken last (SDR before any).
+    [[nodiscard]] media::ColorTransfer transfer() const noexcept { return transfer_; }
     // Copies the picture taken last into the textures, or, for a picture decoded on the graphics
     // card, makes its image ready to be read; then converts it (its own render pass). Only once
     // per picture, or after a setting it depends on changed. Outside a render pass.
@@ -114,7 +121,7 @@ private:
     VkShaderModule vertex_ = VK_NULL_HANDLE;
     VkShaderModule fragment_ = VK_NULL_HANDLE;
     VkPipeline pipeline_ = VK_NULL_HANDLE;
-    bool target_encodes_ = false;
+    TargetKind target_ = TargetKind::sdr;
 
     // The conversion (pass A): its own render pass into the converted picture, at the picture's size.
     VkShaderModule convert_fragment_ = VK_NULL_HANDLE;

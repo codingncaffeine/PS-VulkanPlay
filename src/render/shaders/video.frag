@@ -18,6 +18,7 @@ layout(push_constant) uniform Constants {
                    // z: the picture's transfer function: 0 SDR, 1 PQ, 2 HLG
                    // w: for PQ, the light the picture is taken to reach at its brightest, in cd/m²
     vec4 options;  // x: above 0.5 when the target encodes what is written to it
+                   // y: above 0.5 when the target takes HDR10 (ST 2084 signal, BT.2020 primaries)
 } constants;
 
 // media::kTableEntries.
@@ -127,6 +128,23 @@ vec3 hdr_to_sdr_linear(vec3 encoded, float transfer, float source_peak_nits) {
     return clamp(light * (mapped / brightest / kSdrWhite), 0.0, 1.0);
 }
 
+vec3 nits_to_pq(vec3 nits) {
+    vec3 y = pow(clamp(nits / 10000.0, 0.0, 1.0), vec3(kM1));
+    return pow((kC1 + kC2 * y) / (1.0 + kC3 * y), vec3(kM2));
+}
+
+// For a screen that takes HDR10, the steps of media::hdr10_signal: PQ as it is; HLG to display light,
+// then PQ; SDR (sRGB, BT.709) with its white at HDR reference white, in BT.2020, then PQ.
+vec3 to_hdr10(vec3 encoded, float transfer) {
+    if (transfer > 1.5) return nits_to_pq(hlg_to_nits(encoded));
+    if (transfer > 0.5) return clamp(encoded, 0.0, 1.0);
+    // media::bt709_to_bt2020's matrix, given column by column.
+    const mat3 to_bt2020 = mat3(0.6274038959, 0.0690972894, 0.0163914389,
+                                0.3292830384, 0.9195403951, 0.0880133079,
+                                0.0433130657, 0.0113623156, 0.8955952532);
+    return nits_to_pq(kSdrWhite * (to_bt2020 * to_linear(clamp(encoded, 0.0, 1.0))));
+}
+
 // From linear light to the screen's encoding (IEC 61966-2-1).
 vec3 to_encoded(vec3 linear) {
     return mix(12.92 * linear, 1.055 * pow(linear, vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), linear));
@@ -135,7 +153,9 @@ vec3 to_encoded(vec3 linear) {
 
 void main() {
     vec3 rgb = scaled();
-    if (constants.stretch.z > 0.5) {
+    if (constants.options.y > 0.5) {
+        rgb = to_hdr10(rgb, constants.stretch.z);
+    } else if (constants.stretch.z > 0.5) {
         // Ringing of the sharper kernels can reach a little past the signal's range: hdr_to_sdr_linear cuts it.
         rgb = hdr_to_sdr_linear(rgb, constants.stretch.z, constants.stretch.w);
         if (constants.options.x < 0.5) rgb = to_encoded(rgb);

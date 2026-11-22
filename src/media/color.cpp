@@ -60,6 +60,21 @@ std::array<int, 3> screen_color(const ColorTransform& transform, unsigned bits, 
     return out;
 }
 
+std::array<int, 3> hdr10_screen_color(const ColorTransform& transform, unsigned bits, unsigned y, unsigned cb, unsigned cr, ColorTransfer transfer) {
+    const double largest = std::ldexp(1.0, static_cast<int>(bits)) - 1.0;
+    const double in[4] = {y / largest, cb / largest, cr / largest, 1.0};
+    std::array<double, 3> rgb{};
+    for (std::size_t row = 0; row < 3; ++row) {
+        double value = 0.0;
+        for (std::size_t column = 0; column < 4; ++column) value += static_cast<double>(transform[column * 4 + row]) * in[column];
+        rgb[row] = std::clamp(value, 0.0, 1.0);
+    }
+    rgb = hdr10_signal(rgb, transfer);
+    std::array<int, 3> out{};
+    for (std::size_t i = 0; i < 3; ++i) out[i] = static_cast<int>(std::lround(rgb[i] * 1023.0));
+    return out;
+}
+
 Placement place_picture(unsigned picture_width, unsigned picture_height, unsigned target_width, unsigned target_height) {
     if (picture_width == 0 || picture_height == 0 || target_width == 0 || target_height == 0) return {};
     Placement placement;

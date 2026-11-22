@@ -5,6 +5,7 @@
 #include <cstring>
 
 #include "app/log.h"
+#include "media/tone_map.h"
 
 namespace psvp::render {
 
@@ -171,10 +172,10 @@ bool OverlayPass::create(VkPhysicalDevice physical, VkDevice device) {
            module(kOverlayFragmentShader, sizeof kOverlayFragmentShader, fragment_);
 }
 
-bool OverlayPass::create_pipeline(VkRenderPass render_pass, bool target_encodes) {
+bool OverlayPass::create_pipeline(VkRenderPass render_pass, TargetKind target) {
     destroy_pipeline();
-    if (target_encodes_ != target_encodes) {
-        target_encodes_ = target_encodes;
+    if (target_ != target) {
+        target_ = target;
         set_quads(std::vector<overlay::Quad>(quads_));
     }
 
@@ -262,8 +263,11 @@ void OverlayPass::set_quads(const std::vector<overlay::Quad>& quads) {
     for (std::size_t i = 0; i < count; ++i) {
         const overlay::Quad& q = quads[i];
         float rgb[3] = {static_cast<float>(q.color.r) / 255.0F, static_cast<float>(q.color.g) / 255.0F, static_cast<float>(q.color.b) / 255.0F};
-        if (target_encodes_) {
+        if (target_ == TargetKind::sdr_srgb) {
             for (float& channel : rgb) channel = srgb_to_linear(channel);
+        } else if (target_ == TargetKind::hdr10) {
+            const auto signal = media::hdr10_signal({static_cast<double>(rgb[0]), static_cast<double>(rgb[1]), static_cast<double>(rgb[2])}, media::ColorTransfer::sdr);
+            for (std::size_t c = 0; c < 3; ++c) rgb[c] = static_cast<float>(signal[c]);
         }
         const float corners[6][4] = {
             {q.x0, q.y0, q.u0, q.v0}, {q.x1, q.y0, q.u1, q.v0}, {q.x1, q.y1, q.u1, q.v1},

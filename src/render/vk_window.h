@@ -58,6 +58,11 @@ struct WindowOptions {
     // kernels cost each picture more than it has.
     std::optional<media::Scaler> scaler;
     std::optional<bool> deband;
+    // Send an HDR picture to the screen as HDR10 where the window's surface takes it (a desktop with HDR
+    // turned on); otherwise, or when off, it is tone mapped to SDR.
+    bool hdr_output = true;
+    // How many pictures a second the stream sends (0: not known): said against the screen's refresh.
+    double stream_rate = 0.0;
     // Lend the window's Vulkan device to FFmpeg for decoding on the graphics card, where the device
     // can (a video decode queue for H.264 or HEVC, Vulkan 1.3).
     bool gpu_decoding = true;
@@ -70,6 +75,9 @@ struct WindowOptions {
     // Told when the window closes, where the driver said when pictures reached the screen
     // (VK_EXT_present_timing): a line about it for the session's report (media::PresentClock).
     std::function<void(const std::string&)> on_screen_times;
+    // Told on the window's thread whenever it changes: a line about the screen for the statistics
+    // (its refresh, fixed or adaptive sync, and whether the picture goes to it as HDR10 or SDR).
+    std::function<void(const std::string&)> on_screen_state;
 };
 
 // From any thread: there is a new picture, or the answer of `finished` changed. The window

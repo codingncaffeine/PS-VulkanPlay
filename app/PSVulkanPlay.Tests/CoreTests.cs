@@ -83,11 +83,11 @@ public class CoreTests
         {
             Resolution = 720, FramesPerSecond = 30, Codec = "hdr", BitrateKbps = 20000, CushionMs = 20, Controller = "dualsense",
             HapticsVolume = 60, BackLeft = "cross", BackRight = "r3", WakeFirst = false, RestAfter = true, LossCeiling = 100, ShowStats = true, GpuDecoding = false,
-            Reconnect = false, HdrPeakNits = 600, Scaler = "catmull-rom", Deband = false, TriggerEffects = false, LightBar = "FF6A00", PlayerLights = false,
+            Reconnect = false, HdrPeakNits = 600, HdrOutput = false, Scaler = "catmull-rom", Deband = false, TriggerEffects = false, LightBar = "FF6A00", PlayerLights = false,
             Motion = false, Touchpad = false, DeadZone = 12, FnLeft = "menu", FnRight = "stats",
         };
         Assert.Equal(["play", "Den", "--resolution", "720", "--fps", "30", "--codec", "hdr", "--bitrate", "20000", "--decoder", "software", "--reconnect", "0", "--controller", "dualsense", "--cushion", "20",
-                      "--loss-ceiling", "100", "--hdr-peak", "600", "--scaler", "catmull-rom", "--deband", "off", "--haptics-volume", "60", "--back-left", "cross", "--back-right", "r3", "--trigger-effects", "off", "--light-bar", "ff6a00", "--player-lights", "off", "--motion", "off",
+                      "--loss-ceiling", "100", "--hdr-peak", "600", "--hdr-output", "off", "--scaler", "catmull-rom", "--deband", "off", "--haptics-volume", "60", "--back-left", "cross", "--back-right", "r3", "--trigger-effects", "off", "--light-bar", "ff6a00", "--player-lights", "off", "--motion", "off",
                       "--touchpad", "off", "--dead-zone", "12", "--fn-left", "menu", "--fn-right", "stats", "--stats", "--rest"],
                      settings.PlayArguments("Den", ""));
     }

@@ -165,6 +165,7 @@ check "and the log says why" has "$work/feedback.err" "render: a software device
 check "a scaler is one of the five" sh -c "! '$app' play 'Living Room' --scaler nearest > /dev/null 2>&1"
 check "debanding is on or off" sh -c "! '$app' play 'Living Room' --deband maybe > /dev/null 2>&1"
 check "an HDR peak is auto or 400 to 10000 cd/m²" sh -c "! '$app' play 'Living Room' --hdr-peak 300 > /dev/null 2>&1 && ! '$app' play 'Living Room' --hdr-peak bright > /dev/null 2>&1"
+check "HDR to the screen is auto or off" sh -c "! '$app' play 'Living Room' --hdr-output on > /dev/null 2>&1"
 check "what does not go with the option is refused" sh -c "! '$app' play 'Living Room' --controller wheel > /dev/null 2>&1"
 check "a cushion is 50 ms at most" sh -c "! '$app' play 'Living Room' --cushion 80 > /dev/null 2>&1"
 check "and is part of the pacing: not without it" sh -c "! '$app' play 'Living Room' --cushion 20 --pacing off > /dev/null 2>&1"
@@ -187,6 +188,19 @@ sleep 0.3; stop_mock
 check "no error was logged with the statistics shown" lacks "$work/stats.err" " ERROR "
 check "--decoder software: the window does not lend its device, and the report says software was asked for" \
     sh -c "grep -aq 'render: pictures are decoded in software: not asked for' '$work/stats.err' && grep -aq 'Decoding in software: software was asked for.' '$work/stats.out'"
+
+echo "an HDR stream (PQ, BT.2020) on a screen that takes no HDR10 (the virtual X screen): tone mapped, and said so"
+start_mock hdr --kind ps5 --clip 416x240 --clip-codec hevc-hdr --frame-ms 16 --media-ms 10
+"$app" play "Living Room" --seconds 3 --codec hdr --stats --decoder software > "$work/hdr.out" 2> "$work/hdr.err"
+rc=$?
+sleep 0.3; stop_mock
+[ $rc -eq 0 ] && ok "play --codec hdr: exit 0" || fail "play --codec hdr: exit $rc: $(tail -3 "$work/hdr.out")"
+check "the window says why the HDR picture is tone mapped" has "$work/hdr.err" "render: HDR pictures are tone mapped to SDR: this window's surface offers no HDR10"
+check "and the picture was drawn tone mapped" has "$work/hdr.err" "HDR (PQ) tone mapped to SDR"
+check "the SDR stream before said nothing of HDR (the control)" lacks "$work/stats.err" "HDR pictures are tone mapped"
+check "no error was logged with the HDR stream" lacks "$work/hdr.err" " ERROR "
+check "the screen's refresh: not reported on the virtual screen (or not known to the build's headers), said as such" \
+    sh -c "grep -aqE 'render: present timing: (the device does not offer it|this build.s Vulkan headers do not know it)' '$work/hdr.err'"
 
 echo "the menu over the stream: L1 + R1 + Options held on a (pretended) controller opens it, Cross chooses in it"
 menu_run() {   # menu_run NAME DOWNS: opens the menu, goes down DOWNS times, presses Cross

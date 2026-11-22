@@ -45,8 +45,8 @@
 //     --clip WIDTHxHEIGHT     send the generated clip instead of the pattern: H.264 pictures that show
 //                             their frame's number (src/media/test_clip.h) and a tone as Opus sound;
 //                             after a loss report the next frame repairs the picture, as a console's does
-//     --clip-codec h264|hevc  with --clip: the clip's codec (default h264); HEVC is written in the shape of a
-//                             PS5's stream (src/media/hevc_clip.h)
+//     --clip-codec h264|hevc|hevc-hdr  with --clip: the clip's codec (default h264); HEVC is written in the
+//                             shape of a PS5's stream (src/media/hevc_clip.h); hevc-hdr says PQ, BT.2020
 //     --timing-log FILE       with --clip: one line per picture frame as it is sent ("frame INDEX NS MARK")
 //                             and per button the client pressed as it is read ("press BUTTON NS"), NS on
 //                             the steady clock in nanoseconds; every press turns the clip's mark over
@@ -143,6 +143,7 @@ struct Options {
     std::string check_dump;
     unsigned clip_width = 0, clip_height = 0;  // 0: the pattern, not the clip
     bool clip_hevc = false;
+    bool clip_hdr = false;   // the HEVC clip says PQ, BT.2020
     std::string timing_log;
 };
 
@@ -610,8 +611,9 @@ int main(int argc, char** argv) {
         } else if (arg == "--timing-log") {
             options.timing_log = *text;
         } else if (arg == "--clip-codec") {
-            if (*text != "h264" && *text != "hevc") return usage("--clip-codec takes h264 or hevc");
-            options.clip_hevc = *text == "hevc";
+            if (*text != "h264" && *text != "hevc" && *text != "hevc-hdr") return usage("--clip-codec takes h264, hevc or hevc-hdr");
+            options.clip_hevc = *text != "h264";
+            options.clip_hdr = *text == "hevc-hdr";
         } else if (arg == "--clip") {
             const std::size_t by = text->find('x');
             const auto number = [&](std::string_view part, unsigned& into) {
@@ -764,7 +766,7 @@ int main(int argc, char** argv) {
                 if (options.clip_width != 0) {
                     // The clip: pictures a decoder gives back sample for sample, and a tone.
                     std::shared_ptr<psvp::media::ClipEncoder> clip;
-                    if (options.clip_hevc) clip = std::make_shared<psvp::media::HevcClipWriter>(options.clip_width, options.clip_height);
+                    if (options.clip_hevc) clip = std::make_shared<psvp::media::HevcClipWriter>(options.clip_width, options.clip_height, options.clip_hdr);
                     else clip = std::make_shared<psvp::media::ClipWriter>(options.clip_width, options.clip_height);
                     auto tone = std::make_shared<psvp::media::ToneWriter>();
                     stream_options.resolutions.front() = psvp::proto::StreamResolution{options.clip_width, options.clip_height, clip->parameter_sets()};

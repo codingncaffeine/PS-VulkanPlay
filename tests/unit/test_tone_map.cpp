@@ -148,3 +148,26 @@ PSVP_TEST(delta_e_2000_matches_sharma_wu_dalal) {
     // Seen on a tone mapped picture of a console (2026-11-21): 15 steps apart in red, unseen.
     CHECK(delta_e_2000(lab_of_srgb(5, 238, 121), lab_of_srgb(20, 237, 121)) < 0.3);
 }
+
+// HDR10 to the screen (PLAN D42): PQ as it is; SDR white at HDR reference white (BT.2408: 58% of
+// the PQ signal) in every channel, its primaries moved into BT.2020 (a pure BT.709 red is inside
+// BT.2020: no channel below 0); an HLG 75% gray at reference white too; the two primaries matrices
+// each other's inverse.
+PSVP_TEST(tone_map_hdr10_signal_follows_bt2100_and_bt2408) {
+    const auto pq = hdr10_signal({0.1, 0.5, 0.9}, ColorTransfer::pq);
+    CHECK(close(pq[0], 0.1, 1e-12) && close(pq[1], 0.5, 1e-12) && close(pq[2], 0.9, 1e-12));
+    const auto white = hdr10_signal({1.0, 1.0, 1.0}, ColorTransfer::sdr);
+    for (const double channel : white) CHECK(close(channel, nits_to_pq(kSdrWhiteNits), 1e-9) && close(channel, 0.5807, 1e-4));
+    const auto black = hdr10_signal({0.0, 0.0, 0.0}, ColorTransfer::sdr);
+    for (const double channel : black) CHECK(channel < 1e-6);
+    const auto red = hdr10_signal({1.0, 0.0, 0.0}, ColorTransfer::sdr);
+    CHECK(close(red[0], nits_to_pq(0.6274038959 * kSdrWhiteNits), 1e-9));
+    CHECK(red[1] > 0.0 && red[2] > 0.0 && red[0] > red[1] && red[1] > red[2]);
+    const auto hlg = hdr10_signal({0.75, 0.75, 0.75}, ColorTransfer::hlg);
+    CHECK(close(pq_to_nits(hlg[0]), 203.0, 0.5) && close(hlg[0], hlg[1], 1e-12) && close(hlg[1], hlg[2], 1e-12));
+    CHECK(close(hdr10_signal({1.0, 1.0, 1.0}, ColorTransfer::hlg)[1], nits_to_pq(kHlgPeakNits), 1e-6));  // BT.2100 gives 1 at 1 to 1e-6
+    for (const auto& c : {std::array<double, 3>{1.0, 0.0, 0.0}, std::array<double, 3>{0.2, 0.7, 0.4}}) {
+        const auto back = bt2020_to_bt709(bt709_to_bt2020(c));
+        for (std::size_t i = 0; i < 3; ++i) CHECK(close(back[i], c[i], 1e-9));
+    }
+}

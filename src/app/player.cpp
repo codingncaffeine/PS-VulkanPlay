@@ -115,6 +115,11 @@ public:
     // The window's line about when pictures reached the screen (the driver's own times), on its thread
     // before the report is made on the same one.
     void set_screen_times(const std::string& line) { screen_times_ = line; }
+    // The window's line about the screen (render::WindowOptions::on_screen_state), for the statistics.
+    void set_screen_state(const std::string& line) {
+        const std::lock_guard lock(stats_mutex_);
+        screen_state_ = line;
+    }
     void drop_gpu() {
         finish();
         if (decoder_) {
@@ -388,6 +393,7 @@ private:
     std::uint64_t late_on_the_way_ = 0, late_sent_ = 0;
     Spacing handed_spacing_;                         // on the decode thread, until it has ended
     std::string screen_times_;
+    std::string screen_state_;  // under stats_mutex_
     ControllerSettings settings_;
     std::int16_t raw_left_x_ = 0, raw_left_y_ = 0, raw_right_x_ = 0, raw_right_y_ = 0;  // the sticks before the dead zone
     std::uint64_t triggers_held_back_ = 0, fn_presses_ = 0;                       // the driver's own times of the pictures on the screen, when the window closed
@@ -853,11 +859,12 @@ std::vector<std::string> Player::stats_lines() {
     const std::uint64_t decoded = stats_decoded_.load(std::memory_order_relaxed);
     const std::uint64_t microseconds = stats_decode_microseconds_.load(std::memory_order_relaxed);
     std::optional<proto::ConnectionQuality> quality;
-    std::string codec;
+    std::string codec, screen;
     {
         const std::lock_guard lock(stats_mutex_);
         quality = quality_;
         codec = stats_codec_;
+        screen = screen_state_;
     }
     std::vector<std::string> lines{"Statistics (F3 hides them)"};
     std::string picture = stats_width_ == 0 ? std::string("No picture yet") : std::format("{}\u00d7{}", stats_width_, stats_height_);
@@ -880,6 +887,7 @@ std::vector<std::string> Player::stats_lines() {
         lines.emplace_back("Console: no view of the connection yet");
     }
     lines.push_back(std::format("Frames lost on the way: {}", stats_lost_.load(std::memory_order_relaxed)));
+    if (!screen.empty()) lines.push_back(screen);
     stats_at_ = now;
     stats_shown_at_ = shown;
     stats_decoded_at_ = decoded;
@@ -1402,9 +1410,12 @@ int run_player(SessionPlan plan, const PlayOptions& options) {
             if (options.hdr_peak_nits) window.hdr_peak_nits = *options.hdr_peak_nits;
             window.scaler = options.scaler;
             window.deband = options.deband;
+            window.hdr_output = options.hdr_output;
+            window.stream_rate = static_cast<double>(plan.video.max_fps);
             window.on_gpu = [&](std::optional<media::GpuDevice> gpu, const std::string& why_not) { player.set_gpu(std::move(gpu), why_not); };
             window.before_device_gone = [&] { player.drop_gpu(); };
             window.on_screen_times = [&](const std::string& line) { player.set_screen_times(line); };
+            window.on_screen_state = [&](const std::string& line) { player.set_screen_state(line); };
             if (const auto file = window_place_file()) {
                 window.place = load_window_place(*file);
                 window.on_place = [file = *file](const WindowPlace& place) {

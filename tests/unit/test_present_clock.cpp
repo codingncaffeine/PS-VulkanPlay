@@ -94,3 +94,51 @@ PSVP_TEST(present_clock_skips_presents_not_reported) {
     CHECK(s.refreshes[2] == 1 && s.refreshes[1] == 1);
     CHECK(PresentClock{}.text().empty());
 }
+
+// Sixty pictures a second at 175 Hz: the rate does not divide the refresh, and the report says
+// what would show each picture the same time; 120 Hz and 59.94 Hz divide it.
+PSVP_TEST(present_clock_says_when_the_rate_does_not_divide_the_refresh) {
+    CHECK(!PresentClock::divides(60.0, kRefresh));
+    CHECK(PresentClock::divides(60.0, 8333333));    // 120 Hz
+    CHECK(PresentClock::divides(60.0, 16683350));   // 59.94 Hz
+    CHECK(PresentClock::divides(30.0, 8333333));
+    CHECK(!PresentClock::divides(60.0, 6944444));   // 144 Hz
+    PresentClock clock;
+    clock.set_refresh(kRefresh, kRefresh);
+    clock.set_stream_rate(60.0);
+    for (std::uint64_t id = 1; id <= 600; ++id) {
+        const std::uint64_t handed = id * 16666667;
+        clock.handed(id, handed);
+        clock.reported(id, (handed / kRefresh + 1) * kRefresh);
+    }
+    const PresentClock::Summary s = clock.summary();
+    // 3 refreshes (17.1 ms) is within 1.5 ms of a picture's time, 2 (11.4 ms) is not.
+    CHECK(s.even == s.refreshes[2] && s.even + s.refreshes[1] == s.apart);
+    const std::string text = clock.text();
+    CHECK(text.find("60 pictures a second do not divide 175.0 Hz") != std::string::npos);
+    CHECK(text.find("stayed one picture's time (16.7 ms") != std::string::npos);
+    CHECK(text.find("adaptive sync, ") == std::string::npos);
+}
+
+// Adaptive sync: the swapchain's refresh interval is UINT64_MAX and each picture stays as long as
+// the next one takes: no refresh counts, every picture one picture's time but the late one.
+PSVP_TEST(present_clock_reads_adaptive_sync) {
+    PresentClock clock;
+    clock.set_refresh(kRefresh, UINT64_MAX);
+    clock.set_stream_rate(60.0);
+    CHECK(clock.adaptive());
+    std::uint64_t at = 1000000;
+    for (std::uint64_t id = 1; id <= 300; ++id) {
+        at += id == 150 ? 33333333 : 16666667;
+        clock.handed(id, at - 2000000);
+        clock.reported(id, at);
+    }
+    const PresentClock::Summary s = clock.summary();
+    CHECK(s.apart == 299 && s.even == 298);
+    const std::string text = clock.text();
+    CHECK(text.find("the refresh followed the pictures (adaptive sync, 175.0 Hz at most)") != std::string::npos);
+    CHECK(text.find("the longest a picture stayed 33.3 ms") != std::string::npos);
+    CHECK(text.find("on a whole refresh") == std::string::npos);
+    CHECK(text.find("do not divide") == std::string::npos);
+    CHECK(text.find("99.7% stayed one picture's time") != std::string::npos);
+}

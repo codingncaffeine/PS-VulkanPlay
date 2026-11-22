@@ -18,8 +18,10 @@
 #include "app/log.h"
 #include "media/gpu_share.h"
 #include "media/present_clock.h"
+#include "media/tone_map.h"
 #include "psvp/version.h"
 #include "render/overlay_pass.h"
+#include "render/target_kind.h"
 #include "render/video_device.h"
 #include "render/video_pass.h"
 
@@ -170,6 +172,24 @@ private:
     bool swapchain_stale_ = true;
     const char* present_mode_name_ = "";
 
+    // HDR to the screen (PLAN D42): the swapchain takes HDR10 while the picture is HDR, where the
+    // surface offers it (VK_EXT_swapchain_colorspace on the instance) and it was not turned off.
+    bool colorspace_extension_ = false;     // VK_EXT_swapchain_colorspace is enabled
+    PFN_vkSetHdrMetadataEXT set_hdr_metadata_ = nullptr;  // VK_EXT_hdr_metadata, where the device has it
+    TargetKind target_ = TargetKind::sdr;   // what the swapchain takes
+    bool hdr10_offered_ = false;            // the surface offered HDR10 when the swapchain was made last
+    std::string target_said_;               // the last line about it in the log
+    // Wants HDR10 for the picture taken last.
+    [[nodiscard]] bool wants_hdr10() const;
+    void say_target();
+    // The screen's refresh as the swapchain says it (VK_EXT_present_timing), said in the log when it changes.
+    std::uint64_t refresh_said_ = 0, interval_said_ = 1;
+#ifdef VK_EXT_present_timing
+    void say_refresh(std::uint64_t refresh_ns, std::uint64_t interval_ns);  // only where the headers know present timing
+#endif
+    std::string screen_state_;
+    void tell_screen_state();
+
     // When pictures reached the screen, as the driver says (VK_EXT_present_timing).
     struct PresentTiming {
         bool wanted = false;    // the device and the surface offer it: asked for when the device is made
@@ -234,6 +254,12 @@ bool Window::create_instance() {
     surface_capabilities2_ = std::ranges::any_of(offered, [&](const VkExtensionProperties& e) { return e.extensionName == capabilities2; });
     if (surface_capabilities2_ && std::ranges::none_of(enabled, [&](const char* name) { return name == capabilities2; })) {
         enabled.push_back(VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME);
+    }
+    // The color spaces beyond sRGB (HDR10 among them) a surface can offer: only with this enabled.
+    const std::string_view colorspace = VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME;
+    colorspace_extension_ = std::ranges::any_of(offered, [&](const VkExtensionProperties& e) { return e.extensionName == colorspace; });
+    if (colorspace_extension_ && std::ranges::none_of(enabled, [&](const char* name) { return name == colorspace; })) {
+        enabled.push_back(VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME);
     }
     for (const char* name : enabled) instance_extensions_.emplace_back(name);
 
@@ -473,8 +499,9 @@ void Window::read_present_timing() {
         const auto read = reinterpret_cast<PFN_vkGetSwapchainTimingPropertiesEXT>(timing_.timing_properties);
         if (read(device_, swapchain_, &swapchain_timing, &counter) == VK_SUCCESS) {
             timing_.properties_seen = std::max<std::uint64_t>(counter, 1);
-            present_clock_.set_refresh(swapchain_timing.refreshDuration);
+            present_clock_.set_refresh(swapchain_timing.refreshDuration, swapchain_timing.refreshInterval);
             log::debug("render: present timing: refresh {} ns, interval {} ns", swapchain_timing.refreshDuration, swapchain_timing.refreshInterval);
+            say_refresh(swapchain_timing.refreshDuration, swapchain_timing.refreshInterval);
         }
     }
     for (std::uint32_t i = 0; i < std::min(properties.presentationTimingCount, kAtOnce); ++i) {
@@ -497,6 +524,18 @@ bool Window::create_device() {
     DeviceRequest request{instance_, instance_api_, instance_extensions_, physical_, device_api_, queue_family_, device_name_, wanted,
                           {VK_KHR_SWAPCHAIN_EXTENSION_NAME}};
     std::expected<MadeDevice, std::string> made = std::unexpected(std::string());
+    // The HDR metadata of an HDR10 swapchain (how bright the picture gets), where the device can say it.
+    bool hdr_metadata = false;
+    {
+        std::uint32_t count = 0;
+        vkEnumerateDeviceExtensionProperties(physical_, nullptr, &count, nullptr);
+        std::vector<VkExtensionProperties> offered(count);
+        vkEnumerateDeviceExtensionProperties(physical_, nullptr, &count, offered.data());
+        hdr_metadata = colorspace_extension_ && std::ranges::any_of(offered, [](const VkExtensionProperties& e) {
+            return std::string_view(e.extensionName) == VK_EXT_HDR_METADATA_EXTENSION_NAME;
+        });
+        if (hdr_metadata) request.extensions.push_back(VK_EXT_HDR_METADATA_EXTENSION_NAME);
+    }
 #ifdef VK_EXT_present_timing
     // Present timing and what it needs, where it was offered; without it when the device cannot be made so.
     if (timing_.wanted) {
@@ -540,6 +579,7 @@ bool Window::create_device() {
     }
     device_ = made->device;
     queue_ = made->queue;
+    if (hdr_metadata) set_hdr_metadata_ = reinterpret_cast<PFN_vkSetHdrMetadataEXT>(vkGetDeviceProcAddr(device_, "vkSetHdrMetadataEXT"));
     share_ = std::move(made->share);
     gpu_why_not_ = made->why_not;
     return true;
@@ -599,7 +639,10 @@ void Window::destroy_swapchain() {
 }
 
 bool Window::create_swapchain() {
+    // Every queue of the device is held still for the wait: the decoder submits to the same one.
+    lock_queue();
     vkDeviceWaitIdle(device_);
+    unlock_queue();
     destroy_swapchain();
 
     VkSurfaceCapabilitiesKHR caps{};
@@ -644,6 +687,17 @@ bool Window::create_swapchain() {
             chosen = candidate;
         }
     }
+    // HDR10 with ten bits a channel, where the surface offers it (a desktop with HDR turned on).
+    std::optional<VkSurfaceFormatKHR> hdr10;
+    if (colorspace_extension_) {
+        for (const VkSurfaceFormatKHR& candidate : formats) {
+            if (candidate.colorSpace != VK_COLOR_SPACE_HDR10_ST2084_EXT) continue;
+            if (candidate.format == VK_FORMAT_A2B10G10R10_UNORM_PACK32 || (candidate.format == VK_FORMAT_A2R10G10B10_UNORM_PACK32 && !hdr10)) hdr10 = candidate;
+        }
+    }
+    hdr10_offered_ = hdr10.has_value();
+    if (hdr10 && wants_hdr10()) chosen = *hdr10;
+    target_ = chosen.colorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT ? TargetKind::hdr10 : is_srgb_format(chosen.format) ? TargetKind::sdr_srgb : TargetKind::sdr;
 
     std::uint32_t image_count = caps.minImageCount + 1;
     if (caps.maxImageCount > 0) image_count = std::min(image_count, caps.maxImageCount);
@@ -705,6 +759,21 @@ bool Window::create_swapchain() {
     format_ = chosen.format;
     extent_ = extent;
     start_present_timing();
+    if (target_ == TargetKind::hdr10 && set_hdr_metadata_ != nullptr) {
+        // The stream states no mastering display or light levels (seen 2026-11-19): BT.2020 primaries,
+        // D65, the peak the picture is taken to reach (the user's, or ITU-R BT.2408's reference display
+        // of 1000 cd/m²) and that display's black; content light levels 0 = not known (CTA-861.3).
+        VkHdrMetadataEXT metadata{};
+        metadata.sType = VK_STRUCTURE_TYPE_HDR_METADATA_EXT;
+        metadata.displayPrimaryRed = {0.708F, 0.292F};
+        metadata.displayPrimaryGreen = {0.170F, 0.797F};
+        metadata.displayPrimaryBlue = {0.131F, 0.046F};
+        metadata.whitePoint = {0.3127F, 0.3290F};
+        metadata.maxLuminance = static_cast<float>(options_ != nullptr && options_->hdr_peak_nits ? *options_->hdr_peak_nits : media::kAssumedHdrPeakNits);
+        metadata.minLuminance = 0.005F;
+        set_hdr_metadata_(device_, 1, &swapchain_, &metadata);
+    }
+    say_target();
 
     VkAttachmentDescription color{};
     color.format = format_;
@@ -738,8 +807,8 @@ bool Window::create_swapchain() {
     pass.dependencyCount = 1;
     pass.pDependencies = &dependency;
     if (!check(vkCreateRenderPass(device_, &pass, nullptr, &render_pass_), "vkCreateRenderPass")) return false;
-    if (!video_.create_pipeline(render_pass_, is_srgb_format(format_))) return false;
-    if (!overlay_.create_pipeline(render_pass_, is_srgb_format(format_))) return false;
+    if (!video_.create_pipeline(render_pass_, target_)) return false;
+    if (!overlay_.create_pipeline(render_pass_, target_)) return false;
 
     std::uint32_t actual_count = 0;
     vkGetSwapchainImagesKHR(device_, swapchain_, &actual_count, nullptr);
@@ -795,6 +864,13 @@ bool Window::draw_frame(bool& presented, const media::Picture* fresh) {
     if (fresh != nullptr && !video_.set_picture(*fresh) && !std::exchange(picture_refused_, true)) {
         log::error("render: a picture of {}x{} with {} bits cannot be shown", fresh->width, fresh->height, fresh->bits);
     }
+    // The picture went from SDR to HDR or back: the swapchain is made again for it first (the frame
+    // before is done, nothing is acquired).
+    if (fresh != nullptr && wants_hdr10() != (target_ == TargetKind::hdr10)) {
+        if (!create_swapchain()) return false;
+        if (extent_.width == 0 || extent_.height == 0) return true;
+    }
+    if (fresh != nullptr) say_target();
     // What lies over the picture, laid out again only when it or the window's size changed.
     if (options_ != nullptr && (options_->overlay_lines || options_->overlay_menu || options_->overlay_notice)) {
         std::vector<std::string> lines = options_->overlay_lines ? options_->overlay_lines() : std::vector<std::string>{};
@@ -850,7 +926,12 @@ bool Window::draw_frame(bool& presented, const media::Picture* fresh) {
     VkClearValue clear{};
     for (std::size_t channel = 0; channel < 3; ++channel) {
         const float encoded = video_.has_picture() ? 0.0F : static_cast<float>(kBackground[channel]) / 255.0F;
-        clear.color.float32[channel] = is_srgb_format(format_) ? srgb_to_linear(encoded) : encoded;
+        clear.color.float32[channel] = target_ == TargetKind::sdr_srgb ? srgb_to_linear(encoded) : encoded;
+    }
+    if (target_ == TargetKind::hdr10) {
+        const std::array<double, 3> signal = media::hdr10_signal(
+            {static_cast<double>(clear.color.float32[0]), static_cast<double>(clear.color.float32[1]), static_cast<double>(clear.color.float32[2])}, media::ColorTransfer::sdr);
+        for (std::size_t channel = 0; channel < 3; ++channel) clear.color.float32[channel] = static_cast<float>(signal[channel]);
     }
     clear.color.float32[3] = 1.0F;
 
@@ -948,6 +1029,65 @@ bool Window::draw_frame(bool& presented, const media::Picture* fresh) {
     read_present_timing();
     return true;
 }
+
+bool Window::wants_hdr10() const {
+    return hdr10_offered_ && (options_ == nullptr || options_->hdr_output) && video_.has_picture() && video_.transfer() != media::ColorTransfer::sdr;
+}
+
+void Window::say_target() {
+    std::string line;
+    if (target_ == TargetKind::hdr10) {
+        line = std::format("render: HDR to the screen: HDR10 (PQ, BT.2020, {}); HDR metadata: {}", format_ == VK_FORMAT_A2B10G10R10_UNORM_PACK32 ? "A2B10G10R10" : "A2R10G10B10",
+                           set_hdr_metadata_ != nullptr ? std::format("peak {:.0f} cd/m², BT.2020 primaries",
+                                                                      options_ != nullptr && options_->hdr_peak_nits ? *options_->hdr_peak_nits : media::kAssumedHdrPeakNits)
+                                                        : std::string("none (the device cannot say it)"));
+    } else if (video_.has_picture() && video_.transfer() != media::ColorTransfer::sdr) {
+        line = options_ != nullptr && !options_->hdr_output ? std::string("render: HDR pictures are tone mapped to SDR: HDR to the screen is turned off")
+               : !colorspace_extension_                    ? std::format("render: HDR pictures are tone mapped to SDR: the Vulkan loader has no {}", VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME)
+                                                            : std::string("render: HDR pictures are tone mapped to SDR: this window's surface offers no HDR10 (a desktop without HDR turned on, or an X11 session)");
+    }
+    tell_screen_state();
+    if (line.empty() || line == target_said_) return;
+    target_said_ = line;
+    log::info("{}", line);
+}
+
+void Window::tell_screen_state() {
+    if (options_ == nullptr || !options_->on_screen_state) return;
+    std::string state = refresh_said_ == 0 ? std::string("Screen: its refresh is not reported")
+                                           : std::format("Screen: {:.0f} Hz{}", 1e9 / static_cast<double>(refresh_said_),
+                                                         interval_said_ == UINT64_MAX ? " at most, adaptive sync (VRR)"
+                                                         : interval_said_ == refresh_said_ ? ", fixed"
+                                                                                           : "");
+    if (target_ == TargetKind::hdr10) state += " \u00b7 HDR10";
+    else if (video_.has_picture() && video_.transfer() != media::ColorTransfer::sdr) state += " \u00b7 SDR (HDR tone mapped)";
+    else state += " \u00b7 SDR";
+    if (state == screen_state_) return;
+    screen_state_ = state;
+    options_->on_screen_state(state);
+}
+
+#ifdef VK_EXT_present_timing
+void Window::say_refresh(std::uint64_t refresh_ns, std::uint64_t interval_ns) {
+    if (refresh_ns == refresh_said_ && interval_ns == interval_said_) return;
+    refresh_said_ = refresh_ns;
+    interval_said_ = interval_ns;
+    tell_screen_state();
+    if (refresh_ns == 0) return;
+    const double hz = 1e9 / static_cast<double>(refresh_ns);
+    const double rate = options_ != nullptr ? options_->stream_rate : 0.0;
+    if (interval_ns == UINT64_MAX) {
+        log::info("render: the screen's refresh follows the pictures (adaptive sync / VRR), {:.1f} Hz at most: each picture can stay the same time", hz);
+    } else if (rate > 0.0 && !media::PresentClock::divides(rate, refresh_ns)) {
+        log::info("render: the screen refreshes at {:.1f} Hz{}: {:.0f} pictures a second do not divide it, so a picture stays {} or {} refreshes ({:.1f} or {:.1f} ms) "
+                  "and moving pictures judder a little; adaptive sync (VRR) for this window, or a refresh that is a multiple of {:.0f}, shows each the same time",
+                  hz, interval_ns == refresh_ns ? ", fixed" : " (the driver does not say whether it is fixed)", rate, static_cast<int>(hz / rate),
+                  static_cast<int>(hz / rate) + 1, 1000.0 * std::floor(hz / rate) / hz, 1000.0 * (std::floor(hz / rate) + 1.0) / hz, rate);
+    } else {
+        log::info("render: the screen refreshes at {:.1f} Hz{}", hz, interval_ns == refresh_ns ? ", fixed" : interval_ns == 0 ? " (the driver does not say whether it is fixed)" : "");
+    }
+}
+#endif
 
 void Window::destroy() {
     if (device_ != VK_NULL_HANDLE) {
@@ -1089,6 +1229,7 @@ int Window::run(const WindowOptions& options) {
     else video_.set_hdr_peak_measured();
     video_.set_scaler(options.scaler.value_or(software_device_ ? media::Scaler::bilinear : media::kDefaultScaler));
     video_.set_deband(options.deband.value_or(!software_device_));
+    present_clock_.set_stream_rate(options.stream_rate);
     if (software_device_ && (!options.scaler || !options.deband)) {
         log::info("render: a software device: the picture is scaled by the tent and not debanded unless asked for (the sharper scalers cost each picture "
                   "more than the processor has to spare)");

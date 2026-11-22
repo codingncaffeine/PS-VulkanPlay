@@ -157,7 +157,7 @@ void pcm_samples(BitWriter& out, const ClipBlock& block) {
 
 }  // namespace
 
-HevcClipWriter::HevcClipWriter(unsigned width, unsigned height) : ClipEncoder(width, height) {}
+HevcClipWriter::HevcClipWriter(unsigned width, unsigned height, bool hdr) : ClipEncoder(width, height), hdr_(hdr) {}
 
 std::vector<std::uint8_t> HevcClipWriter::parameter_sets() const {
     const auto held = static_cast<std::uint32_t>(kNamed);  // max_dec_pic_buffering_minus1: the frames named and the frame itself
@@ -235,9 +235,9 @@ std::vector<std::uint8_t> HevcClipWriter::parameter_sets() const {
     sequence.bits(5, 3);     // video_format: unspecified
     sequence.bits(0, 1);     // video_full_range_flag: the limited range, as a console sends
     sequence.bits(1, 1);     // colour_description_present_flag
-    sequence.bits(1, 8);     // colour_primaries: BT.709
-    sequence.bits(1, 8);     // transfer_characteristics: BT.709
-    sequence.bits(1, 8);     // matrix_coeffs: BT.709
+    sequence.bits(hdr_ ? 9 : 1, 8);   // colour_primaries: BT.2020 or BT.709
+    sequence.bits(hdr_ ? 16 : 1, 8);  // transfer_characteristics: SMPTE ST 2084 (PQ) or BT.709
+    sequence.bits(hdr_ ? 9 : 1, 8);   // matrix_coeffs: BT.2020 non-constant or BT.709
     sequence.bits(0, 1);     // chroma_loc_info_present_flag
     sequence.bits(0, 1);     // neutral_chroma_indication_flag
     sequence.bits(0, 1);     // field_seq_flag

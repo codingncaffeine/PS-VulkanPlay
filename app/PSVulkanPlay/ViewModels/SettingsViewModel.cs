@@ -168,6 +168,7 @@ public sealed class SettingsViewModel : Observable
     public Choice Codec { get => Pick(Codecs, _settings.Codec); set { if (value is not null) Keep(() => _settings.Codec = value.Value, nameof(Codec)); } }
     public Choice Scaler { get => Pick(Scalers, _settings.Scaler); set { if (value is not null) Keep(() => _settings.Scaler = value.Value, nameof(Scaler)); } }
     public bool Deband { get => _settings.Deband; set => Keep(() => _settings.Deband = value, nameof(Deband)); }
+    public bool HdrOutput { get => _settings.HdrOutput; set => Keep(() => _settings.HdrOutput = value, nameof(HdrOutput)); }
     public Choice Controller { get => Pick(Controllers, _settings.Controller); set { if (value is not null) Keep(() => _settings.Controller = value.Value, nameof(Controller)); } }
     public Choice BackLeft { get => Pick(Buttons, _settings.BackLeft); set { if (value is not null) Keep(() => _settings.BackLeft = value.Value, nameof(BackLeft)); } }
     public bool TriggerEffects { get => _settings.TriggerEffects; set => Keep(() => _settings.TriggerEffects = value, nameof(TriggerEffects)); }

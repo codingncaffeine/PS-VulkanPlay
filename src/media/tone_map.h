@@ -41,6 +41,16 @@ inline constexpr double kHlgPeakNits = 1000.0;
 // Linear light, BT.2020 primaries to BT.709 primaries (D65 both).
 [[nodiscard]] std::array<double, 3> bt2020_to_bt709(const std::array<double, 3>& linear);
 
+// Linear light, BT.709 primaries to BT.2020 primaries (D65 both; ITU-R BT.2087 Table 1 to four places).
+[[nodiscard]] std::array<double, 3> bt709_to_bt2020(const std::array<double, 3>& linear);
+
+// For a screen that takes HDR10 (SMPTE ST 2084 signal, BT.2020 primaries, ITU-R BT.2100): red, green
+// and blue as the picture encodes them (each 0 to 1) as that signal. PQ: as they are (the display and
+// the desktop fit what is brighter than the screen, from the stream's HDR metadata). HLG: through
+// BT.2100's inverse OETF and the OOTF of a 1000 cd/m² display, then PQ. SDR (taken as sRGB, BT.709):
+// SDR white at HDR reference white (203 cd/m², ITU-R BT.2408), then PQ.
+[[nodiscard]] std::array<double, 3> hdr10_signal(const std::array<double, 3>& encoded, ColorTransfer transfer);
+
 // IEC 61966-2-1 (sRGB), linear light from 0 to 1 to the screen's encoding and back.
 [[nodiscard]] double srgb_encode(double linear);
 [[nodiscard]] double srgb_decode(double encoded);

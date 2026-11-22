@@ -22,6 +22,9 @@ using ColorTransform = std::array<float, 16>;
 // (sRGB). An HDR picture's colors go through `tone` first (media/tone_map.h).
 [[nodiscard]] std::array<int, 3> screen_color(const ColorTransform& transform, unsigned bits, unsigned y, unsigned cb, unsigned cr, const ToneMap& tone = {});
 
+// The same for a screen that takes HDR10 (media::hdr10_signal): the codes of a 10-bit screen.
+[[nodiscard]] std::array<int, 3> hdr10_screen_color(const ColorTransform& transform, unsigned bits, unsigned y, unsigned cb, unsigned cr, ColorTransfer transfer);
+
 // Where a picture goes in a target of another shape: as large as fits, centered, bars beside or above it.
 struct Placement {
     int x = 0, y = 0;

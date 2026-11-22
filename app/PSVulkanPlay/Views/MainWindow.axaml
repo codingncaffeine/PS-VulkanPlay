@@ -134,9 +134,17 @@
                         <Border Classes="rule" />
                         <Grid ColumnDefinitions="*,Auto">
                             <StackPanel VerticalAlignment="Center" Margin="0,0,20,0">
+                                <TextBlock Text="HDR on an HDR screen" />
+                                <TextBlock Classes="secondary small" TextWrapping="Wrap" Text="With HDR coding: where the desktop has HDR turned on (on Linux, a Wayland session), the picture goes to the screen as HDR. Off, or elsewhere, it is shown as SDR." />
+                            </StackPanel>
+                            <ToggleSwitch Grid.Column="1" IsChecked="{Binding HdrOutput}" OnContent="" OffContent="" MinWidth="0" />
+                        </Grid>
+                        <Border Classes="rule" />
+                        <Grid ColumnDefinitions="*,Auto">
+                            <StackPanel VerticalAlignment="Center" Margin="0,0,20,0">
                                 <TextBlock Text="HDR brightness" />
                                 <TextBlock Classes="secondary small" TextWrapping="Wrap"
-                                           Text="With HDR coding: how bright the console's picture is at its brightest. The window shows it as SDR, with what is brighter than white paper fitted below white: measured from each picture, or the brightness on the slider (higher keeps more detail in bright places, lower makes them brighter)." />
+                                           Text="With HDR coding: how bright the console's picture is at its brightest. Shown as SDR, what is brighter than white paper is fitted below white; on an HDR screen it is the brightness the screen is told. Measured from each picture, or the brightness on the slider (higher keeps more detail in bright places, lower makes them brighter)." />
                                 <TextBlock Classes="secondary small" Text="{Binding HdrPeakText}" Foreground="{DynamicResource Accent}" Margin="0,4,0,0" />
                             </StackPanel>
                             <!-- One above the other: left and right on a slider change its value. -->

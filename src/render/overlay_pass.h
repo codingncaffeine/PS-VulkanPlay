@@ -8,6 +8,7 @@
 #include <vulkan/vulkan.h>
 
 #include "overlay/text.h"
+#include "render/target_kind.h"
 
 namespace psvp::render {
 
@@ -21,8 +22,13 @@ public:
 
     // What does not depend on the swapchain. False (with the reason logged) when a call failed.
     [[nodiscard]] bool create(VkPhysicalDevice physical, VkDevice device);
+    // For a target of that kind: the panels' and the text's sRGB colors as it takes them (HDR10: SDR
+    // white at HDR reference white, media::hdr10_signal).
+    [[nodiscard]] bool create_pipeline(VkRenderPass render_pass, TargetKind target);
     // `target_encodes`: the target's format encodes what is written to it (an sRGB format).
-    [[nodiscard]] bool create_pipeline(VkRenderPass render_pass, bool target_encodes);
+    [[nodiscard]] bool create_pipeline(VkRenderPass render_pass, bool target_encodes) {
+        return create_pipeline(render_pass, target_encodes ? TargetKind::sdr_srgb : TargetKind::sdr);
+    }
     void destroy_pipeline();
     void destroy();
 
@@ -48,7 +54,7 @@ private:
     VkShaderModule vertex_ = VK_NULL_HANDLE;
     VkShaderModule fragment_ = VK_NULL_HANDLE;
     VkPipeline pipeline_ = VK_NULL_HANDLE;
-    bool target_encodes_ = false;
+    TargetKind target_ = TargetKind::sdr;
 
     VkImage atlas_ = VK_NULL_HANDLE;
     VkDeviceMemory atlas_memory_ = VK_NULL_HANDLE;

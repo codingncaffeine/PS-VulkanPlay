@@ -18,7 +18,9 @@ namespace psvp::media {
 
 class HevcClipWriter final : public ClipEncoder {
 public:
-    HevcClipWriter(unsigned width, unsigned height);
+    // `hdr`: the stream says it is PQ with BT.2020 primaries and matrix, as a PS5's HDR stream does (the
+    // samples stay 8-bit: what is checked with it is what the player does with an HDR picture).
+    HevcClipWriter(unsigned width, unsigned height, bool hdr = false);
 
     // The video, sequence and picture parameter sets.
     [[nodiscard]] std::vector<std::uint8_t> parameter_sets() const override;
@@ -27,6 +29,7 @@ public:
 
 private:
     unsigned order_ = 0;  // of the next frame, since the last keyframe
+    bool hdr_ = false;
 };
 
 }  // namespace psvp::media

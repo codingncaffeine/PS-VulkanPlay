@@ -66,6 +66,8 @@ public:
     // `wide`: 16 bits a channel (for the scaling check, which looks closer than a step of 255).
     Target(VkPhysicalDevice physical, VkDevice device, bool wide = false)
         : physical_(physical), device_(device), format_(wide ? VK_FORMAT_R16G16B16A16_UNORM : VK_FORMAT_R8G8B8A8_UNORM), pixel_bytes_(wide ? 8 : 4) {}
+    // Of a format of four bytes a pixel (A2B10G10R10_UNORM_PACK32: what an HDR10 swapchain is).
+    Target(VkPhysicalDevice physical, VkDevice device, VkFormat format) : physical_(physical), device_(device), format_(format), pixel_bytes_(4) {}
     ~Target() { destroy(); }
     Target(const Target&) = delete;
     Target& operator=(const Target&) = delete;
@@ -161,6 +163,12 @@ public:
     [[nodiscard]] const std::uint8_t* pixels() const { return static_cast<const std::uint8_t*>(mapped_); }
     [[nodiscard]] VkExtent2D extent() const { return {width_, height_}; }
     // A channel of a pixel in steps of 255 (a 16-bit target's values keep their fractions).
+    // A channel of a pixel of an A2B10G10R10 target, 0 to 1023.
+    [[nodiscard]] int code10(std::uint32_t x, std::uint32_t y, unsigned channel) const {
+        std::uint32_t packed = 0;
+        std::memcpy(&packed, pixels() + (std::size_t{y} * width_ + x) * 4, 4);
+        return static_cast<int>((packed >> (10 * channel)) & 0x3ffU);
+    }
     [[nodiscard]] double value(std::uint32_t x, std::uint32_t y, unsigned channel) const {
         const std::size_t at = (std::size_t{y} * width_ + x) * pixel_bytes_;
         if (pixel_bytes_ == 4) return pixels()[at + channel];
@@ -547,6 +555,77 @@ int run_pattern(const std::vector<double>& peaks) {
                     std::printf("render-check: %s: the control failed (%u patches unlike the untouched colors)\n", run.name, unlike_untoned);
                     code = 1;
                 }
+            }
+
+            // HDR10 (PLAN D42): the same patches drawn into a 10-bit target as the window draws for a
+            // desktop that takes HDR10, against media::hdr10_screen_color within 1 of 1023: PQ as it is,
+            // HLG and SDR converted to PQ. The controls: PQ unlike its tone mapped SDR colors (scaled to
+            // ten bits) in a quarter of the patches at least, SDR unlike its own signal taken as PQ.
+            if (!broken) {
+                render::VideoPass pass10;
+                Target target10(physical, device, VK_FORMAT_A2B10G10R10_UNORM_PACK32);
+                if (!pass10.create(physical, device, false) || !target10.create_pass() || !pass10.create_pipeline(target10.pass(), render::TargetKind::hdr10)) {
+                    code = fail(1, "the HDR10 pass could not be set up");
+                } else {
+                    struct Run10 {
+                        media::ColorTransfer transfer;
+                        const char* name;
+                    };
+                    for (const Run10 run : {Run10{media::ColorTransfer::pq, "PQ"}, Run10{media::ColorTransfer::hlg, "HLG"}, Run10{media::ColorTransfer::sdr, "SDR"}}) {
+                        media::Picture picture;
+                        picture.width = width;
+                        picture.height = height;
+                        picture.bits = 10;
+                        picture.matrix = media::ColorMatrix::bt2020;
+                        picture.transfer = run.transfer;
+                        picture.planes[0] = reinterpret_cast<const std::uint8_t*>(plane_y.data());
+                        picture.planes[1] = reinterpret_cast<const std::uint8_t*>(plane_cb.data());
+                        picture.planes[2] = reinterpret_cast<const std::uint8_t*>(plane_cr.data());
+                        picture.strides[0] = std::size_t{width} * 2;
+                        picture.strides[1] = picture.strides[2] = std::size_t{width / 2} * 2;
+                        pass10.set_hdr_peak(media::kAssumedHdrPeakNits);
+                        if (!draw(device, made->queue, family, nullptr, commands, fence, pass10, target10, picture)) {
+                            code = fail(1, "the {} picture could not be drawn as HDR10", run.name);
+                            break;
+                        }
+                        unsigned worst = 0, unlike = 0;
+                        std::string worst_where;
+                        for (std::size_t i = 0; i < patches.size(); ++i) {
+                            const unsigned x = static_cast<unsigned>(i % kAcross) * kSide + kSide / 2, y = static_cast<unsigned>(i / kAcross) * kSide + kSide / 2;
+                            const auto want = media::hdr10_screen_color(transform, 10, patches[i][0], patches[i][1], patches[i][2], run.transfer);
+                            // The control's other drawing: PQ tone mapped to SDR; SDR's signal taken as PQ as it is.
+                            std::array<int, 3> other{};
+                            if (run.transfer == media::ColorTransfer::sdr) {
+                                other = media::hdr10_screen_color(transform, 10, patches[i][0], patches[i][1], patches[i][2], media::ColorTransfer::pq);
+                            } else {
+                                const auto sdr = media::screen_color(transform, 10, patches[i][0], patches[i][1], patches[i][2], media::ToneMap{run.transfer, media::kAssumedHdrPeakNits});
+                                for (std::size_t c = 0; c < 3; ++c) other[c] = static_cast<int>(std::lround(sdr[c] * 1023.0 / 255.0));
+                            }
+                            unsigned off = 0, apart = 0;
+                            std::array<int, 3> got{};
+                            for (unsigned c = 0; c < 3; ++c) {
+                                got[c] = target10.code10(x, y, c);
+                                off = std::max(off, static_cast<unsigned>(std::abs(want[c] - got[c])));
+                                apart = std::max(apart, static_cast<unsigned>(std::abs(other[c] - got[c])));
+                            }
+                            if (apart > 8) ++unlike;
+                            if (off > worst) {
+                                worst = off;
+                                worst_where = std::format(" (samples {} {} {}: drawn {} {} {}, wanted {} {} {})", patches[i][0], patches[i][1], patches[i][2], got[0], got[1], got[2], want[0],
+                                                          want[1], want[2]);
+                            }
+                        }
+                        std::printf("render-check: %s as HDR10: %zu patches within %u of 1023 of media::hdr10_screen_color%s; %u unlike %s\n", run.name, patches.size(), worst,
+                                    worst > 1 ? worst_where.c_str() : "", unlike, run.transfer == media::ColorTransfer::sdr ? "its signal taken as PQ" : "its tone mapped SDR colors");
+                        if (worst > 1) code = 1;
+                        if (run.transfer != media::ColorTransfer::hlg && unlike < patches.size() / 4) {
+                            std::printf("render-check: %s as HDR10: the control failed (%u patches unlike)\n", run.name, unlike);
+                            code = 1;
+                        }
+                    }
+                }
+                vkDeviceWaitIdle(device);
+                pass10.destroy();
             }
 
             // Measured: a PQ picture of gray patches only (each sample's brightest channel is its own

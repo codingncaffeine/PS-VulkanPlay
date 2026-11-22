@@ -49,7 +49,9 @@ Add a console, sign in with PSN and type the eight digits the console shows.
 - decoding on the graphics card through Vulkan Video, with the pictures drawn straight from the card's memory.
   The card's first two seconds of pictures are checked against software decoding, sample for sample, and
   software takes over if they differ. "Decode on the graphics card" in the app turns it off
-- HDR pictures (the "HEVC with HDR" coding) shown on the desktop as SDR with the industry's tone mapping:
+- HDR pictures (the "HEVC with HDR" coding) sent to the screen as HDR10 where the desktop takes it (on Linux, a
+  Wayland session with HDR turned on, such as KDE Plasma's); "HDR on an HDR screen" in the app turns it off
+- elsewhere, HDR pictures shown as SDR with the industry's tone mapping:
   ITU-R BT.2390's curve, BT.2408's reference white, BT.2020 colors brought into BT.709. Consoles do not say how
   bright their picture gets, so each picture's brightness is measured on the graphics card and the curve follows
   it, smoothed and taken at once on a scene change; "HDR brightness" in the app can fix it at a value instead
@@ -60,7 +62,10 @@ Add a console, sign in with PSN and type the eight digits the console shows.
   turn trigger effects, player lights, motion and the touchpad on or off, set the light bar's color, a stick
   dead zone, and what a DualSense Edge's Fn buttons do (the menu over the stream, statistics, full screen)
 
-Not there yet: HDR output to an HDR screen, the microphone, and play from outside the home network.
+- the screen's refresh said in the log and the statistics (F3): fixed, or following the pictures (adaptive
+  sync / VRR, which the desktop turns on for a full screen window: on KDE Plasma, Adaptive Sync "Automatic")
+
+Not there yet: the microphone, and play from outside the home network.
 
 ## Building from source
 

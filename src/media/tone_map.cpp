@@ -60,6 +60,47 @@ std::array<double, 3> bt2020_to_bt709(const std::array<double, 3>& c) {
     };
 }
 
+std::array<double, 3> bt709_to_bt2020(const std::array<double, 3>& c) {
+    // The inverse of bt2020_to_bt709's, from the same primaries and D65.
+    return {
+        0.6274038959 * c[0] + 0.3292830384 * c[1] + 0.0433130657 * c[2],
+        0.0690972894 * c[0] + 0.9195403951 * c[1] + 0.0113623156 * c[2],
+        0.0163914389 * c[0] + 0.0880133079 * c[1] + 0.8955952532 * c[2],
+    };
+}
+
+namespace {
+// HLG to display light in cd/m² (BT.2020 primaries): inverse OETF, then the OOTF of kHlgPeakNits.
+std::array<double, 3> hlg_to_nits(const std::array<double, 3>& encoded) {
+    std::array<double, 3> scene{};
+    for (std::size_t i = 0; i < 3; ++i) scene[i] = hlg_to_scene(encoded[i]);
+    const double ys = 0.2627 * scene[0] + 0.6780 * scene[1] + 0.0593 * scene[2];
+    const double gain = ys > 0.0 ? kHlgPeakNits * std::pow(ys, kHlgGamma - 1.0) : 0.0;
+    std::array<double, 3> nits{};
+    for (std::size_t i = 0; i < 3; ++i) nits[i] = gain * scene[i];
+    return nits;
+}
+}  // namespace
+
+std::array<double, 3> hdr10_signal(const std::array<double, 3>& encoded, ColorTransfer transfer) {
+    std::array<double, 3> out{};
+    if (transfer == ColorTransfer::pq) {
+        for (std::size_t i = 0; i < 3; ++i) out[i] = std::clamp(encoded[i], 0.0, 1.0);
+        return out;
+    }
+    std::array<double, 3> nits{};
+    if (transfer == ColorTransfer::hlg) {
+        nits = hlg_to_nits(encoded);
+    } else {
+        std::array<double, 3> linear{};
+        for (std::size_t i = 0; i < 3; ++i) linear[i] = srgb_decode(encoded[i]);
+        nits = bt709_to_bt2020(linear);
+        for (double& value : nits) value *= kSdrWhiteNits;
+    }
+    for (std::size_t i = 0; i < 3; ++i) out[i] = nits_to_pq(nits[i]);
+    return out;
+}
+
 double srgb_encode(double linear) {
     const double l = std::clamp(linear, 0.0, 1.0);
     return l <= 0.0031308 ? 12.92 * l : 1.055 * std::pow(l, 1.0 / 2.4) - 0.055;
@@ -75,11 +116,7 @@ std::array<double, 3> hdr_to_sdr_linear(const std::array<double, 3>& encoded, co
     std::array<double, 3> nits{};
     double source_peak = kHlgPeakNits;
     if (tone.transfer == ColorTransfer::hlg) {
-        std::array<double, 3> scene{};
-        for (std::size_t i = 0; i < 3; ++i) scene[i] = hlg_to_scene(encoded[i]);
-        const double ys = 0.2627 * scene[0] + 0.6780 * scene[1] + 0.0593 * scene[2];
-        const double gain = ys > 0.0 ? kHlgPeakNits * std::pow(ys, kHlgGamma - 1.0) : 0.0;
-        for (std::size_t i = 0; i < 3; ++i) nits[i] = gain * scene[i];
+        nits = hlg_to_nits(encoded);
     } else {
         source_peak = std::clamp(tone.source_peak_nits, kSdrWhiteNits, kMostHdrPeakNits);  // a measured peak can be as low as white
         for (std::size_t i = 0; i < 3; ++i) nits[i] = pq_to_nits(encoded[i]);

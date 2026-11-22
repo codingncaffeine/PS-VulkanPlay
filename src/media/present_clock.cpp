@@ -1,6 +1,7 @@
 #include "media/present_clock.h"
 
 #include <algorithm>
+#include <cmath>
 #include <format>
 
 namespace psvp::media {
@@ -10,8 +11,15 @@ namespace {
 // At most this many presents wait for their report: a driver that never reports does not grow it.
 constexpr std::size_t kMostWaiting = 256;
 constexpr std::uint64_t kHalfMillisecondNs = 500000;
+constexpr std::uint64_t kEvenWithinNs = 1500000;
 
 }  // namespace
+
+bool PresentClock::divides(double pictures_per_second, std::uint64_t refresh_ns) noexcept {
+    if (pictures_per_second <= 0.0 || refresh_ns == 0) return true;
+    const double ratio = 1e9 / static_cast<double>(refresh_ns) / pictures_per_second;
+    return ratio >= 0.995 && std::abs(ratio - std::round(ratio)) <= 0.005 * ratio;
+}
 
 void PresentClock::handed(std::uint64_t present_id, std::uint64_t at_ns) {
     ++handed_count_;
@@ -37,6 +45,10 @@ void PresentClock::reported(std::uint64_t present_id, std::uint64_t first_pixel_
         const std::uint64_t stayed = first_pixel_ns - last_pixel_ns_;
         longest_ns_ = std::max(longest_ns_, stayed);
         ++apart_;
+        if (stream_rate_ > 0.0) {
+            const auto period = static_cast<std::uint64_t>(1e9 / stream_rate_);
+            if ((stayed > period ? stayed - period : period - stayed) <= kEvenWithinNs) ++even_;
+        }
         if (refresh_ns_ != 0) {
             const std::uint64_t whole = std::max<std::uint64_t>(1, (stayed + refresh_ns_ / 2) / refresh_ns_);
             ++refreshes_[std::min<std::uint64_t>(whole, kBuckets) - 1];
@@ -56,6 +68,7 @@ PresentClock::Summary PresentClock::summary() const {
     s.on_refresh = on_refresh_;
     s.apart = apart_;
     s.longest_ns = longest_ns_;
+    s.even = even_;
     s.latency_count = latency_count_;
     if (latency_count_ != 0) {
         const auto at_share = [&](std::uint64_t numerator, std::uint64_t denominator) {
@@ -77,13 +90,26 @@ std::string PresentClock::text() const {
     const Summary s = summary();
     if (s.reported == 0) return {};
     std::string line = std::format("On the screen (the driver's own times): {} of {} pictures reported", s.reported, s.handed);
-    if (refresh_ns_ != 0 && s.apart != 0) {
+    if (adaptive() && s.apart != 0) {
+        line += std::format("; the refresh followed the pictures (adaptive sync, {:.1f} Hz at most); the longest a picture stayed {:.1f} ms",
+                            refresh_ns_ != 0 ? 1e9 / static_cast<double>(refresh_ns_) : 0.0, static_cast<double>(s.longest_ns) / 1e6);
+    } else if (refresh_ns_ != 0 && s.apart != 0) {
         line += std::format("; at {:.1f} Hz each stayed 1 refresh: {}, 2: {}, 3: {}, 4: {}, 5 or more: {} (the longest {:.1f} ms); {:.1f}% on a whole refresh",
                             1e9 / static_cast<double>(refresh_ns_), s.refreshes[0], s.refreshes[1], s.refreshes[2], s.refreshes[3], s.refreshes[4],
                             static_cast<double>(s.longest_ns) / 1e6, 100.0 * static_cast<double>(s.on_refresh) / static_cast<double>(s.apart));
-        if (s.on_refresh * 10 < s.apart * 9) line += " (under 90%: the refresh is not fixed, or the times are not the screen's: read the counts with care)";
+        if (s.on_refresh * 10 < s.apart * 9) {
+            line += " (under 90%: the refresh is not fixed, or the times are not the screen's: read the counts with care)";
+        } else if (!divides(stream_rate_, refresh_ns_)) {
+            line += std::format("; {:.0f} pictures a second do not divide {:.1f} Hz: adaptive sync (VRR) for the window, or a refresh that is a multiple of {:.0f}, "
+                                "shows each the same time",
+                                stream_rate_, 1e9 / static_cast<double>(refresh_ns_), stream_rate_);
+        }
     } else if (s.apart != 0) {
         line += std::format("; the display's refresh is not known (variable?): the longest a picture stayed {:.1f} ms", static_cast<double>(s.longest_ns) / 1e6);
+    }
+    if (stream_rate_ > 0.0 && s.apart != 0) {
+        line += std::format("; {:.1f}% stayed one picture's time ({:.1f} ms, within 1.5 ms)", 100.0 * static_cast<double>(s.even) / static_cast<double>(s.apart),
+                            1000.0 / stream_rate_);
     }
     if (s.latency_count != 0) {
         line += std::format("; from the hand-off to the first pixel out: {:.1f} ms in the middle, {:.1f} ms at the 99th percentile",

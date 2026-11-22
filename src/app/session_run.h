@@ -113,6 +113,8 @@ struct PlayOptions {
     // Nothing: as render::WindowOptions decides by the device.
     std::optional<media::Scaler> scaler;
     std::optional<bool> deband;
+    // Send an HDR picture to the screen as HDR10 where the desktop takes it (render::WindowOptions).
+    bool hdr_output = true;
     // What the user chose for the controller (trigger effects, lights, motion, touchpad, dead zone, Fn buttons).
     ControllerSettings controller_settings;
     // With --wake: while the connection is made again, a console that answers as resting is woken,

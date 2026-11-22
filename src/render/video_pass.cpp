@@ -30,7 +30,7 @@ struct DrawConstants {
     float size[4];     // the picture's size, the size it is drawn at
     float kernel[4];   // radius, first entry, 0 as it is / 1 separable / 2 polar, entries per sample
     float stretch[4];  // across, down, transfer (0 SDR, 1 PQ, 2 HLG), PQ peak in cd/m²
-    float options[4];  // the target encodes
+    float options[4];  // the target encodes (an _SRGB format), the target takes HDR10
 };
 
 // The converted picture: 16 bits a channel where the device can draw into that (a 10-bit picture's
@@ -339,9 +339,9 @@ void VideoPass::record_measure(VkCommandBuffer commands) {
     histogram_due_ = true;
 }
 
-bool VideoPass::create_pipeline(VkRenderPass render_pass, bool target_encodes) {
+bool VideoPass::create_pipeline(VkRenderPass render_pass, TargetKind target) {
     destroy_pipeline();
-    target_encodes_ = target_encodes;
+    target_ = target;
     return make_pipeline(render_pass, fragment_, layout_, pipeline_);
 }
 
@@ -940,7 +940,8 @@ void VideoPass::record_draw(VkCommandBuffer commands, VkExtent2D target) {
     constants.stretch[1] = stretch_y;
     constants.stretch[2] = transfer_ == media::ColorTransfer::pq ? 1.0F : transfer_ == media::ColorTransfer::hlg ? 2.0F : 0.0F;
     constants.stretch[3] = static_cast<float>(hdr_peak_measured() && detector_.peak_nits() ? *detector_.peak_nits() : hdr_peak_nits_);
-    constants.options[0] = target_encodes_ ? 1.0F : 0.0F;
+    constants.options[0] = target_ == TargetKind::sdr_srgb ? 1.0F : 0.0F;
+    constants.options[1] = target_ == TargetKind::hdr10 ? 1.0F : 0.0F;
     vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
     vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0, 1, &draw_set_, 0, nullptr);
     vkCmdPushConstants(commands, layout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof constants, &constants);
@@ -950,7 +951,10 @@ void VideoPass::record_draw(VkCommandBuffer commands, VkExtent2D target) {
 std::string VideoPass::describe() const {
     return std::format("{}x{}, {} bits{}, {} range, {}{}, drawn at {}x{}{}{}{}", width_, height_, bits_, narrowed_ ? " (shown as 8)" : "", full_range_ ? "full" : "limited",
                        matrix_ == media::ColorMatrix::bt2020 ? "BT.2020" : matrix_ == media::ColorMatrix::bt601 ? "BT.601" : "BT.709",
-                       transfer_ == media::ColorTransfer::pq    ? (hdr_peak_measured() ? (detector_.peak_nits() ? std::format(", HDR (PQ) tone mapped to SDR from each picture's measured peak (now {:.0f} cd/m²)", *detector_.peak_nits())
+                       target_ == TargetKind::hdr10 && transfer_ == media::ColorTransfer::pq  ? std::string(", HDR (PQ) sent to the screen as HDR10")
+                       : target_ == TargetKind::hdr10 && transfer_ == media::ColorTransfer::hlg ? std::string(", HDR (HLG) sent to the screen as HDR10 (PQ)")
+                       : target_ == TargetKind::hdr10                                          ? std::string(", SDR sent to the screen as HDR10 (white at 203 cd/m²)")
+                       : transfer_ == media::ColorTransfer::pq    ? (hdr_peak_measured() ? (detector_.peak_nits() ? std::format(", HDR (PQ) tone mapped to SDR from each picture's measured peak (now {:.0f} cd/m²)", *detector_.peak_nits())
                                                                                                        : std::string(", HDR (PQ) tone mapped to SDR from each picture's measured peak"))
                                                                                   : std::format(", HDR (PQ) tone mapped from {:.0f} cd/m² to SDR", hdr_peak_nits_))
                        : transfer_ == media::ColorTransfer::hlg ? std::string(", HDR (HLG) tone mapped to SDR")

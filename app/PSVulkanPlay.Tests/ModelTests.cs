@@ -382,7 +382,9 @@ public class ModelTests : IDisposable
         Assert.True(model.Settings.Deband);
         model.Settings.Scaler = model.Settings.Scalers.First(choice => choice.Value == "lanczos");
         model.Settings.Deband = false;
-        Until(() => File.Exists(file) && new SettingsStore(file).Load() is { CushionMs: 20, BackLeft: "cross", BitrateKbps: 22000, LossCeiling: 12, HdrPeakNits: 1500, HdrPeakMeasured: false, Scaler: "lanczos", Deband: false },
+        Assert.True(model.Settings.HdrOutput);
+        model.Settings.HdrOutput = false;
+        Until(() => File.Exists(file) && new SettingsStore(file).Load() is { CushionMs: 20, BackLeft: "cross", BitrateKbps: 22000, LossCeiling: 12, HdrPeakNits: 1500, HdrPeakMeasured: false, Scaler: "lanczos", Deband: false, HdrOutput: false },
               "the settings reached the file");
         Assert.Equal("1500 cd/m²", model.Settings.HdrPeakText);
         Assert.Equal("Up to 12%", model.Settings.LossCeilingText);
