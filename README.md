@@ -10,14 +10,14 @@ interface as goals.
 
 ## Install
 
-The first pre-release is on the [Releases](https://github.com/codingncaffeine/PS-VulkanPlay/releases) page.
+Pre-releases are on the [Releases](https://github.com/codingncaffeine/PS-VulkanPlay/releases) page.
 
 | System | How |
 |---|---|
-| Debian 12, Ubuntu 22.04, or later | `sudo apt install ./ps-vulkanplay_0.0.3_amd64.deb` |
+| Debian 12, Ubuntu 22.04, or later | `sudo apt install ./ps-vulkanplay_0.0.4_amd64.deb` |
 | Arch Linux | `ps-vulkanplay-bin` from the AUR |
-| Any other distribution with glibc 2.35 or later | extract `PS-VulkanPlay-0.0.3-linux-x64.tar.gz`, run `./ps-vulkanplay` |
-| Alpine and other musl systems | the same with `PS-VulkanPlay-0.0.3-linux-musl-x64.tar.gz` |
+| Any other distribution with glibc 2.35 or later | extract `PS-VulkanPlay-0.0.4-linux-x64.tar.gz`, run `./ps-vulkanplay` |
+| Alpine and other musl systems | the same with `PS-VulkanPlay-0.0.4-linux-musl-x64.tar.gz` |
 
 It needs a graphics driver with Vulkan 1.2, and PulseAudio or PipeWire for sound. To add a console: on the
 console open Settings, System, Remote Play, turn Remote Play on and choose Link Device; in the app choose
@@ -51,11 +51,14 @@ Add a console, sign in with PSN and type the eight digits the console shows.
   software takes over if they differ. "Decode on the graphics card" in the app turns it off
 - HDR pictures (the "HEVC with HDR" coding) shown on the desktop as SDR with the industry's tone mapping:
   ITU-R BT.2390's curve, BT.2408's reference white, BT.2020 colors brought into BT.709. Consoles do not say how
-  bright their picture gets: "HDR brightness" in the app (1000 cd/m² unless changed) says it
+  bright their picture gets, so each picture's brightness is measured on the graphics card and the curve follows
+  it, smoothed and taken at once on a scene change; "HDR brightness" in the app can fix it at a value instead
 - the picture scaled to the window by EWA Lanczos (as chiaki-ng does), or by Lanczos, Catmull-Rom or bilinear,
   and the bands a low bitrate cuts skies into smoothed out ("Scaling" and "Smooth out banding" in the app)
 - a DualSense on USB gets what a PS5 sends for it: haptics on the controller's own sound device, the effects
-  of its adaptive triggers, the light bar's color; other controllers get rumble
+  of its adaptive triggers, the light bar's color; other controllers get rumble. The app's Controller settings
+  turn trigger effects, player lights, motion and the touchpad on or off, set the light bar's color, a stick
+  dead zone, and what a DualSense Edge's Fn buttons do (the menu over the stream, statistics, full screen)
 
 Not there yet: HDR output to an HDR screen, the microphone, and play from outside the home network.
 

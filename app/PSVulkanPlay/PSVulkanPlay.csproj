@@ -13,7 +13,7 @@
     <RootNamespace>PSVulkanPlay</RootNamespace>
     <Product>PS VulkanPlay</Product>
     <AssemblyTitle>PS VulkanPlay</AssemblyTitle>
-    <Version>0.0.3</Version>
+    <Version>0.0.4</Version>
     <InvariantGlobalization>true</InvariantGlobalization>
     <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>

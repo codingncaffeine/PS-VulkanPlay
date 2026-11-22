@@ -41,6 +41,11 @@
     <binary>ps-vulkanplay</binary>
   </provides>
   <releases>
+    <release version="0.0.4" date="2026-11-21">
+      <description>
+        <p>Decoding on the graphics card, a menu over the stream, reconnecting by itself, HDR pictures tone mapped to the desktop, scaling and debanding, controller settings, and Add to Steam.</p>
+      </description>
+    </release>
     <release version="0.0.3" date="2026-11-20">
       <description>
         <p>The first pre-release: the app, playing over the home network, DualSense features over USB.</p>
