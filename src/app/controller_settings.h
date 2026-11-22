@@ -24,6 +24,9 @@ struct ControllerSettings {
     bool motion = true;                             // the motion sensors are read and told to the console
     bool touchpad = true;                           // touches on the touchpad are told to the console (its click is a button)
     int dead_zone = 0;                              // percent of a stick's throw that counts as rest, 0 to kMostDeadZone
+    int rumble = 100;                               // percent of the rumble's strength: the console's, and that made from haptics
+    bool pointer_touch = true;                      // the mouse and a touch screen on the window stand in for the touchpad
+    bool dpad_touch = true;                         // on a controller with no touchpad: share held + the d-pad stand in for it
     FnAction fn_left = FnAction::none, fn_right = FnAction::none;  // a DualSense Edge's Fn buttons
 
     static constexpr int kMostDeadZone = 30;
@@ -43,5 +46,8 @@ struct ControllerSettings {
 // of its throw is stretched over the whole range (no jump where the dead zone ends; the direction
 // is kept). Axes from -32768 to 32767.
 [[nodiscard]] std::pair<std::int16_t, std::int16_t> apply_dead_zone(std::int16_t x, std::int16_t y, int percent);
+
+// A motor's level (0 to 255) at the strength the user chose, as SDL's rumble takes it (0 to 65535).
+[[nodiscard]] std::uint16_t rumble_at(std::uint8_t level, int percent) noexcept;
 
 }  // namespace psvp::app

@@ -364,6 +364,7 @@ private:
     std::uint64_t congestion_lost_ = 0;
     std::uint64_t input_states_ = 0;      // input state packets that could be read
     std::uint64_t input_at_rest_ = 0;     // of them, those of a controller that nothing is done with
+    std::optional<std::uint32_t> input_rotation_;  // the last packed orientation told, to say when it moves
     std::uint64_t input_unreadable_ = 0;
     std::optional<std::uint16_t> input_sequence_;
     std::uint64_t input_out_of_order_ = 0;

@@ -27,7 +27,17 @@ struct ControllerFacts {
     bool motion = false;
     bool rumble = false;
     Haptics haptics = Haptics::none;
+    // Steam Input stands in front of it: what is seen is Steam's virtual controller, and the real
+    // one's haptics, trigger effects and lights cannot be reached through it.
+    bool through_steam = false;
 };
+
+// Steam's virtual controller (what a game launched from Steam sees while Steam Input is on for it).
+[[nodiscard]] bool is_steam_virtual(std::uint16_t vendor, std::uint16_t product) noexcept;
+// What is said about it, once, to a person.
+inline constexpr const char* kThroughSteamText =
+    "Steam Input stands in front of this controller: its haptics, trigger effects and lights cannot be reached through it "
+    "(turn Steam Input off for this shortcut in Steam: Properties, Controller)";
 
 // The kind of a controller from its USB vendor and product numbers and what the input library
 // took it for (`sony_ps5`, `sony_ps4`, `xbox`, `nintendo`: any of them may be false).

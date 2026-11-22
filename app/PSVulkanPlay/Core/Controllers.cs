@@ -20,7 +20,7 @@ public sealed record ButtonNames(bool Shapes, string Accept, string Back, string
 }
 
 /// <summary>A controller that is connected, as the stream program sees it.</summary>
-public sealed record ControllerInfo(string Name, string Kind, string Link, int Battery, string Power, string Haptics)
+public sealed record ControllerInfo(string Name, string Kind, string Link, int Battery, string Power, string Haptics, bool ThroughSteam = false)
 {
     public bool IsDualSense => Kind is "dualsense" or "dualsense-edge";
     public ButtonNames Buttons => ButtonNames.For(Kind);
@@ -41,7 +41,9 @@ public sealed record ControllerInfo(string Name, string Kind, string Link, int B
     }
 
     /// <summary>What a session can do with it that a plain controller cannot; empty for one that has nothing to say.</summary>
-    public string Abilities => Haptics switch
+    public string Abilities => ThroughSteam
+        ? "Steam Input stands in front of it: haptics, trigger effects and lights cannot reach it (turn Steam Input off for this shortcut in Steam)"
+        : Haptics switch
     {
         "sound-device" => "Haptics and trigger effects",
         "rumble" => "Trigger effects; haptics as rumble (the full haptics need the cable)",
@@ -68,7 +70,8 @@ public static class ControllerJson
                 if (item.ValueKind != JsonValueKind.Object) continue;
                 controllers.Add(new ControllerInfo(Text(item, "name"), Text(item, "kind"), Text(item, "link"),
                                                    item.TryGetProperty("battery", out JsonElement battery) && battery.TryGetInt32(out int percent) ? percent : -1,
-                                                   Text(item, "power"), Text(item, "haptics")));
+                                                   Text(item, "power"), Text(item, "haptics"),
+                                                   item.TryGetProperty("through_steam", out JsonElement steam) && steam.ValueKind == JsonValueKind.True));
             }
             return controllers;
         }

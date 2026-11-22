@@ -268,6 +268,11 @@
                         </Grid>
                         <Border Classes="rule" />
                         <Grid ColumnDefinitions="*,Auto">
+                            <StackPanel VerticalAlignment="Center"><TextBlock Text="Rumble strength" /><TextBlock Classes="secondary small" Text="{Binding RumbleText}" /></StackPanel>
+                            <Slider Grid.Column="1" Minimum="0" Maximum="100" TickFrequency="5" IsSnapToTickEnabled="True" Value="{Binding RumbleStrength}" />
+                        </Grid>
+                        <Border Classes="rule" />
+                        <Grid ColumnDefinitions="*,Auto">
                             <StackPanel VerticalAlignment="Center"><TextBlock Text="Left back button" /><TextBlock Classes="secondary small" Text="On a DualSense Edge: the console's button it presses." /></StackPanel>
                             <ComboBox Grid.Column="1" ItemsSource="{Binding Buttons}" SelectedItem="{Binding BackLeft}" MinWidth="260" />
                         </Grid>
@@ -310,6 +315,16 @@
                         <Grid ColumnDefinitions="*,Auto">
                             <StackPanel VerticalAlignment="Center"><TextBlock Text="Touchpad" /><TextBlock Classes="secondary small" Text="Touches on it; pressing it stays a button." /></StackPanel>
                             <ToggleSwitch Grid.Column="1" IsChecked="{Binding Touchpad}" OnContent="" OffContent="" MinWidth="0" />
+                        </Grid>
+                        <Border Classes="rule" />
+                        <Grid ColumnDefinitions="*,Auto">
+                            <StackPanel VerticalAlignment="Center" Margin="0,0,20,0"><TextBlock Text="Touchpad from the mouse and touch screen" /><TextBlock Classes="secondary small" TextWrapping="Wrap" Text="On the stream: drag with the left button for a finger; the right button presses the touchpad. On a touch screen, tap twice or touch an edge to press it." /></StackPanel>
+                            <ToggleSwitch Grid.Column="1" IsChecked="{Binding PointerTouch}" OnContent="" OffContent="" MinWidth="0" />
+                        </Grid>
+                        <Border Classes="rule" />
+                        <Grid ColumnDefinitions="*,Auto">
+                            <StackPanel VerticalAlignment="Center" Margin="0,0,20,0"><TextBlock Text="Touchpad from the d-pad" /><TextBlock Classes="secondary small" TextWrapping="Wrap" Text="On a controller without one: hold View (Back) and the d-pad swipes, A presses it. View alone is still Share." /></StackPanel>
+                            <ToggleSwitch Grid.Column="1" IsChecked="{Binding DpadTouch}" OnContent="" OffContent="" MinWidth="0" />
                         </Grid>
                         <Border Classes="rule" />
                         <Grid ColumnDefinitions="*,Auto">

@@ -18,7 +18,9 @@
 
 #include <SDL3/SDL.h>
 
+#include "app/controller_list.h"
 #include "app/controller_presses.h"
+#include "app/stand_in_touch.h"
 #include "app/haptics_volume.h"
 #include "app/log.h"
 #include "app/pretend.h"
@@ -29,6 +31,7 @@
 #include "media/haptics.h"
 #include "media/sound_buffer.h"
 #include "proto/controller_feedback.h"
+#include "proto/motion.h"
 #include "media/video_decoder.h"
 #include "psvp/version.h"
 #include "render/vk_window.h"
@@ -62,6 +65,7 @@ constexpr int kMaxHapticsQueuedMs = 80;
 constexpr double kSpeedStep = 0.002;
 // The touchpad as a console counts it (the reference's numbers).
 constexpr float kTouchWidth = 1919.0F, kTouchHeight = 1079.0F;
+constexpr std::uint64_t kShareTapMs = 80;  // how long share stays pressed when it stood behind the d-pad's swipes
 
 // How far apart things came that should come every 16.7 ms, counted in bands.
 struct Spacing {
@@ -152,6 +156,7 @@ public:
             SDL_RumbleGamepad(pad_, 0, 0, 0);  // whatever the console said last
             SDL_CloseGamepad(pad_);
         }
+        for (const auto& [id, pad] : others_) SDL_CloseGamepad(pad);
     }
 
     // ---- on the session's thread ----
@@ -213,7 +218,7 @@ public:
                 feedback_.strongest_left = std::max(feedback_.strongest_left, rumble->left);
                 feedback_.strongest_right = std::max(feedback_.strongest_right, rumble->right);
                 log::debug("play: the console sets the rumble to {} and {} of 255", rumble->left, rumble->right);
-                if (pad_ != nullptr && SDL_RumbleGamepad(pad_, static_cast<Uint16>(rumble->left * 257), static_cast<Uint16>(rumble->right * 257),
+                if (pad_ != nullptr && SDL_RumbleGamepad(pad_, rumble_at(rumble->left, settings_.rumble), rumble_at(rumble->right, settings_.rumble),
                                                          rumble->left != 0 || rumble->right != 0 ? kRumbleLifeMs : 0)) {
                     ++feedback_.rumbles_passed;
                 }
@@ -221,7 +226,10 @@ public:
                 const auto info = transport::parse_controller_info(item.bytes);
                 if (!info) continue;
                 ++feedback_.infos;
-                if (info->reset_motion) ++feedback_.motion_resets;
+                if (info->reset_motion) {
+                    ++feedback_.motion_resets;
+                    motion_reset_wanted_.store(true);  // taken on the next motion reading, beside the rest of the input
+                }
                 // The player lights under the touchpad: the console's number is the one SDL takes (0 = the first player).
                 if ((feedback_.infos == 1 || feedback_.player != info->player) && settings_.player_lights) {
                     log::debug("play: the console sets the player lights to player {}", info->player + 1);
@@ -333,8 +341,9 @@ public:
     void on_event(const SDL_Event& event);
     // For checks: presses the pretended controller as its file says. On the window's thread, as it goes round.
     void follow_taps() {
+        tick_stand_in(SDL_GetTicks());
         if (!taps_ || pad_ == nullptr) return;
-        taps_->follow(SDL_GetGamepadJoystick(pad_), SDL_GetTicks());
+        taps_->follow(SDL_GetTicks());
     }
     void set_taps(const std::string& file) { taps_.emplace(file); }
 
@@ -527,6 +536,24 @@ private:
     std::string battery_text_;
     bool battery_warned_ = false;
     void note_battery();
+    // Makes `pad` the controller that plays: the console's light bar and player lights, or what the
+    // user chose, and its motion sensors. With pad_mutex_ held.
+    void adopt(SDL_Gamepad* pad, SDL_JoystickID id);
+    // The mouse, a touch screen and a d-pad standing in for the touchpad (stand_in_touch.h): what
+    // they say now, told as the touchpad's fingers and its press. On the window's thread.
+    void stand_in_changed();
+    void tick_stand_in(std::uint64_t now_ms);
+    // Nothing pressed, nothing turned: after the controller that plays went away or changed.
+    void forget_input() {
+        dpad_touch_ = DpadTouch{};
+        stand_in_fingers_ = {};
+        stand_in_pressed_ = false;
+        const std::lock_guard lock(input_mutex_);
+        buttons_ = transport::Buttons{};
+        state_ = transport::InputState{};
+        motion_ = proto::MotionTracker{};
+        input_changed_ = true;
+    }
     bool haptics_looked_ = false;
     SDL_AudioStream* haptics_audio_ = nullptr;
     std::string haptics_device_;
@@ -557,11 +584,22 @@ private:
     std::mutex input_mutex_;
     transport::Buttons buttons_;
     transport::InputState state_;
+    proto::MotionTracker motion_;                // the controller's rotation, from its motion sensors
+    std::atomic<bool> motion_reset_wanted_{false};  // the console asked to "take this position"
     bool input_changed_ = false;
     SDL_Gamepad* pad_ = nullptr;
     SDL_JoystickID pad_id_ = 0;
     std::uint8_t next_touch_ = 0;
     std::string pad_name_;
+    std::vector<std::pair<SDL_JoystickID, SDL_Gamepad*>> others_;  // connected, not playing (pad_mutex_)
+    std::uint64_t takeovers_ = 0;  // times another controller took over
+    PointerTouch pointer_touch_;                 // the mouse and a touch screen on the window
+    DpadTouch dpad_touch_;                       // share + the d-pad, on a controller with no touchpad
+    std::array<bool, 2> stand_in_fingers_{};     // the touchpad's fingers a stand-in put down
+    bool stand_in_pressed_ = false;              // the touchpad's press a stand-in made
+    std::optional<std::uint64_t> share_up_at_ms_;  // share pressed for a tap of it: let go then
+    std::uint64_t stand_in_touches_ = 0;         // fingers the stand-ins put down, for the report
+    bool pad_through_steam_ = false;  // Steam's virtual controller: the real one's haptics, effects and lights out of reach
 
     std::atomic<bool> started_{false};
     std::thread decode_thread_;  // last: it starts with everything above in place
@@ -755,6 +793,75 @@ void Player::fill_sound(SDL_AudioStream* stream, int additional) {
 }
 
 // On the window's thread, with the controller open: how full its battery is and whether it charges.
+void Player::stand_in_changed() {
+    const StandInTouch& pointer = pointer_touch_.touch();
+    const StandInTouch& dpad = dpad_touch_.touch();
+    const std::lock_guard lock(input_mutex_);
+    for (std::size_t i = 0; i < 2; ++i) {
+        const std::optional<TouchSpot>& spot = pointer.fingers[i] ? pointer.fingers[i] : dpad.fingers[i];
+        transport::Touch& touch = buttons_.touches[i];
+        if (spot) {
+            // A new finger gets a new number; a controller's own finger in that place is not taken over.
+            if (!stand_in_fingers_[i]) {
+                if (touch.down) continue;
+                touch.id = next_touch_;
+                next_touch_ = static_cast<std::uint8_t>((next_touch_ + 1) & 0x7f);
+                ++stand_in_touches_;
+            }
+            touch.down = true;
+            touch.x = static_cast<std::uint16_t>(spot->x * kTouchWidth);
+            touch.y = static_cast<std::uint16_t>(spot->y * kTouchHeight);
+            stand_in_fingers_[i] = true;
+            input_changed_ = true;
+        } else if (stand_in_fingers_[i]) {
+            touch.down = false;
+            stand_in_fingers_[i] = false;
+            input_changed_ = true;
+        }
+    }
+    const bool pressed = pointer.pressed || dpad.pressed;
+    if (pressed != stand_in_pressed_) {
+        stand_in_pressed_ = pressed;
+        buttons_.set(transport::Button::touchpad, pressed);
+        input_changed_ = true;
+    }
+}
+
+void Player::tick_stand_in(std::uint64_t now_ms) {
+    if (share_up_at_ms_ && now_ms >= *share_up_at_ms_) {
+        share_up_at_ms_.reset();
+        set_button(transport::Button::share, false);
+    }
+    const StandInTouch before = dpad_touch_.touch();
+    dpad_touch_.tick(now_ms);
+    if (dpad_touch_.touch() != before) stand_in_changed();
+}
+
+void Player::adopt(SDL_Gamepad* pad, SDL_JoystickID id) {
+    pad_ = pad;
+    pad_id_ = id;
+    pad_is_dualsense_ = SDL_GetGamepadType(pad_) == SDL_GAMEPAD_TYPE_PS5;
+    // The light bar: the user's color, off, or the console's if it named one before the controller was there.
+    if (settings_.light_bar == LightBar::fixed) SDL_SetGamepadLED(pad_, settings_.light_color[0], settings_.light_color[1], settings_.light_color[2]);
+    else if (settings_.light_bar == LightBar::off) SDL_SetGamepadLED(pad_, 0, 0, 0);
+    else if (feedback_.light && SDL_SetGamepadLED(pad_, (*feedback_.light)[0], (*feedback_.light)[1], (*feedback_.light)[2])) ++feedback_.lights_passed;
+    // And the player lights, if it named a player; none when the user turned them off.
+    if (!settings_.player_lights) SDL_SetGamepadPlayerIndex(pad_, -1);
+    else if (feedback_.infos != 0) SDL_SetGamepadPlayerIndex(pad_, feedback_.player);
+    const char* name = SDL_GetGamepadName(pad_);
+    pad_name_ = name != nullptr ? name : "a controller";
+    pad_through_steam_ = is_steam_virtual(SDL_GetGamepadVendor(pad_), SDL_GetGamepadProduct(pad_));
+    if (pad_through_steam_) log::warn("play: {}", kThroughSteamText);
+    // Motion, where the controller has it and the user did not turn it off.
+    const bool gyro = settings_.motion && SDL_SetGamepadSensorEnabled(pad_, SDL_SENSOR_GYRO, true);
+    const bool accel = settings_.motion && SDL_SetGamepadSensorEnabled(pad_, SDL_SENSOR_ACCEL, true);
+    const std::string chosen = describe(settings_);
+    log::info("play: controller: {}{}{}{}", pad_name_, SDL_GetNumGamepadTouchpads(pad_) > 0 ? ", with a touchpad" : "",
+              gyro && accel ? ", with motion sensors" : "", chosen.empty() ? std::string() : "; chosen: " + chosen);
+    note_battery();
+    if (!battery_text_.empty()) log::info("play: the controller's battery: {}", battery_text_);
+}
+
 void Player::note_battery() {
     int percent = -1;
     const SDL_PowerState state = SDL_GetGamepadPowerInfo(pad_, &percent);
@@ -840,7 +947,9 @@ void Player::play_haptics(const transport::SoundFrame& frame) {
     if (peak == media::HapticsLevel{} && haptics_rumble_ == media::HapticsLevel{}) return;
     haptics_rumble_ = peak;
     const std::lock_guard lock(pad_mutex_);
-    if (pad_ != nullptr && SDL_RumbleGamepad(pad_, static_cast<Uint16>(peak.left * 257), static_cast<Uint16>(peak.right * 257), kHapticsRumbleLifeMs)) ++haptics_rumbled_;
+    if (pad_ != nullptr && SDL_RumbleGamepad(pad_, rumble_at(peak.left, settings_.rumble), rumble_at(peak.right, settings_.rumble), kHapticsRumbleLifeMs)) {
+        ++haptics_rumbled_;
+    }
 }
 
 std::vector<std::string> Player::stats_lines() {
@@ -997,6 +1106,29 @@ void Player::on_event(const SDL_Event& event) {
         return;
     }
     // F1, or L1 + R1 + Options held together on the controller: the menu over the stream.
+    // A press on a controller that does not play makes it the one that plays (two connected, or a
+    // second picked up): the light bar, the player lights, the trigger effects and the rumble go to it.
+    if (event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && pad_ != nullptr && event.gbutton.which != pad_id_) {
+        bool took_over = false;
+        {
+            const std::lock_guard pad_lock(pad_mutex_);
+            const auto next = std::ranges::find_if(others_, [&](const auto& one) { return one.first == event.gbutton.which; });
+            if (next != others_.end()) {
+                const auto [id, pad] = *next;
+                others_.erase(next);
+                release_triggers();
+                SDL_RumbleGamepad(pad_, 0, 0, 0);
+                others_.emplace_back(pad_id_, pad_);
+                const std::string before = pad_name_;
+                adopt(pad, id);
+                ++takeovers_;
+                log::info("play: {} plays now (a button was pressed on it; {} waits)", pad_name_, before);
+                took_over = true;
+            }
+        }
+        // Nothing the other one held stays pressed.
+        if (took_over) forget_input();
+    }
     if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_F1 && !event.key.repeat) {
         if (menu_.is_open()) menu_act(menu_.press(Press::back));
         else open_menu();
@@ -1049,33 +1181,20 @@ void Player::on_event(const SDL_Event& event) {
         }
     }
     switch (event.type) {
-    case SDL_EVENT_GAMEPAD_ADDED:
+    case SDL_EVENT_GAMEPAD_ADDED: {
+        SDL_Gamepad* pad = SDL_OpenGamepad(event.gdevice.which);
+        if (pad == nullptr) break;
+        const std::lock_guard pad_lock(pad_mutex_);
         if (pad_ == nullptr) {
-            const std::lock_guard pad_lock(pad_mutex_);
-            pad_ = SDL_OpenGamepad(event.gdevice.which);
-            if (pad_ != nullptr) {
-                pad_is_dualsense_ = SDL_GetGamepadType(pad_) == SDL_GAMEPAD_TYPE_PS5;
-                // The light bar: the user's color, off, or the console's if it named one before the controller was there.
-                if (settings_.light_bar == LightBar::fixed) SDL_SetGamepadLED(pad_, settings_.light_color[0], settings_.light_color[1], settings_.light_color[2]);
-                else if (settings_.light_bar == LightBar::off) SDL_SetGamepadLED(pad_, 0, 0, 0);
-                else if (feedback_.light && SDL_SetGamepadLED(pad_, (*feedback_.light)[0], (*feedback_.light)[1], (*feedback_.light)[2])) ++feedback_.lights_passed;
-                // And the player lights, if it named a player; none when the user turned them off.
-                if (!settings_.player_lights) SDL_SetGamepadPlayerIndex(pad_, -1);
-                else if (feedback_.infos != 0) SDL_SetGamepadPlayerIndex(pad_, feedback_.player);
-                pad_id_ = event.gdevice.which;
-                const char* name = SDL_GetGamepadName(pad_);
-                pad_name_ = name != nullptr ? name : "a controller";
-                // Motion, where the controller has it and the user did not turn it off.
-                const bool gyro = settings_.motion && SDL_SetGamepadSensorEnabled(pad_, SDL_SENSOR_GYRO, true);
-                const bool accel = settings_.motion && SDL_SetGamepadSensorEnabled(pad_, SDL_SENSOR_ACCEL, true);
-                const std::string chosen = describe(settings_);
-                log::info("play: controller: {}{}{}{}", pad_name_, SDL_GetNumGamepadTouchpads(pad_) > 0 ? ", with a touchpad" : "",
-                          gyro && accel ? ", with motion sensors" : "", chosen.empty() ? std::string() : "; chosen: " + chosen);
-                note_battery();
-                if (!battery_text_.empty()) log::info("play: the controller's battery: {}", battery_text_);
-            }
+            adopt(pad, event.gdevice.which);
+        } else {
+            // Open too, so that a press on it is seen: then it is the one that plays.
+            others_.emplace_back(event.gdevice.which, pad);
+            const char* name = SDL_GetGamepadName(pad);
+            log::info("play: also connected: {} (a press on it makes it the one that plays)", name != nullptr ? name : "a controller");
         }
         break;
+    }
     case SDL_EVENT_GAMEPAD_REMOVED:
         if (pad_ != nullptr && event.gdevice.which == pad_id_) {
             {
@@ -1083,13 +1202,22 @@ void Player::on_event(const SDL_Event& event) {
                 release_triggers();
                 SDL_CloseGamepad(pad_);
                 pad_ = nullptr;
+                // Another that is connected plays from now on.
+                if (!others_.empty()) {
+                    const auto [id, next] = others_.front();
+                    others_.erase(others_.begin());
+                    adopt(next, id);
+                }
             }
-            log::info("play: the controller is gone");
-            // Nothing stays pressed.
-            const std::lock_guard lock(input_mutex_);
-            buttons_ = transport::Buttons{};
-            state_ = transport::InputState{};
-            input_changed_ = true;
+            log::info("play: the controller is gone{}", pad_ != nullptr ? std::format("; {} plays now", pad_name_) : std::string());
+            forget_input();
+        } else {
+            const std::lock_guard pad_lock(pad_mutex_);
+            const auto gone = std::ranges::find_if(others_, [&](const auto& one) { return one.first == event.gdevice.which; });
+            if (gone != others_.end()) {
+                SDL_CloseGamepad(gone->second);
+                others_.erase(gone);
+            }
         }
         break;
     case SDL_EVENT_JOYSTICK_BATTERY_UPDATED:
@@ -1098,6 +1226,29 @@ void Player::on_event(const SDL_Event& event) {
     case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
     case SDL_EVENT_GAMEPAD_BUTTON_UP: {
         if (event.gbutton.which != pad_id_) break;
+        // A controller with no touchpad: share held and the d-pad stand in for one.
+        if (settings_.dpad_touch && pad_ != nullptr && SDL_GetNumGamepadTouchpads(pad_) == 0) {
+            std::optional<DpadTouch::Key> key;
+            switch (event.gbutton.button) {
+            case SDL_GAMEPAD_BUTTON_BACK: key = DpadTouch::Key::share; break;
+            case SDL_GAMEPAD_BUTTON_DPAD_UP: key = DpadTouch::Key::up; break;
+            case SDL_GAMEPAD_BUTTON_DPAD_DOWN: key = DpadTouch::Key::down; break;
+            case SDL_GAMEPAD_BUTTON_DPAD_LEFT: key = DpadTouch::Key::left; break;
+            case SDL_GAMEPAD_BUTTON_DPAD_RIGHT: key = DpadTouch::Key::right; break;
+            case SDL_GAMEPAD_BUTTON_SOUTH: key = DpadTouch::Key::south; break;
+            default: break;
+            }
+            const std::uint64_t now = SDL_GetTicks();
+            if (key && dpad_touch_.key(*key, event.gbutton.down, now)) {
+                // Share alone was share: pressed now, let go a moment later.
+                if (dpad_touch_.take_share_tap()) {
+                    set_button(Button::share, true);
+                    share_up_at_ms_ = now + kShareTapMs;
+                }
+                stand_in_changed();
+                break;
+            }
+        }
         std::optional<Button> button;
         switch (event.gbutton.button) {
         case SDL_GAMEPAD_BUTTON_SOUTH: button = Button::cross; break;
@@ -1168,19 +1319,68 @@ void Player::on_event(const SDL_Event& event) {
     case SDL_EVENT_GAMEPAD_SENSOR_UPDATE: {
         if (event.gsensor.which != pad_id_) break;
         const std::lock_guard lock(input_mutex_);
+        // The sensor's own clock where it has one (nanoseconds), else when SDL saw the reading.
+        const Uint64 ns = event.gsensor.sensor_timestamp != 0 ? event.gsensor.sensor_timestamp : event.gsensor.timestamp;
+        const std::uint64_t us = ns / 1000;
         if (event.gsensor.sensor == SDL_SENSOR_GYRO) {
-            state_.gyro_x = event.gsensor.data[0];
-            state_.gyro_y = event.gsensor.data[1];
-            state_.gyro_z = event.gsensor.data[2];
+            motion_.gyro({event.gsensor.data[0], event.gsensor.data[1], event.gsensor.data[2]}, us);
         } else if (event.gsensor.sensor == SDL_SENSOR_ACCEL) {
             // From meters per second squared to multiples of the earth's pull.
-            state_.accel_x = event.gsensor.data[0] / SDL_STANDARD_GRAVITY;
-            state_.accel_y = event.gsensor.data[1] / SDL_STANDARD_GRAVITY;
-            state_.accel_z = event.gsensor.data[2] / SDL_STANDARD_GRAVITY;
+            motion_.accel({event.gsensor.data[0] / SDL_STANDARD_GRAVITY, event.gsensor.data[1] / SDL_STANDARD_GRAVITY,
+                           event.gsensor.data[2] / SDL_STANDARD_GRAVITY}, us);
+        } else {
+            break;
         }
+        if (motion_reset_wanted_.exchange(false)) motion_.take_as_rest();
+        const proto::Axes& rate = motion_.rate();
+        const proto::Axes& pull = motion_.acceleration();
+        const proto::Rotation rotation = motion_.rotation();
+        state_.gyro_x = rate[0];
+        state_.gyro_y = rate[1];
+        state_.gyro_z = rate[2];
+        state_.accel_x = pull[0];
+        state_.accel_y = pull[1];
+        state_.accel_z = pull[2];
+        state_.orient_x = rotation.x;
+        state_.orient_y = rotation.y;
+        state_.orient_z = rotation.z;
+        state_.orient_w = rotation.w;
         input_changed_ = true;
         break;
     }
+    case SDL_EVENT_MOUSE_BUTTON_DOWN:
+    case SDL_EVENT_MOUSE_BUTTON_UP:
+    case SDL_EVENT_MOUSE_MOTION: {
+        // A touch screen's own mouse events: it is read as fingers (below).
+        const SDL_MouseID mouse = event.type == SDL_EVENT_MOUSE_MOTION ? event.motion.which : event.button.which;
+        if (!settings_.pointer_touch || mouse == SDL_TOUCH_MOUSEID) break;
+        SDL_Window* window = SDL_GetWindowFromID(event.type == SDL_EVENT_MOUSE_MOTION ? event.motion.windowID : event.button.windowID);
+        int width = 0, height = 0;
+        if (window == nullptr || !SDL_GetWindowSize(window, &width, &height) || width <= 0 || height <= 0) break;
+        const float w = static_cast<float>(width), h = static_cast<float>(height);
+        if (event.type == SDL_EVENT_MOUSE_MOTION) {
+            pointer_touch_.mouse_moved(event.motion.x / w, event.motion.y / h);
+        } else {
+            pointer_touch_.mouse_button(event.button.button == SDL_BUTTON_LEFT ? PointerTouch::MouseButton::left : PointerTouch::MouseButton::other,
+                                        event.button.down, event.button.x / w, event.button.y / h);
+        }
+        stand_in_changed();
+        break;
+    }
+    case SDL_EVENT_FINGER_DOWN:
+    case SDL_EVENT_FINGER_UP:
+    case SDL_EVENT_FINGER_CANCELED:
+    case SDL_EVENT_FINGER_MOTION:
+        // On the window, from 0 to 1 across and down.
+        if (!settings_.pointer_touch) break;
+        if (event.type == SDL_EVENT_FINGER_MOTION) {
+            pointer_touch_.finger_moved(event.tfinger.fingerID, event.tfinger.x, event.tfinger.y);
+        } else {
+            pointer_touch_.finger(event.tfinger.fingerID, event.type == SDL_EVENT_FINGER_DOWN, event.tfinger.x, event.tfinger.y,
+                                  event.tfinger.timestamp / 1'000'000);
+        }
+        stand_in_changed();
+        break;
     case SDL_EVENT_KEY_DOWN:
     case SDL_EVENT_KEY_UP: {
         // Without a controller: enough keys to get around a console's menus.
@@ -1282,6 +1482,9 @@ std::vector<std::string> Player::report() {
     }
     lines.push_back(pad_name_.empty() ? std::string("Controller: none was connected (the keyboard's arrow keys, Enter and Backspace stood in).")
                                       : std::format("Controller: {}{}{}.", pad_name_, battery_text_.empty() ? "" : "; battery: ", battery_text_));
+    if (pad_through_steam_) lines.push_back(std::format("{}.", kThroughSteamText));
+    if (stand_in_touches_ != 0) lines.push_back(std::format("The touchpad was stood in for: {} fingers put down by the mouse, a touch screen or the d-pad.", stand_in_touches_));
+    if (takeovers_ != 0) lines.push_back(std::format("Another controller took over {} times (a press on a controller that did not play).", takeovers_));
     if (const std::string chosen = describe(settings_); !chosen.empty()) {
         lines.push_back(std::format("Controller settings: {}; trigger effects held back by them {} times, Fn buttons pressed {} times.", chosen,
                                     triggers_held_back_, fn_presses_));

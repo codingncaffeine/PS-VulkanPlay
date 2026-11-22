@@ -40,6 +40,7 @@ public sealed class AppSettings
     public bool Deband { get; set; } = true;            // banding smoothed out of the picture
     public string Controller { get; set; } = "auto";    // auto, dualsense, dualshock4
     public int HapticsVolume { get; set; } = 100;       // 0 to 100
+    public int RumbleStrength { get; set; } = 100;      // 0 to 100: the console's rumble and the rumble made from haptics
     public string BackLeft { get; set; } = "";          // a button's name, or nothing
     public string BackRight { get; set; } = "";
     public bool TriggerEffects { get; set; } = true;    // the console's adaptive trigger effects reach a DualSense
@@ -47,6 +48,8 @@ public sealed class AppSettings
     public bool PlayerLights { get; set; } = true;
     public bool Motion { get; set; } = true;            // the motion sensors are told to the console
     public bool Touchpad { get; set; } = true;          // touches are told to the console
+    public bool PointerTouch { get; set; } = true;      // the mouse and a touch screen on the stream's window stand in for the touchpad
+    public bool DpadTouch { get; set; } = true;         // on a controller with no touchpad: share held + the d-pad stand in for it
     public int DeadZone { get; set; }                   // percent of a stick's throw that counts as rest, 0 to 30
     public string FnLeft { get; set; } = "none";        // a DualSense Edge's Fn buttons: none, menu, stats, fullscreen
     public string FnRight { get; set; } = "none";
@@ -99,6 +102,7 @@ public sealed class AppSettings
             Deband = Deband,
             Controller = Controllers.Contains(Controller) ? Controller : "auto",
             HapticsVolume = Math.Clamp(HapticsVolume, 0, 100),
+            RumbleStrength = Math.Clamp(RumbleStrength, 0, 100),
             BackLeft = Buttons.Contains(BackLeft) ? BackLeft : "",
             BackRight = Buttons.Contains(BackRight) ? BackRight : "",
             TriggerEffects = TriggerEffects,
@@ -106,6 +110,8 @@ public sealed class AppSettings
             PlayerLights = PlayerLights,
             Motion = Motion,
             Touchpad = Touchpad,
+            PointerTouch = PointerTouch,
+            DpadTouch = DpadTouch,
             DeadZone = Math.Clamp(DeadZone, 0, MostDeadZone),
             FnLeft = FnActions.Contains(FnLeft) ? FnLeft : "none",
             FnRight = FnActions.Contains(FnRight) ? FnRight : "none",
@@ -154,6 +160,9 @@ public sealed class AppSettings
         if (!s.Motion) arguments.AddRange(["--motion", "off"]);
         if (!s.Touchpad) arguments.AddRange(["--touchpad", "off"]);
         if (s.DeadZone != 0) arguments.AddRange(["--dead-zone", s.DeadZone.ToString()]);
+        if (s.RumbleStrength != 100) arguments.AddRange(["--rumble-strength", s.RumbleStrength.ToString()]);
+        if (!s.PointerTouch) arguments.AddRange(["--pointer-touch", "off"]);
+        if (!s.DpadTouch) arguments.AddRange(["--dpad-touch", "off"]);
         if (s.FnLeft != "none") arguments.AddRange(["--fn-left", s.FnLeft]);
         if (s.FnRight != "none") arguments.AddRange(["--fn-right", s.FnRight]);
         if (s.ShowStats) arguments.Add("--stats");

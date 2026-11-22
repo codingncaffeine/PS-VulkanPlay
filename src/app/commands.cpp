@@ -1420,7 +1420,7 @@ PlayRunner play_runner = nullptr;
 
 // The stream in a window, with its sound and a controller: what the program is for.
 int command_play(std::span<const std::string_view> args) {
-    const Parsed parsed = parse(args, {"--host", "--seconds", "--passcode", "--resolution", "--fps", "--bitrate", "--codec", "--tap", "--frames", "--controller", "--pacing", "--cushion", "--haptics-volume", "--back-left", "--back-right", "--loss-ceiling", "--ack-copies", "--decoder", "--pretend", "--pretend-taps", "--reconnect", "--hdr-peak", "--hdr-output", "--scaler", "--deband", "--trigger-effects", "--light-bar", "--player-lights", "--motion", "--touchpad", "--dead-zone", "--fn-left", "--fn-right"},
+    const Parsed parsed = parse(args, {"--host", "--seconds", "--passcode", "--resolution", "--fps", "--bitrate", "--codec", "--tap", "--frames", "--controller", "--pacing", "--cushion", "--haptics-volume", "--back-left", "--back-right", "--loss-ceiling", "--ack-copies", "--decoder", "--pretend", "--pretend-taps", "--reconnect", "--hdr-peak", "--hdr-output", "--scaler", "--deband", "--trigger-effects", "--light-bar", "--player-lights", "--motion", "--touchpad", "--dead-zone", "--rumble-strength", "--pointer-touch", "--dpad-touch", "--fn-left", "--fn-right"},
                                 {"--rest", "--wake", "--stats"}, 1);
     if (!parsed.error.empty()) return usage("play: {}", parsed.error);
     SessionPlan plan;
@@ -1503,7 +1503,8 @@ int command_play(std::span<const std::string_view> args) {
     }
     ControllerSettings& pad = options.controller_settings;
     for (const auto& [name, field] : {std::pair{"--trigger-effects", &pad.trigger_effects}, std::pair{"--player-lights", &pad.player_lights},
-                                      std::pair{"--motion", &pad.motion}, std::pair{"--touchpad", &pad.touchpad}}) {
+                                      std::pair{"--motion", &pad.motion}, std::pair{"--touchpad", &pad.touchpad},
+                                      std::pair{"--pointer-touch", &pad.pointer_touch}, std::pair{"--dpad-touch", &pad.dpad_touch}}) {
         if (const auto text = parsed.option(name)) {
             if (*text != "on" && *text != "off") return usage("play: {} takes on or off", name);
             *field = *text == "on";
@@ -1519,6 +1520,11 @@ int command_play(std::span<const std::string_view> args) {
         const auto percent = parse_number(*text, 0, ControllerSettings::kMostDeadZone);
         if (!percent && *text != "0") return usage("play: --dead-zone takes a percent of a stick's throw from 0 to {}", ControllerSettings::kMostDeadZone);
         pad.dead_zone = percent ? static_cast<int>(*percent) : 0;
+    }
+    if (const auto text = parsed.option("--rumble-strength")) {
+        const auto percent = parse_number(*text, 0, 100);
+        if (!percent && *text != "0") return usage("play: --rumble-strength takes a percent from 0 to 100");
+        pad.rumble = percent ? static_cast<int>(*percent) : 0;
     }
     for (const auto& [name, field] : {std::pair{"--fn-left", &pad.fn_left}, std::pair{"--fn-right", &pad.fn_right}}) {
         if (const auto text = parsed.option(name)) {
@@ -1856,6 +1862,7 @@ std::string commands_help() {
         "          [--reconnect SECONDS] [--hdr-peak auto|400-10000] [--hdr-output auto|off] [--scaler NAME]\n"
         "          [--deband on|off] [--trigger-effects on|off] [--light-bar console|off|RRGGBB]\n"
         "          [--player-lights on|off] [--motion on|off] [--touchpad on|off] [--dead-zone 0-30]\n"
+        "          [--rumble-strength 0-100] [--pointer-touch on|off] [--dpad-touch on|off]\n"
         "          [--fn-left ACTION] [--fn-right ACTION] [--stats] [--wake] [--rest]\n"
         "      play: the console's picture in a window, its sound, and a controller that is plugged in\n"
         "      or paired; closing the window ends the session (--rest then sends the console to rest mode).\n"
@@ -1894,7 +1901,12 @@ std::string commands_help() {
         "      the console's adaptive trigger effects off a DualSense, --light-bar off or a color (ff8000)\n"
         "      instead of the console's, --player-lights off, --motion off and --touchpad off do not tell\n"
         "      the console the motion or the touches, --dead-zone is the percent of a stick's throw that\n"
-        "      counts as rest (0 unless said), --fn-left and --fn-right say what a DualSense Edge's Fn\n"
+        "      counts as rest (0 unless said), --rumble-strength the percent of the rumble's strength (the\n"
+        "      console's rumble, and the rumble made from haptics away from the cable; 100 unless said),\n"
+        "      --pointer-touch off: the mouse (left button: a finger; the others: a press) and a touch\n"
+        "      screen on the window no longer stand in for the touchpad, --dpad-touch off: on a controller\n"
+        "      with no touchpad, share held no longer turns the d-pad into swipes and south into a press,\n"
+        "      --fn-left and --fn-right say what a DualSense Edge's Fn\n"
         "      buttons do: none (unless said), menu (the menu over the stream), stats, fullscreen\n"
         "  {0} decode FOLDER [--lose FRAMES] [--decoder software|gpu]\n"
         "      decode the picture and the sound that 'session --dump FOLDER' kept, and say what came out;\n"

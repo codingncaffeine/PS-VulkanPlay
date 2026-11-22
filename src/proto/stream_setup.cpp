@@ -671,10 +671,20 @@ Datagrams ConsoleStream::on_datagram(std::span<const std::uint8_t> datagram, Tim
                     const auto sequence = static_cast<std::uint16_t>((datagram[1] << 8) | datagram[2]);
                     if (input_sequence_ && static_cast<std::uint16_t>(*input_sequence_ + 1) != sequence) ++input_out_of_order_;
                     input_sequence_ = sequence;
-                    if (!parse_input_state(options_.kind, state) || datagram[3] != 0) ++input_unreadable_;
+                    const auto fields = parse_input_state(options_.kind, state);
+                    if (!fields || datagram[3] != 0) ++input_unreadable_;
                     else {
                         ++input_states_;
-                        if (state == encode_input_state(options_.kind, InputState{})) ++input_at_rest_;
+                        const std::vector<std::uint8_t> at_rest = encode_input_state(options_.kind, InputState{});
+                        if (state == at_rest) ++input_at_rest_;
+                        // The controller's orientation, said when it moves (from rest, at first).
+                        const std::uint32_t rest = at_rest[13] | std::uint32_t{at_rest[14]} << 8 | std::uint32_t{at_rest[15]} << 16 |
+                                                   std::uint32_t{at_rest[16]} << 24;
+                        if (fields->orientation != input_rotation_.value_or(rest)) {
+                            const std::array<float, 4> q = unpacked_rotation(fields->orientation);
+                            events_.push_back(std::format("input state {}: rotation {:.2f} {:.2f} {:.2f} {:.2f}", sequence, q[0], q[1], q[2], q[3]));
+                        }
+                        input_rotation_ = fields->orientation;
                     }
                 }
             }

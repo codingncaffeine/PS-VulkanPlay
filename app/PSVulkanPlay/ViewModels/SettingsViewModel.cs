@@ -176,6 +176,8 @@ public sealed class SettingsViewModel : Observable
     public bool PlayerLights { get => _settings.PlayerLights; set => Keep(() => _settings.PlayerLights = value, nameof(PlayerLights)); }
     public bool Motion { get => _settings.Motion; set => Keep(() => _settings.Motion = value, nameof(Motion)); }
     public bool Touchpad { get => _settings.Touchpad; set => Keep(() => _settings.Touchpad = value, nameof(Touchpad)); }
+    public bool PointerTouch { get => _settings.PointerTouch; set => Keep(() => _settings.PointerTouch = value, nameof(PointerTouch)); }
+    public bool DpadTouch { get => _settings.DpadTouch; set => Keep(() => _settings.DpadTouch = value, nameof(DpadTouch)); }
     public Choice FnLeft { get => Pick(FnActions, _settings.FnLeft); set { if (value is not null) Keep(() => _settings.FnLeft = value.Value, nameof(FnLeft)); } }
     public Choice FnRight { get => Pick(FnActions, _settings.FnRight); set { if (value is not null) Keep(() => _settings.FnRight = value.Value, nameof(FnRight)); } }
 
@@ -400,6 +402,18 @@ public sealed class SettingsViewModel : Observable
     }
 
     public string HapticsText => _settings.HapticsVolume == 0 ? "Off" : $"{_settings.HapticsVolume}%";
+
+    public double RumbleStrength
+    {
+        get => _settings.RumbleStrength;
+        set
+        {
+            Keep(() => _settings.RumbleStrength = (int)Math.Round(value), nameof(RumbleStrength));
+            Changed(nameof(RumbleText));
+        }
+    }
+
+    public string RumbleText => _settings.RumbleStrength == 0 ? "Off: the controller never rumbles" : $"{_settings.RumbleStrength}%; also the haptics of a DualSense away from its cable";
 
     public bool WakeFirst { get => _settings.WakeFirst; set => Keep(() => _settings.WakeFirst = value, nameof(WakeFirst)); }
     public bool RestAfter { get => _settings.RestAfter; set => Keep(() => _settings.RestAfter = value, nameof(RestAfter)); }

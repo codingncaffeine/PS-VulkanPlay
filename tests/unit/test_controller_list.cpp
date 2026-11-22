@@ -65,4 +65,18 @@ PSVP_TEST(controllers_are_listed_as_json_on_one_line) {
     CHECK(*one.find("battery")->as_number() == 80.0);
     CHECK(*one.find("touchpad")->as_bool() && *one.find("motion")->as_bool() && *one.find("rumble")->as_bool());
     CHECK(*one.find("haptics")->as_string() == "none");
+    CHECK(one.find("through_steam") != nullptr && !*one.find("through_steam")->as_bool());
+}
+
+// Steam's virtual controller is known by its numbers, and said.
+PSVP_TEST(controllers_behind_steam_input_are_said) {
+    CHECK(is_steam_virtual(0x28de, 0x11ff));
+    CHECK(!is_steam_virtual(0x28de, 0x1205));  // a Steam Deck's own controls are not Steam Input
+    CHECK(!is_steam_virtual(0x054c, 0x0df2));
+    ControllerFacts pad;
+    pad.name = "Steam Virtual Gamepad";
+    pad.through_steam = true;
+    CHECK(controller_line(pad) == "Steam Virtual Gamepad; through Steam Input");
+    const auto read = Json::parse(controllers_json({pad}));
+    CHECK(read.has_value() && *read->find("controllers")->as_array()->front().find("through_steam")->as_bool());
 }

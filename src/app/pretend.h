@@ -20,27 +20,43 @@ namespace psvp::app {
 
 // Before the input library starts: none of this machine's controllers is opened.
 void only_pretended_controllers();
-// A gamepad with the vendor and product numbers "054c:0df2"; false when the text is not that.
+// Gamepads with the vendor and product numbers "054c:0df2", several split by commas
+// ("054c:0df2,045e:0b13"); false when the text is not that. What the program asks of each is said
+// in the log: "pretend: ..." for the first, "pretend 2: ..." for the second and so on.
 [[nodiscard]] bool attach_pretended(std::string_view text);
 
 // For checks: presses the buttons of the pretended controller as a file says, line by line as
 // the lines are added to it. "tap NAME" (down, and up a moment later), "down NAME", "up NAME",
 // "stick X Y" and "right-stick X Y" (each from -32768 to 32767), "touch X Y" (the first finger
 // down on the touchpad, each from 0 to 1), "lift" (and up again), "gyro X Y Z" (a reading of the
-// motion sensor, radians a second).
+// motion sensor, radians a second). A line for another pretended controller than the first starts
+// with its number: "2: tap south".
 class Taps {
 public:
     explicit Taps(std::string file) : file_(std::move(file)) {}
 
-    void follow(SDL_Joystick* joystick, std::uint64_t now_ms) {
-        if (joystick == nullptr) return;
+    // The pretended controllers, in the order they were made (they must be open: the player opens
+    // every controller it sees).
+    static SDL_Joystick* pretended(std::size_t number) {
+        int count = 0;
+        SDL_JoystickID* ids = SDL_GetJoysticks(&count);
+        SDL_Joystick* found = nullptr;
+        std::size_t seen = 0;
+        for (int i = 0; ids != nullptr && i < count && found == nullptr; ++i) {
+            if (SDL_IsJoystickVirtual(ids[i]) && ++seen == number) found = SDL_GetJoystickFromID(ids[i]);
+        }
+        SDL_free(ids);
+        return found;
+    }
+
+    void follow(std::uint64_t now_ms) {
         bool lifted = false;
         for (auto due = lifts_.begin(); due != lifts_.end();) {
             if (due->at > now_ms) {
                 ++due;
                 continue;
             }
-            SDL_SetJoystickVirtualButton(joystick, due->button, false);
+            if (SDL_Joystick* joystick = pretended(due->pad)) SDL_SetJoystickVirtualButton(joystick, due->button, false);
             due = lifts_.erase(due);
             lifted = true;
         }
@@ -53,7 +69,19 @@ public:
         std::string line;
         // A line counts when it has its end: one that is still being written is read the next time.
         while (std::getline(in, line) && !in.eof()) {
+            const std::streamoff line_start = read_;
             read_ = in.tellg();
+            std::size_t pad = 1;
+            if (line.size() > 3 && line[0] >= '1' && line[0] <= '9' && line[1] == ':' && line[2] == ' ') {
+                pad = static_cast<std::size_t>(line[0] - '0');
+                line.erase(0, 3);
+            }
+            // A controller that is not open yet: the line waits for it.
+            SDL_Joystick* joystick = pretended(pad);
+            if (joystick == nullptr) {
+                read_ = line_start;
+                break;
+            }
             const auto space = line.find(' ');
             const std::string verb = line.substr(0, space), rest = space == std::string::npos ? "" : line.substr(space + 1);
             if (verb == "stick" || verb == "right-stick") {
@@ -84,7 +112,7 @@ public:
                     log::debug("pretend: pressed {} at {} ns", rest, ns);
                 }
                 if (verb == "tap") {
-                    lifts_.push_back(Lift{now_ms + 40, button});
+                    lifts_.push_back(Lift{now_ms + 40, button, pad});
                     break;  // the rest waits for its lift (above)
                 }
                 continue;
@@ -99,7 +127,7 @@ private:
             {"up", SDL_GAMEPAD_BUTTON_DPAD_UP}, {"down", SDL_GAMEPAD_BUTTON_DPAD_DOWN}, {"left", SDL_GAMEPAD_BUTTON_DPAD_LEFT},
             {"right", SDL_GAMEPAD_BUTTON_DPAD_RIGHT}, {"south", SDL_GAMEPAD_BUTTON_SOUTH}, {"east", SDL_GAMEPAD_BUTTON_EAST},
             {"west", SDL_GAMEPAD_BUTTON_WEST}, {"north", SDL_GAMEPAD_BUTTON_NORTH}, {"left-shoulder", SDL_GAMEPAD_BUTTON_LEFT_SHOULDER},
-            {"right-shoulder", SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER}, {"start", SDL_GAMEPAD_BUTTON_START},
+            {"right-shoulder", SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER}, {"start", SDL_GAMEPAD_BUTTON_START}, {"back", SDL_GAMEPAD_BUTTON_BACK},
             {"left-paddle1", SDL_GAMEPAD_BUTTON_LEFT_PADDLE1}, {"right-paddle1", SDL_GAMEPAD_BUTTON_RIGHT_PADDLE1},
             {"left-paddle2", SDL_GAMEPAD_BUTTON_LEFT_PADDLE2}, {"right-paddle2", SDL_GAMEPAD_BUTTON_RIGHT_PADDLE2},
         };
@@ -112,6 +140,7 @@ private:
     struct Lift {
         std::uint64_t at = 0;
         int button = 0;
+        std::size_t pad = 1;
     };
     std::string file_;
     std::streamoff read_ = 0;

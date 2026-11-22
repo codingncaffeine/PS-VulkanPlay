@@ -260,7 +260,12 @@ pad_run() {   # pad_run NAME [PLAY_OPTIONS...]: a touch, a turn, the right Fn bu
     sleep 1.2   # past the mock's feedback
     printf 'touch 0.25 0.5\n' >> "$taps"; sleep 0.2
     printf 'lift\n' >> "$taps"; sleep 0.2
-    printf 'gyro 0.5 0 0\n' >> "$taps"
+    # The motion sensor: past the filter's first readings at rest, then a turn about x of about
+    # 2 rad/s for a quarter of a second (the pretended pad has no accelerometer: gravity stays put).
+    for _ in $(seq 40); do printf 'gyro 0 0 0\n' >> "$taps"; done
+    sleep 0.2
+    for _ in $(seq 5); do printf 'gyro 2 0 0\n' >> "$taps"; sleep 0.05; done
+    printf 'gyro 0 0 0\n' >> "$taps"
     printf 'tap right-paddle2\n' >> "$taps"; sleep 0.5
     wait $pid; rc=$?
     sleep 0.3; stop_mock
@@ -273,20 +278,67 @@ check "the console's light bar color reached the controller" has "$work/pad-defa
 check "its player lights too (player 3: index 2)" has "$work/pad-defaults.play.log" "pretend: player lights set to player index 2"
 check "its trigger effects too (the effect report)" has "$work/pad-defaults.play.log" "pretend: an effect report of 47 bytes"
 check "the motion sensors were turned on" has "$work/pad-defaults.play.log" "pretend: motion sensors on"
+check "the console's rumble reached it whole (200 and 90 of 255)" has "$work/pad-defaults.play.log" "pretend: rumble 51400 and 23130"
 check "the touch reached the console" grep -aqE "stream input [0-9]+: touch [0-9]+ down at" "$work/pad-defaults.log"
+# The rotation the console was told, worked out from the readings: a turn about x (its x part is
+# the sine of half the angle: 0.1 or more = 0.2 rad or more of the ~0.5 turned).
+check "the turn reached the console as a rotation" sh -c "grep -a 'stream input state [0-9]*: rotation' '$work/pad-defaults.log' |
+    awk '{ x = \$(NF-3); if (x < 0) x = -x; if (x >= 0.1) found = 1 } END { exit found ? 0 : 1 }'"
 check "the right Fn button opened the menu" has "$work/pad-defaults.out" "The menu over the stream was opened 1 times"
 check "and the report names that setting" has "$work/pad-defaults.out" "Controller settings: right Fn: menu; trigger effects held back by them 0 times, Fn buttons pressed 1 times."
-pad_run pad-chosen --trigger-effects off --light-bar ff8000 --player-lights off --motion off --touchpad off --dead-zone 10
+pad_run pad-chosen --trigger-effects off --light-bar ff8000 --player-lights off --motion off --touchpad off --dead-zone 10 --rumble-strength 50
 [ "$rc" -eq 0 ] && ok "chosen: exit 0" || fail "chosen: exit $rc: $(tail -3 "$work/pad-chosen.out")"
 check "the light bar is the user's color" has "$work/pad-chosen.play.log" "pretend: light bar set to 255, 128, 0"
 check "and never the console's" lacks "$work/pad-chosen.play.log" "pretend: light bar set to 0, 64, 255"
 check "the player lights are off (index -1), never the console's" sh -c "grep -aq 'pretend: player lights set to player index -1' '$work/pad-chosen.play.log' && ! grep -aq 'player index 2' '$work/pad-chosen.play.log'"
 check "no trigger effect reached the controller" lacks "$work/pad-chosen.play.log" "pretend: an effect report"
 check "the motion sensors stayed off" lacks "$work/pad-chosen.play.log" "pretend: motion sensors on"
+check "the console's rumble at half its strength" sh -c "grep -aq 'pretend: rumble 25700 and 11565' '$work/pad-chosen.play.log' && ! grep -aq 'pretend: rumble 51400' '$work/pad-chosen.play.log'"
 check "no touch reached the console" sh -c "! grep -aqE 'stream input [0-9]+: touch' '$work/pad-chosen.log'"
+check "no rotation reached the console (motion off)" sh -c "! grep -aq 'stream input state [0-9]*: rotation' '$work/pad-chosen.log'"
 check "the right Fn button did nothing (none chosen)" lacks "$work/pad-chosen.out" "The menu over the stream was opened"
 check "the report names every setting and the effects held back" \
-    has "$work/pad-chosen.out" "Controller settings: trigger effects off, light bar ff8000, player lights off, motion off, touchpad off, dead zone 10%; trigger effects held back by them 1 times, Fn buttons pressed 0 times."
+    has "$work/pad-chosen.out" "Controller settings: trigger effects off, light bar ff8000, player lights off, motion off, touchpad off, dead zone 10%, rumble 50%; trigger effects held back by them 1 times, Fn buttons pressed 0 times."
+echo "two controllers: the one pressed last plays, and what the console sends for the controller goes to it"
+taps="$work/two.taps"; : > "$taps"
+start_mock two --kind ps5 --clip 416x240 --frame-ms 16 --media-ms 10 --feedback-ms 800
+"$app" play "Living Room" --seconds 5 --pretend 054c:0df2,045e:0b13 --pretend-taps "$taps" > "$work/two.out" 2> "$work/two.err" &
+pid=$!
+for _ in $(seq 80); do grep -aq "first picture shown" "$work/two.err" 2>/dev/null && break; kill -0 $pid 2>/dev/null || break; sleep 0.1; done
+sleep 1.2   # past the mock's feedback (its light bar went to the first)
+printf '2: tap south\n' >> "$taps"; sleep 0.6
+printf 'tap east\n' >> "$taps"; sleep 0.6
+wait $pid; rc=$?
+sleep 0.3; stop_mock
+cp "$own_log" "$work/two.play.log"
+[ "$rc" -eq 0 ] && ok "two controllers: exit 0" || fail "two controllers: exit $rc: $(tail -3 "$work/two.out")"
+check "the first played first" has "$work/two.play.log" "play: controller: A controller for checks"
+check "the second waited" has "$work/two.play.log" "play: also connected: Controller 2 for checks"
+check "a press on the second made it play" has "$work/two.play.log" "play: Controller 2 for checks plays now"
+check "and the console's light bar went to it" has "$work/two.play.log" "pretend 2: light bar set to 0, 64, 255"
+check "the press that made it play reached the console as cross" grep -aqE "stream input [0-9]+: cross pressed" "$work/two.log"
+check "a press on the first made it play again, as circle" sh -c "grep -aq 'play: A controller for checks plays now' '$work/two.play.log' &&
+    grep -aqE 'stream input [0-9]+: circle pressed' '$work/two.log'"
+check "the report counts both" has "$work/two.out" "Another controller took over 2 times"
+echo "a controller with no touchpad: share held turns the d-pad into a swipe; share alone is share"
+taps="$work/dpad.taps"; : > "$taps"
+start_mock dpad --kind ps5 --clip 416x240 --frame-ms 16 --media-ms 10
+"$app" play "Living Room" --seconds 4 --pretend 045e:028e --pretend-taps "$taps" > "$work/dpad.out" 2> "$work/dpad.err" &
+pid=$!
+for _ in $(seq 80); do grep -aq "first picture shown" "$work/dpad.err" 2>/dev/null && break; kill -0 $pid 2>/dev/null || break; sleep 0.1; done
+printf 'down back\n' >> "$taps"; sleep 0.2
+printf 'tap right\n' >> "$taps"; sleep 0.4
+printf 'up back\n' >> "$taps"; sleep 0.2
+printf 'tap back\n' >> "$taps"; sleep 0.4
+wait $pid; rc=$?
+sleep 0.3; stop_mock
+[ "$rc" -eq 0 ] && ok "d-pad touch: exit 0" || fail "d-pad touch: exit $rc: $(tail -3 "$work/dpad.out")"
+check "the swipe reached the console as a touch put down and lifted" sh -c "grep -aqE 'stream input [0-9]+: touch [0-9]+ down at' '$work/dpad.log' &&
+    grep -aqE 'stream input [0-9]+: touch [0-9]+ up' '$work/dpad.log'"
+check "the d-pad's right did not reach the console as itself" sh -c "! grep -aqE 'stream input [0-9]+: right pressed' '$work/dpad.log'"
+check "share reached it once: for the tap of it alone, not for the one held over the swipe" \
+    [ "$(grep -acE 'stream input [0-9]+: share pressed' "$work/dpad.log")" = 1 ]
+check "the report counts the finger" has "$work/dpad.out" "The touchpad was stood in for: 1 fingers"
 check "a light bar is console, off or six hexadecimal digits" sh -c "! '$app' play 'Living Room' --light-bar blue > /dev/null 2>&1"
 check "a dead zone is 30% at most" sh -c "! '$app' play 'Living Room' --dead-zone 31 > /dev/null 2>&1"
 check "an Fn button does none, menu, stats or fullscreen" sh -c "! '$app' play 'Living Room' --fn-left screenshot > /dev/null 2>&1"
@@ -375,6 +427,10 @@ echo "the controllers that are connected are listed: behind the wall there is no
 [ $rc -eq 0 ] && [ "$(wc -l < "$work/pretend.out")" = 1 ] && grep -aq '"kind": "dualsense-edge"' "$work/pretend.out" \
     && ok "a pretended DualSense Edge is listed as one" || fail "controllers --pretend: exit $rc: $(head -2 "$work/pretend.out")"
 check "with no sound device of its own its haptics would be rumble" grep -aq '"haptics": "rumble"' "$work/pretend.out"
+check "and it is not behind Steam Input" grep -aq '"through_steam": false' "$work/pretend.out"
+# Steam lets SDL see its virtual controller this way for the games it starts.
+SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=1 "$app" controllers --pretend 28de:11ff > "$work/pretend-steam.out" 2>&1
+check "Steam's virtual controller is said to stand in front of the real one" has "$work/pretend-steam.out" "; through Steam Input"
 # Watching goes on until the program is told to end, and ends then.
 "$app" controllers --json --watch > "$work/watch.out" 2>&1 &
 watch_pid=$!

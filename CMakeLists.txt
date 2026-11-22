@@ -59,6 +59,7 @@ add_library(psvp_proto STATIC
     src/proto/frame_assembler.cpp
     src/proto/hex.cpp
     src/proto/input.cpp
+    src/proto/motion.cpp
     src/proto/key_exchange.cpp
     src/proto/launch_spec.cpp
     src/proto/media_packet.cpp
@@ -145,6 +146,7 @@ add_library(psvp_core STATIC
     src/app/controller_list.cpp
     src/app/controller_presses.cpp
     src/app/controller_settings.cpp
+    src/app/stand_in_touch.cpp
     src/app/stream_menu.cpp
     src/app/window_place.cpp
     src/overlay/text.cpp)

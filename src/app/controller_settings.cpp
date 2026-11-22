@@ -52,6 +52,9 @@ std::string describe(const ControllerSettings& s) {
     if (!s.motion) add("motion off");
     if (!s.touchpad) add("touchpad off");
     if (s.dead_zone != 0) add(std::format("dead zone {}%", s.dead_zone));
+    if (s.rumble != 100) add(std::format("rumble {}%", s.rumble));
+    if (!s.pointer_touch) add("touchpad from the mouse off");
+    if (!s.dpad_touch) add("touchpad from the d-pad off");
     if (s.fn_left != FnAction::none) add(std::format("left Fn: {}", fn_action_name(s.fn_left)));
     if (s.fn_right != FnAction::none) add(std::format("right Fn: {}", fn_action_name(s.fn_right)));
     return text;
@@ -67,6 +70,11 @@ std::pair<std::int16_t, std::int16_t> apply_dead_zone(std::int16_t x, std::int16
     const double scale = std::min(1.0, (length - zone) / (1.0 - zone)) / length;
     const auto axis = [&](double f) { return static_cast<std::int16_t>(std::clamp(std::lround(f * scale * 32767.0), -32768L, 32767L)); };
     return {axis(fx), axis(fy)};
+}
+
+std::uint16_t rumble_at(std::uint8_t level, int percent) noexcept {
+    const int held = percent < 0 ? 0 : percent > 100 ? 100 : percent;
+    return static_cast<std::uint16_t>((level * 257 * held + 50) / 100);
 }
 
 }  // namespace psvp::app

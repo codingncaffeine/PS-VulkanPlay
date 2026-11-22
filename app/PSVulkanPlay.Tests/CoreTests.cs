@@ -68,7 +68,8 @@ public class CoreTests
     [Fact]
     public void Controller_settings_the_program_would_refuse_fall_back_to_their_defaults()
     {
-        AppSettings valid = new AppSettings { LightBar = "blue", DeadZone = 99, FnLeft = "screenshot", FnRight = "menu" }.Valid();
+        AppSettings valid = new AppSettings { LightBar = "blue", DeadZone = 99, FnLeft = "screenshot", FnRight = "menu", RumbleStrength = 150 }.Valid();
+        Assert.Equal(100, valid.RumbleStrength);
         Assert.Equal("console", valid.LightBar);
         Assert.Equal(AppSettings.MostDeadZone, valid.DeadZone);
         Assert.Equal("none", valid.FnLeft);
@@ -84,11 +85,11 @@ public class CoreTests
             Resolution = 720, FramesPerSecond = 30, Codec = "hdr", BitrateKbps = 20000, CushionMs = 20, Controller = "dualsense",
             HapticsVolume = 60, BackLeft = "cross", BackRight = "r3", WakeFirst = false, RestAfter = true, LossCeiling = 100, ShowStats = true, GpuDecoding = false,
             Reconnect = false, HdrPeakNits = 600, HdrOutput = false, Scaler = "catmull-rom", Deband = false, TriggerEffects = false, LightBar = "FF6A00", PlayerLights = false,
-            Motion = false, Touchpad = false, DeadZone = 12, FnLeft = "menu", FnRight = "stats",
+            Motion = false, Touchpad = false, DeadZone = 12, RumbleStrength = 40, PointerTouch = false, DpadTouch = false, FnLeft = "menu", FnRight = "stats",
         };
         Assert.Equal(["play", "Den", "--resolution", "720", "--fps", "30", "--codec", "hdr", "--bitrate", "20000", "--decoder", "software", "--reconnect", "0", "--controller", "dualsense", "--cushion", "20",
                       "--loss-ceiling", "100", "--hdr-peak", "600", "--hdr-output", "off", "--scaler", "catmull-rom", "--deband", "off", "--haptics-volume", "60", "--back-left", "cross", "--back-right", "r3", "--trigger-effects", "off", "--light-bar", "ff6a00", "--player-lights", "off", "--motion", "off",
-                      "--touchpad", "off", "--dead-zone", "12", "--fn-left", "menu", "--fn-right", "stats", "--stats", "--rest"],
+                      "--touchpad", "off", "--dead-zone", "12", "--rumble-strength", "40", "--pointer-touch", "off", "--dpad-touch", "off", "--fn-left", "menu", "--fn-right", "stats", "--stats", "--rest"],
                      settings.PlayArguments("Den", ""));
     }
 
@@ -216,6 +217,11 @@ public class CoreTests
         Assert.True(new ControllerInfo("Pad", "dualsense", "wireless", 15, "battery", "rumble").BatteryLow);
         Assert.False(new ControllerInfo("Pad", "dualsense", "cable", 15, "charging", "rumble").BatteryLow);
         Assert.Contains("need the cable", new ControllerInfo("Pad", "dualsense", "wireless", 80, "battery", "rumble").Abilities);
+        // Behind Steam Input: said, whatever else the line says.
+        var steam = ControllerJson.Read("""{"controllers": [{"name": "Steam Virtual Gamepad", "kind": "xbox", "link": "", "battery": -1, "power": "", "haptics": "none", "through_steam": true}]}""");
+        Assert.True(steam![0].ThroughSteam);
+        Assert.Contains("Steam Input stands in front of it", steam[0].Abilities);
+        Assert.False(list[0].ThroughSteam);
         // A line that is not the list is nothing: a log line must not empty the page.
         Assert.Null(ControllerJson.Read("2026-01-01T00:00:00.000Z WARN  something"));
         Assert.Null(ControllerJson.Read("[]"));

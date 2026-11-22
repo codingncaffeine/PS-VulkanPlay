@@ -20,6 +20,8 @@ add_executable(psvp_tests
     unit/test_hex.cpp
     unit/test_import.cpp
     unit/test_input.cpp
+    unit/test_motion.cpp
+    unit/test_stand_in_touch.cpp
     unit/test_json.cpp
     unit/test_media.cpp
     unit/test_overlay.cpp

@@ -47,6 +47,18 @@ say which part that is; then the three other parts in their order, nine bits eac
 1.4142..., rounded down, a part beyond +-0.7071... held there first. Of parts of equal size the first counts
 as the largest.
 
+**[checked]** Where the orientation comes from (this client: `src/proto/motion.*`): the motion sensors through
+Madgwick's filter for a gyroscope with an accelerometer, gain 20 for the first 30 readings and 0.05 after, the
+filter's frame a quarter turn about x from the controller's (gravity along its z) and turned back for the
+console. The console's controller information can ask to "take this position" (see messages.md): the present
+position becomes rest, and the acceleration read at that moment, less gravity along y, is taken off every
+reading after it. Small changes are held back as the kernel's input layer holds back jitter (under half of
+0.0007 nothing, under 0.0007 a quarter, under 0.0014 four tenths), in what the console is told only.
+**[checked]** The reference holds them back inside the filter instead: there a slow turn never registers
+(its own filter, run on a steady turn: 0.5 rad/s at 1000 readings a second came out as 0.001 rad in a
+second; 1 rad/s at 250 a second as 0.58). A gradient that is only rounding (under 1e-5) moves nothing: at
+rest it would otherwise be blown up into full steps.
+
 **[read]** A controller that nothing is done with: no turning, an acceleration of 1 along y, the rotation
 (0, 0, 0, 1), both sticks at 0. Its state is `a0 ff7f ff7f ff7f ff7f 9999 ff7f fef7ef1f` and eight zero bytes.
 

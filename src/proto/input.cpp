@@ -71,6 +71,21 @@ std::vector<std::uint8_t> encode_input_state(ConsoleKind kind, const InputState&
     return out;
 }
 
+std::array<float, 4> unpacked_rotation(std::uint32_t packed) {
+    constexpr double kLimit = std::numbers::sqrt2 / 2.0;
+    const auto largest = static_cast<std::size_t>((packed >> 1) & 3U);
+    std::array<float, 4> q{};
+    double rest = 1.0;
+    for (std::size_t i = 0; i < 3; ++i) {
+        const double part = static_cast<double>((packed >> (3 + i * 9)) & 0x1ffU) * (2.0 * kLimit / 511.0) - kLimit;
+        q[i < largest ? i : i + 1] = static_cast<float>(part);
+        rest -= part * part;
+    }
+    const double size = std::sqrt(std::max(rest, 0.0));
+    q[largest] = static_cast<float>((packed & 1U) != 0 ? -size : size);
+    return q;
+}
+
 std::optional<InputStateFields> parse_input_state(ConsoleKind kind, std::span<const std::uint8_t> bytes) {
     const bool ps5 = kind == ConsoleKind::ps5;
     if (bytes.size() != (ps5 ? kInputStateSizePs5 : kInputStateSizePs4) || bytes[0] != 0xa0) return std::nullopt;

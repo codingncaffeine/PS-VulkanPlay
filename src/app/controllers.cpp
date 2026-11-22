@@ -107,7 +107,11 @@ public:
             facts.motion = SDL_GamepadHasSensor(one.pad, SDL_SENSOR_GYRO);
             facts.rumble = SDL_GetBooleanProperty(SDL_GetGamepadProperties(one.pad), SDL_PROP_GAMEPAD_CAP_RUMBLE_BOOLEAN, false);
             const bool dualsense = facts.kind == ControllerFacts::Kind::dualsense || facts.kind == ControllerFacts::Kind::dualsense_edge;
-            if (dualsense) facts.haptics = sound_device && facts.link != ControllerFacts::Link::wireless ? ControllerFacts::Haptics::sound_device : ControllerFacts::Haptics::rumble;
+            facts.through_steam = is_steam_virtual(SDL_GetGamepadVendor(one.pad), SDL_GetGamepadProduct(one.pad));
+            // Behind Steam Input nothing but its rumble reaches the controller.
+            if (dualsense && !facts.through_steam) {
+                facts.haptics = sound_device && facts.link != ControllerFacts::Link::wireless ? ControllerFacts::Haptics::sound_device : ControllerFacts::Haptics::rumble;
+            }
             list.push_back(std::move(facts));
         }
         return list;
@@ -180,7 +184,6 @@ public:
     }
 
     // The first controller, for the checks that press the buttons of a pretended one.
-    [[nodiscard]] SDL_Joystick* first_joystick() const { return open_.empty() ? nullptr : SDL_GetGamepadJoystick(open_.front().pad); }
 
 private:
     struct Open {
@@ -272,7 +275,7 @@ int run_controllers(const ControllersOptions& options) {
                     }
                 }
                 if (taps) {
-                    taps->follow(controllers.first_joystick(), SDL_GetTicks());
+                    taps->follow(SDL_GetTicks());
                     wait = std::min<Sint32>(wait, 15);
                 }
                 if (settling_until) wait = std::min<Sint32>(wait, 20);

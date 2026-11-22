@@ -9,6 +9,8 @@ namespace {
 constexpr std::uint16_t kSony = 0x054c;
 constexpr std::uint16_t kDualSense = 0x0ce6;
 constexpr std::uint16_t kDualSenseEdge = 0x0df2;
+constexpr std::uint16_t kValve = 0x28de;
+constexpr std::uint16_t kSteamVirtual = 0x11ff;
 
 const char* kind_text(ControllerFacts::Kind kind) noexcept {
     switch (kind) {
@@ -43,6 +45,8 @@ const char* haptics_text(ControllerFacts::Haptics haptics) noexcept {
 
 }  // namespace
 
+bool is_steam_virtual(std::uint16_t vendor, std::uint16_t product) noexcept { return vendor == kValve && product == kSteamVirtual; }
+
 ControllerFacts::Kind controller_kind(std::uint16_t vendor, std::uint16_t product, bool sony_ps5, bool sony_ps4, bool xbox, bool nintendo) noexcept {
     if (vendor == kSony && product == kDualSenseEdge) return ControllerFacts::Kind::dualsense_edge;
     if ((vendor == kSony && product == kDualSense) || sony_ps5) return ControllerFacts::Kind::dualsense;
@@ -67,6 +71,7 @@ std::string controller_line(const ControllerFacts& controller) {
     line += parts;
     if (controller.haptics == ControllerFacts::Haptics::sound_device) line += "; haptics through its own sound device";
     else if (controller.haptics == ControllerFacts::Haptics::rumble) line += "; haptics as rumble";
+    if (controller.through_steam) line += "; through Steam Input";
     return line;
 }
 
@@ -83,6 +88,7 @@ std::string controllers_json(const std::vector<ControllerFacts>& controllers) {
             {"motion", Json(controller.motion)},
             {"rumble", Json(controller.rumble)},
             {"haptics", Json(haptics_text(controller.haptics))},
+            {"through_steam", Json(controller.through_steam)},
         }));
     }
     // The writer puts every member on a line of its own. A line break never stands inside a

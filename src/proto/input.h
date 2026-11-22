@@ -45,6 +45,9 @@ struct InputStateFields {
 };
 [[nodiscard]] std::optional<InputStateFields> parse_input_state(ConsoleKind kind, std::span<const std::uint8_t> bytes);
 
+// The packed orientation read back as its four parts x, y, z, w (to within a nine-bit step).
+[[nodiscard]] std::array<float, 4> unpacked_rotation(std::uint32_t packed);
+
 // An input state packet around a state that is already encrypted: its header with the code
 // and the key position left zero (seal_datagram writes them), then the state.
 [[nodiscard]] std::vector<std::uint8_t> encode_input_packet(std::uint16_t sequence, std::span<const std::uint8_t> state);

@@ -44,3 +44,14 @@ PSVP_TEST(controller_settings_dead_zone) {
     // More than the most there is counts as the most.
     CHECK(apply_dead_zone(static_cast<std::int16_t>(0.32 * 32767), 0, 90).first > 0);
 }
+
+// The rumble at the strength the user chose: none at 0, all of it at 100, in proportion between.
+PSVP_TEST(controller_settings_rumble_strength) {
+    CHECK(rumble_at(255, 100) == 65535 && rumble_at(0, 100) == 0);
+    CHECK(rumble_at(255, 0) == 0 && rumble_at(128, 0) == 0);
+    CHECK(rumble_at(255, 50) == 32768 && rumble_at(100, 40) == 10280);
+    CHECK(rumble_at(255, 150) == 65535 && rumble_at(255, -5) == 0);  // held to 0..100
+    ControllerSettings s;
+    s.rumble = 40;
+    CHECK(describe(s) == "rumble 40%");
+}
