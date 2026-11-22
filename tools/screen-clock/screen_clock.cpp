@@ -289,7 +289,7 @@ int watch(int argc, char** argv) {
     };
     std::optional<Key> last;
     std::optional<std::pair<Key, std::int64_t>> pending;  // a change read once, and when
-    std::uint64_t readings = 0, torn = 0;
+    std::uint64_t readings = 0, torn = 0, half_drawn = 0;
     timespec next{};
     clock_gettime(CLOCK_MONOTONIC, &next);
     while (g_stop == 0) {
@@ -338,14 +338,26 @@ int watch(int argc, char** argv) {
         last = key;
         const std::size_t expected = places.empty() ? 0 : static_cast<std::size_t>(counter) % places.size();
         const bool damaged = !places.empty() && (inside(expected) ? key.white != 1 || key.white_at != expected : key.white != 0);
+        // A damaged reading that then settles, whole, under the same number: the virtual screen was read
+        // while it was still being written (its rows are copied top to bottom; the number's rows lie
+        // above the patches), seen 2026-11-22 under load as "damaged" pictures of 0.5 to 0.8 ms followed
+        // by the same frame whole. It is the one picture: its first reading stays, what it shows is what
+        // it settled on. (Not the other way round: a picture built on a lost frame can keep the number
+        // of the frame before it, whole first and damaged after.)
+        if (!seen.empty() && seen.back().counter == counter && seen.back().damaged && !damaged) {
+            seen.back().mark = mark;
+            seen.back().damaged = damaged;
+            ++half_drawn;
+            continue;
+        }
         seen.push_back({counter, first_read, mark, damaged});
     }
 
     std::ofstream out(out_path, std::ios::trunc);
     for (const auto& one : seen) out << "seen " << one.counter << ' ' << one.ns << ' ' << (one.mark ? 1 : 0) << ' ' << (one.damaged ? 1 : 0) << '\n';
     out.flush();
-    std::fprintf(stderr, "screen clock: %zu changes in %llu readings (%llu not whole)\n", seen.size(), static_cast<unsigned long long>(readings),
-                 static_cast<unsigned long long>(torn));
+    std::fprintf(stderr, "screen clock: %zu changes in %llu readings (%llu not whole, %llu pictures read before they were whole)\n", seen.size(),
+                 static_cast<unsigned long long>(readings), static_cast<unsigned long long>(torn), static_cast<unsigned long long>(half_drawn));
     return out ? 0 : 2;
 }
 
