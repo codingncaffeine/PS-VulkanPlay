@@ -264,12 +264,12 @@ pad_run() {   # pad_run NAME [PLAY_OPTIONS...]: a touch, a turn, the right Fn bu
     sleep 1.2   # past the mock's feedback
     printf 'touch 0.25 0.5\n' >> "$taps"; sleep 0.2
     printf 'lift\n' >> "$taps"; sleep 0.2
-    # The motion sensor: past the filter's first readings at rest, then a turn about x of about
-    # 2 rad/s for a quarter of a second (the pretended pad has no accelerometer: gravity stays put).
-    for _ in $(seq 40); do printf 'gyro 0 0 0\n' >> "$taps"; done
-    sleep 0.2
-    for _ in $(seq 5); do printf 'gyro 2 0 0\n' >> "$taps"; sleep 0.05; done
-    printf 'gyro 0 0 0\n' >> "$taps"
+    # The motion sensor, by its own clock: 40 readings at rest (past the filter's first ones), then a
+    # turn about x at 2 rad/s for a quarter of a second, 0.5 rad (the pretended pad has no
+    # accelerometer: gravity stays put). Stamped, so a slow machine delivering them late changes nothing.
+    for i in $(seq 0 39); do printf 'gyro 0 0 0 %d\n' $((i * 5)) >> "$taps"; done
+    for i in 1 2 3 4 5; do printf 'gyro 2 0 0 %d\n' $((195 + i * 50)) >> "$taps"; done
+    printf 'gyro 0 0 0 450\n' >> "$taps"
     printf 'tap right-paddle2\n' >> "$taps"; sleep 0.5
     wait $pid; rc=$?
     sleep 0.3; stop_mock
@@ -284,10 +284,11 @@ check "its trigger effects too (the effect report)" has "$work/pad-defaults.play
 check "the motion sensors were turned on" has "$work/pad-defaults.play.log" "pretend: motion sensors on"
 check "the console's rumble reached it whole (200 and 90 of 255)" has "$work/pad-defaults.play.log" "pretend: rumble 51400 and 23130"
 check "the touch reached the console" grep -aqE "stream input [0-9]+: touch [0-9]+ down at" "$work/pad-defaults.log"
-# The rotation the console was told, worked out from the readings: a turn about x (its x part is
-# the sine of half the angle: 0.1 or more = 0.2 rad or more of the ~0.5 turned).
-check "the turn reached the console as a rotation" sh -c "grep -a 'stream input state [0-9]*: rotation' '$work/pad-defaults.log' |
-    awk '{ x = \$(NF-3); if (x < 0) x = -x; if (x >= 0.1) found = 1 } END { exit found ? 0 : 1 }'"
+# The rotation the console was told, worked out from the stamped readings: 0.5 rad about x, whose x
+# part is the sine of half of it, 0.247 (the last rotation said; the told one moves in steps of 0.003).
+rotation=$(grep -a 'stream input state [0-9]*: rotation' "$work/pad-defaults.log" | tail -1 | awk '{ x = $(NF-3); print (x < 0 ? -x : x) }')
+awk -v x="${rotation:-0}" 'BEGIN { exit (x >= 0.2 && x <= 0.3) ? 0 : 1 }' && ok "the turn reached the console as a rotation (x part $rotation, 0.247 turned)" ||
+    fail "the turn reached the console as a rotation: x part '${rotation}', 0.247 turned"
 check "the right Fn button opened the menu" has "$work/pad-defaults.out" "The menu over the stream was opened 1 times"
 check "and the report names that setting" has "$work/pad-defaults.out" "Controller settings: right Fn: menu; trigger effects held back by them 0 times, Fn buttons pressed 1 times."
 pad_run pad-chosen --trigger-effects off --light-bar ff8000 --player-lights off --motion off --touchpad off --dead-zone 10 --rumble-strength 50 --light-brightness 50

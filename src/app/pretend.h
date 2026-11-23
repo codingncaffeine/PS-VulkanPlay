@@ -28,8 +28,10 @@ void only_pretended_controllers();
 // For checks: presses the buttons of the pretended controller as a file says, line by line as
 // the lines are added to it. "tap NAME" (down, and up a moment later), "down NAME", "up NAME",
 // "stick X Y" and "right-stick X Y" (each from -32768 to 32767), "touch X Y" (the first finger
-// down on the touchpad, each from 0 to 1), "lift" (and up again), "gyro X Y Z" (a reading of the
-// motion sensor, radians a second). A line for another pretended controller than the first starts
+// down on the touchpad, each from 0 to 1), "lift" (and up again), "gyro X Y Z [AT_MS]" (a reading of
+// the motion sensor, radians a second, taken AT_MS milliseconds after the first reading by the sensor's
+// own clock, as a controller stamps its readings: then a slow machine delivering them late changes
+// nothing; without it, when it is sent). A line for another pretended controller than the first starts
 // with its number: "2: tap south".
 class Taps {
 public:
@@ -100,8 +102,11 @@ public:
                 }
             } else if (verb == "gyro") {
                 float data[3] = {};
-                if (std::sscanf(rest.c_str(), "%f %f %f", &data[0], &data[1], &data[2]) == 3) {
-                    SDL_SendJoystickVirtualSensorData(joystick, SDL_SENSOR_GYRO, SDL_GetTicksNS(), data, 3);
+                double at_ms = -1.0;
+                if (std::sscanf(rest.c_str(), "%f %f %f %lf", &data[0], &data[1], &data[2], &at_ms) >= 3) {
+                    if (first_reading_ns_ == 0) first_reading_ns_ = SDL_GetTicksNS();
+                    const Uint64 stamp = at_ms >= 0.0 ? first_reading_ns_ + static_cast<Uint64>(at_ms * 1e6) : SDL_GetTicksNS();
+                    SDL_SendJoystickVirtualSensorData(joystick, SDL_SENSOR_GYRO, stamp, data, 3);
                     // One reading per pass: SDL 3.2.10's virtual joystick never grows its queue of readings
                     // (it sets its size to itself), so a second one before SDL takes them writes past it.
                     break;
@@ -146,6 +151,7 @@ private:
     };
     std::string file_;
     std::streamoff read_ = 0;
+    Uint64 first_reading_ns_ = 0;  // when the first motion reading was sent: AT_MS counts from it
     std::vector<Lift> lifts_;
 };
 
