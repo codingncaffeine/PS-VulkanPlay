@@ -267,6 +267,32 @@ public class WindowTests : IDisposable
     });
 
     [Fact]
+    public void The_connected_controllers_buttons_are_mapped_by_their_makers_names() => Ui.Run(() =>
+    {
+        FakeRunner fake = FakeRunner.WithTwoConsoles();
+        (MainWindow window, MainViewModel model) = Ui.Open(fake, _folder);
+        Ui.Click(window, window.FindControl<Button>("NavSettings")!);
+        Ui.Until(() => Ui.Shows(window, "Connect a controller to map its buttons."), "no controller: nothing to map");
+        Ui.Until(() => fake.Watch is not null, "the controller watcher started");
+        fake.Watch!.Say("""{"controllers": [{"name": "Xbox Wireless Controller", "kind": "xbox", "link": "cable", "battery": -1, "power": "", "haptics": "none"}]}""");
+        Ui.Until(() => Ui.Shows(window, "Buttons of Xbox Wireless Controller"), "the connected controller's buttons");
+        var rows = window.FindControl<ItemsControl>("ButtonMapRows")!;
+        rows.BringIntoView();
+        Ui.Settle();
+        Assert.True(Ui.Shows(window, "A") && Ui.Shows(window, "View") && Ui.Shows(window, "LB"));
+        Assert.True(Ui.Shows(window, "As it is: Cross") && Ui.Shows(window, "As it is: Create"));
+        ButtonRow south = model.Settings.ButtonRows.First(row => row.Position == "south");
+        south.Selected = model.Settings.MapChoices.First(choice => choice.Value == "circle");
+        Ui.Settle();
+        Ui.Until(() => Ui.Shows(window, "Circle") && !Ui.Shows(window, "As it is: Cross"), "the row shows what it sends now");
+        Ui.Capture(window, "settings-button-map-dark");
+        Assert.Equal("circle", model.Settings.Current.ButtonMaps["Xbox Wireless Controller"]["south"]);
+        // As it is again: the map is gone.
+        south.Selected = model.Settings.MapChoices[0];
+        Assert.False(model.Settings.Current.ButtonMaps.ContainsKey("Xbox Wireless Controller"));
+    });
+
+    [Fact]
     public void The_test_picture_buttons_start_the_program_with_the_picture_settings() => Ui.Run(() =>
     {
         FakeRunner fake = FakeRunner.WithTwoConsoles();

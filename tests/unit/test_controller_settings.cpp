@@ -3,6 +3,7 @@
 
 #include "app/controller_settings.h"
 #include "check.h"
+#include "proto/input.h"
 
 using namespace psvp::app;
 
@@ -56,4 +57,23 @@ PSVP_TEST(controller_settings_rumble_strength) {
     CHECK(describe(s) == "rumble 40%");
     s.light_brightness = 25;
     CHECK(describe(s) == "light bar at 25%, rumble 40%");
+}
+
+// A controller's buttons mapped by where they sit: read from the option's words, and said.
+PSVP_TEST(controller_settings_button_map) {
+    const auto map = parse_button_map("Xbox Wireless Controller=south:circle,east:cross,back:none,dpad-up:triangle");
+    CHECK(map.has_value());
+    if (!map) return;
+    CHECK(map->first == "Xbox Wireless Controller");
+    CHECK(map->second.to[0] == static_cast<std::int8_t>(psvp::proto::transport::Button::circle));
+    CHECK(map->second.to[1] == static_cast<std::int8_t>(psvp::proto::transport::Button::cross));
+    CHECK(map->second.to[13] == ButtonMap::kNothing);
+    CHECK(map->second.to[6] == static_cast<std::int8_t>(psvp::proto::transport::Button::triangle));
+    CHECK(map->second.to[2] == ButtonMap::kAsItIs);
+    // A name may hold '=' and ':' (the last '=' ends it); nothing mapped is a map too.
+    CHECK(parse_button_map("A=B: pad=")->first == "A=B: pad");
+    CHECK(!parse_button_map("=south:circle") && !parse_button_map("Pad=elbow:circle") && !parse_button_map("Pad=south:jump") && !parse_button_map("Pad"));
+    ControllerSettings s;
+    s.button_maps.push_back(*map);
+    CHECK(describe(s) == "4 buttons of \"Xbox Wireless Controller\" mapped");
 }

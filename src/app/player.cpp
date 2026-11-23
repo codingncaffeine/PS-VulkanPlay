@@ -65,7 +65,30 @@ constexpr int kMaxHapticsQueuedMs = 80;
 constexpr double kSpeedStep = 0.002;
 // The touchpad as a console counts it (the reference's numbers).
 constexpr float kTouchWidth = 1919.0F, kTouchHeight = 1079.0F;
-constexpr std::uint64_t kShareTapMs = 80;  // how long share stays pressed when it stood behind the d-pad's swipes
+constexpr std::uint64_t kShareTapMs = 80;
+
+// Where a button sits, as kPadPositions numbers them; nothing for those with settings of their own.
+std::optional<std::size_t> pad_position(SDL_GamepadButton button) {
+    switch (button) {
+    case SDL_GAMEPAD_BUTTON_SOUTH: return 0;
+    case SDL_GAMEPAD_BUTTON_EAST: return 1;
+    case SDL_GAMEPAD_BUTTON_WEST: return 2;
+    case SDL_GAMEPAD_BUTTON_NORTH: return 3;
+    case SDL_GAMEPAD_BUTTON_DPAD_LEFT: return 4;
+    case SDL_GAMEPAD_BUTTON_DPAD_RIGHT: return 5;
+    case SDL_GAMEPAD_BUTTON_DPAD_UP: return 6;
+    case SDL_GAMEPAD_BUTTON_DPAD_DOWN: return 7;
+    case SDL_GAMEPAD_BUTTON_LEFT_SHOULDER: return 8;
+    case SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER: return 9;
+    case SDL_GAMEPAD_BUTTON_LEFT_STICK: return 10;
+    case SDL_GAMEPAD_BUTTON_RIGHT_STICK: return 11;
+    case SDL_GAMEPAD_BUTTON_START: return 12;
+    case SDL_GAMEPAD_BUTTON_BACK: return 13;
+    case SDL_GAMEPAD_BUTTON_GUIDE: return 14;
+    case SDL_GAMEPAD_BUTTON_TOUCHPAD: return 15;
+    default: return std::nullopt;
+    }
+}  // how long share stays pressed when it stood behind the d-pad's swipes
 
 // How far apart things came that should come every 16.7 ms, counted in bands.
 struct Spacing {
@@ -604,7 +627,8 @@ private:
     bool stand_in_pressed_ = false;              // the touchpad's press a stand-in made
     std::optional<std::uint64_t> share_up_at_ms_;  // share pressed for a tap of it: let go then
     std::uint64_t stand_in_touches_ = 0;         // fingers the stand-ins put down, for the report
-    bool pad_through_steam_ = false;  // Steam's virtual controller: the real one's haptics, effects and lights out of reach
+    bool pad_through_steam_ = false;
+    std::optional<ButtonMap> button_map_;  // the user's for the controller that plays  // Steam's virtual controller: the real one's haptics, effects and lights out of reach
 
     std::atomic<bool> started_{false};
     std::thread decode_thread_;  // last: it starts with everything above in place
@@ -855,6 +879,11 @@ void Player::adopt(SDL_Gamepad* pad, SDL_JoystickID id) {
     else if (feedback_.infos != 0) SDL_SetGamepadPlayerIndex(pad_, feedback_.player);
     const char* name = SDL_GetGamepadName(pad_);
     pad_name_ = name != nullptr ? name : "a controller";
+    // The user's map for a controller of this name, if there is one.
+    button_map_.reset();
+    for (const auto& [mapped, map] : settings_.button_maps) {
+        if (mapped == pad_name_) button_map_ = map;
+    }
     pad_through_steam_ = is_steam_virtual(SDL_GetGamepadVendor(pad_), SDL_GetGamepadProduct(pad_));
     if (pad_through_steam_) log::warn("play: {}", kThroughSteamText);
     // Motion, where the controller has it and the user did not turn it off.
@@ -1255,6 +1284,13 @@ void Player::on_event(const SDL_Event& event) {
             }
         }
         std::optional<Button> button;
+        // Mapped by the user for this controller: what its button at that place sends instead.
+        if (const auto position = pad_position(static_cast<SDL_GamepadButton>(event.gbutton.button)); position && button_map_ &&
+                                                                                                      button_map_->to[*position] != ButtonMap::kAsItIs) {
+            const std::int8_t to = button_map_->to[*position];
+            if (to != ButtonMap::kNothing) set_button(static_cast<Button>(to), event.gbutton.down);
+            break;
+        }
         switch (event.gbutton.button) {
         case SDL_GAMEPAD_BUTTON_SOUTH: button = Button::cross; break;
         case SDL_GAMEPAD_BUTTON_EAST: button = Button::circle; break;

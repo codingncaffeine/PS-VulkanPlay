@@ -352,6 +352,22 @@
                             <StackPanel VerticalAlignment="Center" Margin="0,0,20,0"><TextBlock Text="Stick dead zone" /><TextBlock Classes="secondary small" Text="{Binding DeadZoneText}" /></StackPanel>
                             <Slider Grid.Column="1" Minimum="0" Maximum="30" TickFrequency="1" IsSnapToTickEnabled="True" Value="{Binding DeadZone}" />
                         </Grid>
+                        <Border Classes="rule" />
+                        <TextBlock Text="{Binding MappingTitle}" FontWeight="SemiBold" />
+                        <TextBlock Classes="secondary small" TextWrapping="Wrap" IsVisible="{Binding HasMappedController}"
+                                   Text="What each button sends to the console, for this controller only (it is known by its name). The triggers, and a DualSense Edge's back and Fn buttons, are set above." />
+                        <TextBlock Classes="secondary small" TextWrapping="Wrap" IsVisible="{Binding !HasMappedController}"
+                                   Text="Connect a controller to map its buttons." />
+                        <ItemsControl x:Name="ButtonMapRows" ItemsSource="{Binding ButtonRows}" Margin="0,8,0,0">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="vm:ButtonRow">
+                                    <Grid ColumnDefinitions="*,Auto" Margin="0,3">
+                                        <TextBlock Text="{Binding Label}" VerticalAlignment="Center" />
+                                        <ComboBox Grid.Column="1" ItemsSource="{Binding Choices}" SelectedItem="{Binding Selected}" MinWidth="260" />
+                                    </Grid>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
                     </StackPanel>
                 </Border>
 

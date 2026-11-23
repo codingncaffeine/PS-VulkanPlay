@@ -66,6 +66,26 @@ public class CoreTests
     }
 
     [Fact]
+    public void Button_maps_become_one_option_per_controller_and_what_the_program_refuses_is_left_out()
+    {
+        var settings = new AppSettings
+        {
+            ButtonMaps = new()
+            {
+                ["Xbox Wireless Controller"] = new() { ["east"] = "cross", ["south"] = "circle", ["back"] = "", ["elbow"] = "cross", ["north"] = "jump" },
+                ["Bad=Name"] = new() { ["south"] = "cross" },
+                ["Empty Pad"] = new(),
+            },
+        };
+        string[] arguments = [.. settings.PlayArguments("Den", "")];
+        int at = Array.IndexOf(arguments, "--button-map");
+        Assert.True(at > 0);
+        Assert.Equal("Xbox Wireless Controller=south:circle,east:cross,back:none", arguments[at + 1]);
+        Assert.Single(arguments, a => a == "--button-map");
+        Assert.DoesNotContain("--button-map", new AppSettings().PlayArguments("Den", ""));
+    }
+
+    [Fact]
     public void The_test_picture_is_drawn_with_the_picture_settings()
     {
         Assert.Equal(["chart"], new AppSettings().ChartArguments(false));

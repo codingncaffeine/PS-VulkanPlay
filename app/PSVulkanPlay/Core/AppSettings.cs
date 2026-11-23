@@ -42,7 +42,9 @@ public sealed class AppSettings
     public string Controller { get; set; } = "auto";    // auto, dualsense, dualshock4
     public int HapticsVolume { get; set; } = 100;       // 0 to 100
     public int LightBrightness { get; set; } = 100;     // 0 to 100: the light bar's brightness
-    public int RumbleStrength { get; set; } = 100;      // 0 to 100: the console's rumble and the rumble made from haptics
+    public int RumbleStrength { get; set; } = 100;
+    /// <summary>What a controller's buttons send instead of their own, by its name, then by where each sits (PadPositions); "" sends nothing.</summary>
+    public Dictionary<string, Dictionary<string, string>> ButtonMaps { get; set; } = [];      // 0 to 100: the console's rumble and the rumble made from haptics
     public string BackLeft { get; set; } = "";          // a button's name, or nothing
     public string BackRight { get; set; } = "";
     public bool TriggerEffects { get; set; } = true;    // the console's adaptive trigger effects reach a DualSense
@@ -79,6 +81,10 @@ public sealed class AppSettings
         text is "console" or "off" || (text.Length == 6 && text.All(Uri.IsHexDigit));
     public static readonly int[] Scales = [100, 125, 150, 175, 200];
 
+    /// <summary>A controller's buttons by where they sit, as the program names them (--button-map).</summary>
+    public static readonly string[] PadPositions =
+        ["south", "east", "west", "north", "dpad-left", "dpad-right", "dpad-up", "dpad-down", "left-shoulder", "right-shoulder", "left-stick", "right-stick", "start", "back", "guide", "touchpad"];
+
     /// <summary>The console's buttons a back button can be, by the names the program takes; the first is "nothing".</summary>
     public static readonly string[] Buttons =
         ["", "cross", "circle", "square", "triangle", "l1", "r1", "l3", "r3", "up", "down", "left", "right", "options", "share", "touchpad", "ps"];
@@ -106,6 +112,9 @@ public sealed class AppSettings
             Controller = Controllers.Contains(Controller) ? Controller : "auto",
             HapticsVolume = Math.Clamp(HapticsVolume, 0, 100),
             RumbleStrength = Math.Clamp(RumbleStrength, 0, 100),
+            ButtonMaps = (ButtonMaps ?? []).Where(pad => pad.Key.Length > 0 && !pad.Key.Contains('=') && pad.Value is not null)
+                .Select(pad => (pad.Key, Map: pad.Value.Where(one => PadPositions.Contains(one.Key) && Buttons.Contains(one.Value)).ToDictionary(one => one.Key, one => one.Value)))
+                .Where(pad => pad.Map.Count > 0).ToDictionary(pad => pad.Key, pad => pad.Map),
             LightBrightness = Math.Clamp(LightBrightness, 0, 100),
             BackLeft = Buttons.Contains(BackLeft) ? BackLeft : "",
             BackRight = Buttons.Contains(BackRight) ? BackRight : "",
@@ -180,6 +189,10 @@ public sealed class AppSettings
         if (!s.Touchpad) arguments.AddRange(["--touchpad", "off"]);
         if (s.DeadZone != 0) arguments.AddRange(["--dead-zone", s.DeadZone.ToString()]);
         if (s.RumbleStrength != 100) arguments.AddRange(["--rumble-strength", s.RumbleStrength.ToString()]);
+        foreach ((string pad, Dictionary<string, string> map) in s.ButtonMaps.OrderBy(pad => pad.Key, StringComparer.Ordinal))
+        {
+            arguments.AddRange(["--button-map", pad + "=" + string.Join(',', PadPositions.Where(map.ContainsKey).Select(at => $"{at}:{(map[at].Length == 0 ? "none" : map[at])}"))]);
+        }
         if (s.LightBrightness != 100) arguments.AddRange(["--light-brightness", s.LightBrightness.ToString()]);
         if (!s.PointerTouch) arguments.AddRange(["--pointer-touch", "off"]);
         if (!s.DpadTouch) arguments.AddRange(["--dpad-touch", "off"]);

@@ -99,6 +99,14 @@ struct Parsed {
         return std::nullopt;
     }
     [[nodiscard]] bool flag(std::string_view name) const { return std::ranges::find(flags, name) != flags.end(); }
+    // Every value an option was given, in their order (an option that may be given more than once).
+    [[nodiscard]] std::vector<std::string_view> all(std::string_view name) const {
+        std::vector<std::string_view> out;
+        for (const auto& [key, value] : options) {
+            if (key == name) out.push_back(value);
+        }
+        return out;
+    }
 };
 
 Parsed parse(std::span<const std::string_view> args, std::initializer_list<std::string_view> value_options,
@@ -1420,7 +1428,7 @@ PlayRunner play_runner = nullptr;
 
 // The stream in a window, with its sound and a controller: what the program is for.
 int command_play(std::span<const std::string_view> args) {
-    const Parsed parsed = parse(args, {"--host", "--seconds", "--passcode", "--resolution", "--fps", "--bitrate", "--codec", "--tap", "--frames", "--controller", "--pacing", "--cushion", "--haptics-volume", "--back-left", "--back-right", "--loss-ceiling", "--ack-copies", "--decoder", "--pretend", "--pretend-taps", "--reconnect", "--hdr-peak", "--hdr-output", "--scaler", "--deband", "--sharpen", "--trigger-effects", "--light-bar", "--player-lights", "--motion", "--touchpad", "--dead-zone", "--rumble-strength", "--light-brightness", "--pointer-touch", "--dpad-touch", "--fn-left", "--fn-right"},
+    const Parsed parsed = parse(args, {"--host", "--seconds", "--passcode", "--resolution", "--fps", "--bitrate", "--codec", "--tap", "--frames", "--controller", "--pacing", "--cushion", "--haptics-volume", "--back-left", "--back-right", "--loss-ceiling", "--ack-copies", "--decoder", "--pretend", "--pretend-taps", "--reconnect", "--hdr-peak", "--hdr-output", "--scaler", "--deband", "--sharpen", "--trigger-effects", "--light-bar", "--player-lights", "--motion", "--touchpad", "--dead-zone", "--rumble-strength", "--light-brightness", "--button-map", "--pointer-touch", "--dpad-touch", "--fn-left", "--fn-right"},
                                 {"--rest", "--wake", "--stats"}, 1);
     if (!parsed.error.empty()) return usage("play: {}", parsed.error);
     SessionPlan plan;
@@ -1525,6 +1533,11 @@ int command_play(std::span<const std::string_view> args) {
         const auto percent = parse_number(*text, 0, ControllerSettings::kMostDeadZone);
         if (!percent && *text != "0") return usage("play: --dead-zone takes a percent of a stick's throw from 0 to {}", ControllerSettings::kMostDeadZone);
         pad.dead_zone = percent ? static_cast<int>(*percent) : 0;
+    }
+    for (const std::string_view text : parsed.all("--button-map")) {
+        auto map = parse_button_map(text);
+        if (!map) return usage("play: --button-map takes NAME=POSITION:BUTTON,... (positions south, east, west, north, dpad-left, ...; buttons cross, circle, ... or none)");
+        pad.button_maps.push_back(std::move(*map));
     }
     if (const auto text = parsed.option("--light-brightness")) {
         const auto percent = parse_number(*text, 0, 100);
@@ -1908,6 +1921,7 @@ std::string commands_help() {
         "          [--deband on|off] [--sharpen 0-100] [--trigger-effects on|off] [--light-bar console|off|RRGGBB]\n"
         "          [--player-lights on|off] [--motion on|off] [--touchpad on|off] [--dead-zone 0-30]\n"
         "          [--rumble-strength 0-100] [--light-brightness 0-100] [--pointer-touch on|off] [--dpad-touch on|off]\n"
+        "          [--button-map NAME=POSITION:BUTTON,...]...\n"
         "          [--fn-left ACTION] [--fn-right ACTION] [--stats] [--wake] [--rest]\n"
         "      play: the console's picture in a window, its sound, and a controller that is plugged in\n"
         "      or paired; closing the window ends the session (--rest then sends the console to rest mode).\n"
@@ -1949,7 +1963,11 @@ std::string commands_help() {
         "      the console the motion or the touches, --dead-zone is the percent of a stick's throw that\n"
         "      counts as rest (0 unless said), --rumble-strength the percent of the rumble's strength (the\n"
         "      console's rumble, and the rumble made from haptics away from the cable; 100 unless said),\n"
-        "      --light-brightness the percent of the light bar's brightness (100 unless said),\n"
+        "      --light-brightness the percent of the light bar's brightness (100 unless said), --button-map\n"
+        "      what the buttons of the controller of that name send (by where they sit: south, east, west,\n"
+        "      north, dpad-left/right/up/down, left/right-shoulder, left/right-stick, start, back, guide,\n"
+        "      touchpad; to cross, circle, square, triangle, left, right, up, down, l1, r1, l3, r3, options,\n"
+        "      share, touchpad, ps or none), given once for each controller,\n"
         "      --pointer-touch off: the mouse (left button: a finger; the others: a press) and a touch\n"
         "      screen on the window no longer stand in for the touchpad, --dpad-touch off: on a controller\n"
         "      with no touchpad, share held no longer turns the d-pad into swipes and south into a press,\n"

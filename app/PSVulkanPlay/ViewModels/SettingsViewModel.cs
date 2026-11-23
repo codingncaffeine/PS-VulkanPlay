@@ -105,6 +105,74 @@ public sealed class SettingsViewModel : Observable
 
     private static Choice Pick(IReadOnlyList<Choice> from, string value) => from.FirstOrDefault(c => c.Value == value) ?? from[0];
 
+    // ---- Button mapping: the controller that is connected, its buttons by its maker's names ----
+
+    /// <summary>What a mapped button can send: as it is, a console button, or nothing.</summary>
+    public IReadOnlyList<Choice> MapChoices { get; } =
+        new[] { new Choice("As it is", AsItIs) }.Concat(AppSettings.Buttons.Select(name => new Choice(name.Length == 0 ? "Nothing" : ButtonLabel(name), name))).ToList();
+    private const string AsItIs = "*";
+
+    private ControllerInfo? _mapped;
+    /// <summary>The controller whose buttons are shown for mapping (the app's controller line sets it).</summary>
+    public ControllerInfo? MappedController
+    {
+        get => _mapped;
+        set
+        {
+            if (_mapped?.Name == value?.Name && _mapped?.Kind == value?.Kind) return;
+            _mapped = value;
+            ButtonRows = value is null ? [] : AppSettings.PadPositions.Select(at => new ButtonRow(this, value.Name, at, PositionLabel(value.Kind, at))).ToList();
+            Changed();
+            Changed(nameof(ButtonRows));
+            Changed(nameof(HasMappedController));
+            Changed(nameof(MappingTitle));
+        }
+    }
+    public bool HasMappedController => _mapped is not null;
+    public string MappingTitle => _mapped is null ? "Buttons" : $"Buttons of {(_mapped.Name.Length > 0 ? _mapped.Name : "this controller")}";
+    public IReadOnlyList<ButtonRow> ButtonRows { get; private set; } = [];
+
+    /// <summary>What a button sends for the controller of that name: AsItIs when not mapped.</summary>
+    internal string MappedTo(string pad, string position) =>
+        _settings.ButtonMaps.TryGetValue(pad, out var map) && map.TryGetValue(position, out string? to) ? to : AsItIs;
+
+    internal void MapButton(string pad, string position, string to)
+    {
+        Keep(() =>
+        {
+            var maps = _settings.ButtonMaps.ToDictionary(one => one.Key, one => new Dictionary<string, string>(one.Value));
+            if (!maps.TryGetValue(pad, out var map)) maps[pad] = map = [];
+            if (to == AsItIs) map.Remove(position);
+            else map[position] = to;
+            _settings.ButtonMaps = maps;
+        }, nameof(ButtonRows));
+    }
+
+    /// <summary>Where a button sits, by the name its maker prints on it.</summary>
+    private static string PositionLabel(string kind, string at)
+    {
+        bool sony = kind is "dualsense" or "dualsense-edge" or "dualshock4", nintendo = kind == "nintendo";
+        return at switch
+        {
+            "south" => sony ? "Cross" : nintendo ? "B" : "A",
+            "east" => sony ? "Circle" : nintendo ? "A" : "B",
+            "west" => sony ? "Square" : nintendo ? "Y" : "X",
+            "north" => sony ? "Triangle" : nintendo ? "X" : "Y",
+            "dpad-left" => "D-pad left",
+            "dpad-right" => "D-pad right",
+            "dpad-up" => "D-pad up",
+            "dpad-down" => "D-pad down",
+            "left-shoulder" => sony ? "L1" : nintendo ? "L" : "LB",
+            "right-shoulder" => sony ? "R1" : nintendo ? "R" : "RB",
+            "left-stick" => sony ? "L3" : "Left stick press",
+            "right-stick" => sony ? "R3" : "Right stick press",
+            "start" => sony ? "Options" : nintendo ? "+" : "Menu",
+            "back" => sony ? "Create" : nintendo ? "-" : "View",
+            "guide" => sony ? "PS button" : nintendo ? "Home" : "Guide",
+            _ => "Touchpad press",
+        };
+    }
+
     private void Keep(Action change, string name)
     {
         change();
@@ -448,4 +516,44 @@ public sealed class SettingsViewModel : Observable
     public bool WakeFirst { get => _settings.WakeFirst; set => Keep(() => _settings.WakeFirst = value, nameof(WakeFirst)); }
     public bool RestAfter { get => _settings.RestAfter; set => Keep(() => _settings.RestAfter = value, nameof(RestAfter)); }
     public bool ShowStats { get => _settings.ShowStats; set => Keep(() => _settings.ShowStats = value, nameof(ShowStats)); }
+}
+
+/// <summary>One button of the controller being mapped: its place, its maker's name, and what it sends.</summary>
+public sealed class ButtonRow : Observable
+{
+    private readonly SettingsViewModel _owner;
+    private readonly string _pad;
+
+    public ButtonRow(SettingsViewModel owner, string pad, string position, string label)
+    {
+        _owner = owner;
+        _pad = pad;
+        Position = position;
+        Label = label;
+        // The first choice says what the button sends when it is left as it is.
+        Choices = [new Choice($"As it is: {owner.MapChoices.First(c => c.Value == DefaultFor(position)).Label}", owner.MapChoices[0].Value), .. owner.MapChoices.Skip(1)];
+    }
+
+    public string Label { get; }
+    public string Position { get; }
+    public IReadOnlyList<Choice> Choices { get; }
+    public Choice Selected
+    {
+        get => Choices.FirstOrDefault(c => c.Value == _owner.MappedTo(_pad, Position)) ?? Choices[0];
+        set
+        {
+            if (value is null) return;
+            _owner.MapButton(_pad, Position, value.Value);
+            Changed();
+        }
+    }
+
+    /// <summary>The console button a button at that place sends unless mapped.</summary>
+    private static string DefaultFor(string position) => position switch
+    {
+        "south" => "cross", "east" => "circle", "west" => "square", "north" => "triangle",
+        "dpad-left" => "left", "dpad-right" => "right", "dpad-up" => "up", "dpad-down" => "down",
+        "left-shoulder" => "l1", "right-shoulder" => "r1", "left-stick" => "l3", "right-stick" => "r3",
+        "start" => "options", "back" => "share", "guide" => "ps", _ => "touchpad",
+    };
 }

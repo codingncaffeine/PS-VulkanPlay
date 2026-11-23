@@ -136,6 +136,7 @@ public sealed class MainViewModel : Observable
         private set
         {
             _controllers = value;
+            Settings.MappedController = value.Count > 0 ? value[0] : null;
             if (value.Count == 0) ControllerInUse = false;
             Changed();
             Changed(nameof(HasController));
