@@ -349,18 +349,20 @@ echo "the buttons as the user mapped them for this controller (by name): south s
 taps="$work/map.taps"; : > "$taps"
 start_mock map --kind ps5 --clip 416x240 --frame-ms 16 --media-ms 10
 "$app" play "Living Room" --seconds 3 --pretend 045e:028e --pretend-taps "$taps" --button-map "Some Other Pad=south:square" \
-    --button-map "A controller for checks=south:circle,east:none" > "$work/map.out" 2> "$work/map.err" &
+    --button-map "A controller for checks=south:circle,east:none,back:options" > "$work/map.out" 2> "$work/map.err" &
 pid=$!
 for _ in $(seq 80); do grep -aq "first picture shown" "$work/map.err" 2>/dev/null && break; kill -0 $pid 2>/dev/null || break; sleep 0.1; done
 printf 'tap south\n' >> "$taps"; sleep 0.3
 printf 'tap east\n' >> "$taps"; sleep 0.3
 printf 'tap north\n' >> "$taps"; sleep 0.3
+printf 'tap back\n' >> "$taps"; sleep 0.3
 wait $pid; rc=$?
 sleep 0.3; stop_mock
 inputs="$(grep -a 'stream input [0-9]*: ' "$work/map.log" | sed -E 's/^mock: stream input [0-9]+: //' | tr '\n' ';')"
-[ "$rc" -eq 0 ] && [ "$inputs" = "circle pressed;circle released;triangle pressed;triangle released;" ] && ok "south sent circle, east nothing, north stayed triangle" ||
+# (back mapped: on this pad with no touchpad the map wins over the d-pad standing in for one)
+[ "$rc" -eq 0 ] && [ "$inputs" = "circle pressed;circle released;triangle pressed;triangle released;options pressed;options released;" ] && ok "south sent circle, east nothing, north stayed triangle, back sent options" ||
     fail "button map: exit $rc, the console read '$inputs'"
-check "the report names the map" has "$work/map.out" "2 buttons of \"A controller for checks\" mapped"
+check "the report names the map" has "$work/map.out" "3 buttons of \"A controller for checks\" mapped"
 check "a map that is not one is refused" sh -c "! '$app' play 'Living Room' --button-map 'Pad=elbow:circle' > /dev/null 2>&1"
 check "a light bar is console, off or six hexadecimal digits" sh -c "! '$app' play 'Living Room' --light-bar blue > /dev/null 2>&1"
 check "a dead zone is 30% at most" sh -c "! '$app' play 'Living Room' --dead-zone 31 > /dev/null 2>&1"

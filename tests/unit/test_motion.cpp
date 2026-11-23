@@ -30,7 +30,8 @@ bool near(float a, float b, float within) { return std::fabs(a - b) <= within; }
 // that of a's inverse followed by b, from its parts' sizes (acos of a dot product near 1 loses
 // everything single precision has).
 float apart(const Rotation& a, const Rotation& b) {
-    const double aw = a.w, ax = a.x, ay = a.y, az = a.z, bw = b.w, bx = b.x, by = b.y, bz = b.z;
+    const auto wide = [](float v) { return static_cast<double>(v); };
+    const double aw = wide(a.w), ax = wide(a.x), ay = wide(a.y), az = wide(a.z), bw = wide(b.w), bx = wide(b.x), by = wide(b.y), bz = wide(b.z);
     const double w = aw * bw + ax * bx + ay * by + az * bz;
     const double x = aw * bx - ax * bw - ay * bz + az * by;
     const double y = aw * by + ax * bz - ay * bw - az * bx;

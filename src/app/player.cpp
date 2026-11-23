@@ -1260,8 +1260,10 @@ void Player::on_event(const SDL_Event& event) {
     case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
     case SDL_EVENT_GAMEPAD_BUTTON_UP: {
         if (event.gbutton.which != pad_id_) break;
-        // A controller with no touchpad: share held and the d-pad stand in for one.
-        if (settings_.dpad_touch && pad_ != nullptr && SDL_GetNumGamepadTouchpads(pad_) == 0) {
+        // A controller with no touchpad: share held and the d-pad stand in for one (not when the user
+        // mapped its share button to something: their map wins).
+        const bool back_mapped = button_map_ && button_map_->to[kBackPosition] != ButtonMap::kAsItIs;
+        if (settings_.dpad_touch && !back_mapped && pad_ != nullptr && SDL_GetNumGamepadTouchpads(pad_) == 0) {
             std::optional<DpadTouch::Key> key;
             switch (event.gbutton.button) {
             case SDL_GAMEPAD_BUTTON_BACK: key = DpadTouch::Key::share; break;

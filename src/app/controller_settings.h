@@ -5,6 +5,7 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -22,6 +23,8 @@ enum class LightBar : std::uint8_t { console, off, fixed };
 // their own.
 inline constexpr std::array<std::string_view, 16> kPadPositions{"south", "east", "west", "north", "dpad-left", "dpad-right", "dpad-up", "dpad-down",
                                                                 "left-shoulder", "right-shoulder", "left-stick", "right-stick", "start", "back", "guide", "touchpad"};
+inline constexpr std::size_t kBackPosition = 13;  // share, View, Back, Select
+static_assert(kPadPositions[kBackPosition] == "back");
 struct ButtonMap {
     static constexpr std::int8_t kAsItIs = -2, kNothing = -1;
     std::array<std::int8_t, kPadPositions.size()> to{kAsItIs, kAsItIs, kAsItIs, kAsItIs, kAsItIs, kAsItIs, kAsItIs, kAsItIs,
