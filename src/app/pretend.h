@@ -102,7 +102,9 @@ public:
                 float data[3] = {};
                 if (std::sscanf(rest.c_str(), "%f %f %f", &data[0], &data[1], &data[2]) == 3) {
                     SDL_SendJoystickVirtualSensorData(joystick, SDL_SENSOR_GYRO, SDL_GetTicksNS(), data, 3);
-                    continue;
+                    // One reading per pass: SDL 3.2.10's virtual joystick never grows its queue of readings
+                    // (it sets its size to itself), so a second one before SDL takes them writes past it.
+                    break;
                 }
             } else if (const int button = button_named(rest); button >= 0 && (verb == "tap" || verb == "down" || verb == "up")) {
                 SDL_SetJoystickVirtualButton(joystick, button, verb != "up");
